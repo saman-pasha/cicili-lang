@@ -47,6 +47,7 @@
 %% Statements:  block(Items)  if(C, Then, Else)  while(C, S)  do(S, C)
 %%   for(Init, Cond, Step, S)  return(E)  return  break  continue  goto(L)
 %%   switch(E, S)  case(E, S)  default(S)  label(L, S)  expr(E)  empty
+%%   defer(Line, [id(V) ...], Body)   runs Body at every exit of the scope, LIFO
 %%   and a declaration/4 or typedef/2 or declare/2 as a block item;
 %%   `name := expr;' is a declaration/4 with the type inferred from expr, and
 %%   `{ a, _, f: b } := expr;' one declaration/4 per binding, from the struct's members
@@ -67,7 +68,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(13).
+ccl_reader_version(14).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -311,7 +312,7 @@ ccl_call_or_macro(F, As, call(F, As)).
 ccl_stmt_of(E, E) :- ccl_is_stmt(E), !.
 ccl_stmt_of(E, expr(E)).
 ccl_is_stmt('$splice'(_)).
-ccl_is_stmt(T) :- functor(T, F, _), memberchk(F, [block, if, while, do, for, return, break, continue, goto, switch, case, default, label, empty, declaration, typedef, declare]).
+ccl_is_stmt(T) :- functor(T, F, _), memberchk(F, [block, if, while, do, for, return, break, continue, goto, switch, case, default, label, empty, declaration, typedef, declare, defer]).
 ccl_splice('$splice'(L), More, Items) :- !, append(L, More, Items).
 ccl_splice(I, More, [I|More]).
 
@@ -558,10 +559,16 @@ ccl_statement(_, goto(L)) --> ccl_kw(goto), !, ccl_id(L), ccl_p(';').
 ccl_statement(Env, switch(E, S)) --> ccl_kw(switch), !, ccl_p('('), ccl_expr(E), ccl_p(')'), ccl_statement(Env, S).
 ccl_statement(Env, case(E, S)) --> ccl_kw(case), !, ccl_cond_expr(E), ccl_p(':'), ccl_statement(Env, S).
 ccl_statement(Env, default(S)) --> ccl_kw(default), !, ccl_p(':'), ccl_statement(Env, S).
+%% defer(a, b) { body }  runs body at every exit of the enclosing scope, last
+%% registered first, over the named variables as they then are (owner's rule:
+%% scope-bound, like Cicili's cleanup); a call is never followed by a block
+ccl_statement(Env, defer(L, Vars, Body)) --> ccl_line(L), ccl_id(defer), ccl_p('('), ccl_defer_vars(Vars), ccl_p(')'), ccl_peek(p, '{'), !, ccl_compound(Env, Body).
 ccl_statement(Env, label(L, S)) --> ccl_id(L), ccl_p(':'), !, ccl_statement(Env, S).
 ccl_statement(_, empty) --> ccl_p(';'), !.
 ccl_statement(_, S) --> ccl_expr(E), ccl_p(';'), { ccl_stmt_of(E, S) }.   % a macro's result may be a statement
 
+ccl_defer_vars([id(V)|Vs]) --> ccl_id(V), ( ccl_p(','), !, ccl_defer_vars(Vs) ; { Vs = [] } ).
+ccl_defer_vars([]) --> [].
 ccl_for_init(_, decl(Base, Ds)) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_infer_decl(L, N, E, D), D = declaration(_, _, Base, Ds), ccl_note_item(D) }.
 ccl_for_init(Env, decl(Base, Ds)) --> ccl_decl_specs(Env, block, _, Base), ccl_init_declarators(Env, Base, Ds), ccl_p(';'), !, { ccl_note_item(declaration(0, none, Base, Ds)) }.
 ccl_for_init(_, E) --> ccl_opt_expr(E), ccl_p(';').

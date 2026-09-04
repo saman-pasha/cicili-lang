@@ -24,7 +24,7 @@ what runs today.
   AST, through a DCG; each `#include` is found on the toolchain's path and
   read too; the knowledge base remembers every file by its modification
   time; a `.pl` included is a set of macros over ASTs with type inference.
-  77 checks GREEN, including five real C files from the neighbours read
+  80 checks GREEN, including five real C files from the neighbours read
   entirely with their system headers.
 
 ## The reader: `cicili/2`, like `phrase/2`
@@ -186,6 +186,30 @@ that name as its tag and its typedef, in one: `point { int x; double y; }`
 is `typedef struct point { int x; double y; } point;`. The name is a type
 inside its own members (`node { node *next; … }`) and from then on; the
 AST holds the plain `typedef/2`.
+
+## `defer(a, b) { … }`: scope-bound, like cleanup
+
+A `defer` is a statement: its block runs at every exit of the enclosing
+scope, on the way out, last registered first, over the named variables as
+they then are, the way Cicili's `cleanup` attribute hands the variable to
+its function. The list names what the block depends on, for the checker.
+The reader keeps it as `defer(Line, [id(V) …], Body)`; the lowering (M2)
+is a static cleanup chain in the IR, no runtime, so a `return` from inside
+the loop below frees the buffer and closes the file, in that order.
+
+```c
+FILE *f = fopen(path, "r");
+if (f == NULL) return -1;
+defer(f) { fclose(f); }
+
+buf := malloc(max);                 // void *, from <stdlib.h>'s prototype
+if (buf == NULL) return -2;
+defer(buf) { free(buf); }
+
+while (fgets(buf, max, f) != NULL)
+    if (++n > 1000) return n;       // free(buf), then fclose(f)
+return n;
+```
 
 ## `format`, `print`, `println`: global macros
 

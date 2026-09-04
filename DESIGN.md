@@ -83,7 +83,7 @@ it is done (see below); the checker and the lowering take the AST from here.
 * **M1 — the reader. DONE.** `cicili/2,3` over two DCGs: C11 plus the GNU
   forms Cicili's emitted C carries (`__attribute__`, `typeof`, `({…})`,
   compound literals), every `#include` found and read, the knowledge base
-  as the cache. `test/reader.sh`: 77 checks GREEN, one per construct,
+  as the cache. `test/reader.sh`: 80 checks GREEN, one per construct,
   the error positions, and five real C files from the neighbours
   (`cicili/test/c/main.c`, `shared.c`, `macro.c`, `example/cimath.c`,
   `numpy_example.c`) read entirely.
@@ -100,10 +100,20 @@ it is done (see below); the checker and the lowering take the AST from here.
 * **M2b — the C core.** Integer and float types, arithmetic, locals, `if`,
   `while`, `for`, calls, `printf`. Each with a gate program that runs and
   checks its result.
-* **M3 — structs and the safe part.** `struct`, members, `letin` scopes and
-  deterministic cleanup lowered as IR, and the first ownership check: use
-  after `move` is a compile error naming the form. This is where "Safe
-  Modern C" stops being a tagline.
+* **M3 — structs and the safe part.** `struct`, members, scopes and
+  `defer` lowered as IR, and the first ownership check: use after `move`
+  is a compile error naming the form. This is where "Safe Modern C" stops
+  being a tagline. **`defer` is decided (owner):** scope-bound, like
+  Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
+  each scope a cleanup block running its defers last-first and branching
+  to the enclosing scope's; a `return`, `break`, `continue` or `goto` out
+  parks its value and destination in slots and jumps into the chain, whose
+  end switches on the destination; a defer registered conditionally gets an
+  `i1` flag. After `mem2reg` the slots and the switch fold away: the
+  deferred calls sit inline on each path, zero overhead, exactly what the
+  cleanup attribute means in Cicili's emitted C. Go's accumulating defer
+  would need a runtime list and is not this; `longjmp` skips defers, as it
+  skips destructors, and the checker will call that unsafe.
 * **M4 — the cache. STARTED at the reader.** Every file read whole -- the
   source and every header under it -- is in the store as
   `'$ccl_ast'(Path, key(MTime, ReaderVersion), …)` and loaded from there

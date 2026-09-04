@@ -12,13 +12,18 @@
 :- use_module(library(process)).
 
 main :-
-    nb_setval('$t_fails', 0), nb_setval('$t_err', none),
-    os_env('CCL_TEST_ROOT', Root), atom_concat(Root, '/test/c/', C), nb_setval('$t_cdir', C),
-    ( once(catch(os_env('CCL_TEST_TMP', T), _, fail)), T \== '' -> true ; T = '/tmp/cicili-reader-scratch', sh(mkdir, ['-p', T]) ),
-    nb_setval('$t_tmp', T),
+    setup,
     t_checks, t_real,
     nb_getval('$t_fails', N),
     ( N =:= 0 -> write('GREEN: reader (one process)') ; write('RED: '), write(N), write(' failure(s)') ), nl.
+
+%% setup/0 alone, then one check by name, runs it on its own:
+%%   cocolog --local query "ensure_loaded('test/reader.pl'), setup, k72"
+setup :-
+    nb_setval('$t_fails', 0), nb_setval('$t_err', none),
+    os_env('CCL_TEST_ROOT', Root), atom_concat(Root, '/test/c/', C), nb_setval('$t_cdir', C),
+    ( once(catch(os_env('CCL_TEST_TMP', T), _, fail)), T \== '' -> true ; T = '/tmp/cicili-reader-scratch', sh(mkdir, ['-p', T]) ),
+    nb_setval('$t_tmp', T).
 
 %% ---- the harness ------------------------------------------------------------
 section(S) :- write('-- '), write(S), nl.
@@ -209,6 +214,16 @@ k48 :- check('the name is a type inside its own members (node *next) and afterwa
 k49 :- check('and the types serve a block: a declaration, and a pattern through them',
     ( fn_body('shorthand.c', f, B), member(declaration(_, _, base([], [typedef(point)]), [var(p, _, init(_))]), B), member(declaration(_, _, _, [var(a, base([], [int]), member(id(p), x))]), B) )).
 
+k72 :- check('defer(f) { fclose(f); } is a statement over its named variables, with its block, where it stands',
+    ( fn_body('defer.c', count_lines, B), member(defer(8, [id(f)], block([expr(call(id(fclose), [id(f)]))])), B),
+            member(defer(12, [id(buf)], block([expr(call(id(free), [id(buf)]))])), B) )).
+
+k73 :- check('and a call named defer without a block is still a call',
+    ( fn_body('defer.c', g, [return(call(id(defer), [int(1), int(2)]))]) )).
+
+k74 :- check('buf := malloc(max); is a void * -- malloc\'s prototype came from <stdlib.h>',
+    ( fn_body('defer.c', count_lines, B), member(declaration(10, none, _, [var(buf, ptr([], base([], [void])), call(id(malloc), _))]), B) )).
+
 k50 :- check('a typedef of a basic type',
     ( unit('rich.c', unit(Is)), member(typedef(_, [var(ulong, base([], [unsigned, long]), none)]), Is) )).
 
@@ -333,6 +348,10 @@ t_checks :-
     k47,
     k48,
     k49,
+    section('defer(a, b) { ... }: scope-bound, like cleanup'),
+    k72,
+    k73,
+    k74,
     section('rich.c: the grammar, one construct at a time'),
     k50,
     k51,

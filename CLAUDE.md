@@ -144,6 +144,14 @@ before the others; the members are read with `ccl_members//2` (where
 `name *` is a type), the name joins the Env, and the item is the plain
 `typedef/2` that `typedef struct` would give.
 
+**`defer(a, b) { body }` is a statement** (owner's rule: scope-bound, like
+Cicili's cleanup, the first of the three ways to lower it -- a static
+cleanup chain with a destination slot, no runtime): `ccl_statement` on
+`ccl_id(defer), ccl_p('('), ids, ccl_p(')'), ccl_peek(p, '{')`, so a call
+named defer without a block stays a call; the node is
+`defer(Line, [id(V) …], block(...))`. It runs at every exit of its scope,
+LIFO, over the variables' values at that moment.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
