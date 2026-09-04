@@ -256,13 +256,10 @@ ccl_standard_macros :-
 %% struct tags (for ccl_type_of/2 and friends, library(ccl_infer)) ...
 ccl_include_scope(file(_, _, Unit)) :- !, ccl_unit_note(Unit).
 ccl_include_scope(_).
-ccl_unit_note(unit(Is)) :- !, ccl_items_note(Is).
+ccl_unit_note(unit(Is)) :- !, ccl_items_note(Is).                     % the bulk noter, library(ccl_syntax)
 ccl_unit_note(partial(U, _, _)) :- !, ccl_unit_note(U).
 ccl_unit_note(_).
 
-ccl_items_note([]).
-ccl_items_note([include(_, _, R)|T]) :- !, ccl_include_scope(R), ccl_items_note(T).
-ccl_items_note([I|T]) :- ccl_note_item(I), ccl_items_note(T).
 
 %% ... and the macros of a .pl
 %% it is, or of any .pl a header under it includes (loaded here if need be)

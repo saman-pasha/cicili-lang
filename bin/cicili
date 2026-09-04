@@ -1,0 +1,56 @@
+#!/bin/sh
+# cicili -- the cicili-lang compiler. Arguments as clang's, so nothing is new:
+#
+#   cicili prog.c -o prog            read, check, lower, compile, link -> prog (a.out without -o)
+#   cicili -c prog.c                 -> prog.o          cicili -S prog.c        -> prog.s
+#   cicili -emit-llvm -c prog.c      -> prog.ll         cicili -fsyntax-only prog.c
+#   cicili -O2 a.c b.c util.o -lm -o app               cicili -shared -O1 lib.c -o lib.dylib
+#   cicili -I include -I ../h prog.c                   cicili -ast-dump prog.c
+#   cicili --version                                   cicili -v ... (say each step)
+#
+# The knowledge base is ./KB in the working directory -- headers are parsed
+# once per project -- or $CICILI_KB; --no-kb keeps everything in memory.
+# Diagnostics are file:line: error: what, the exit status 1 when any.
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROOT=$(cd "$HERE/.." && pwd)
+COCOLOG=${COCOLOG:-$HOME/Projects/GitHub/cocolog}
+if [ -x "$COCOLOG/cocolog" ]; then C="$COCOLOG/cocolog"; elif command -v cocolog >/dev/null 2>&1; then C=$(command -v cocolog); else echo "cicili: no cocolog (set COCOLOG)" >&2; exit 1; fi
+export COCOLOG_LIBRARY="$ROOT/library${COCOLOG_LIBRARY:+:$COCOLOG_LIBRARY}"
+KB=${CICILI_KB:-./KB}
+store="--embed $KB"
+inputs=""; opts=""; out=""; opt=""; verbose=""
+need() { [ $# -ge 2 ] || { echo "cicili: error: argument to '$1' is missing" >&2; exit 1; }; }
+q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/\\\\'/g")"; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version) "$C" --local query "use_module(library(cicili)), ccl_version(V), ( catch(use_module(library(ccl_llvm)), _, fail), catch(ccl_llvm_version(L), _, fail) -> true ; L = 'clang as the back end' ), write('cicili-lang '), write(V), write(' (cocolog; LLVM '), write(L), write(')'), nl" 2>/dev/null | grep -a "^cicili-lang"; exit 0 ;;
+    -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -c) opts="$opts compile_only," ;;
+    -S) opts="$opts assembly," ;;
+    -emit-llvm) opts="$opts emit_llvm," ;;
+    -fsyntax-only) opts="$opts syntax_only," ;;
+    -ast-dump) opts="$opts ast," ;;
+    -v) opts="$opts verbose,"; verbose=1 ;;
+    --no-kb) store="--local" ;;
+    -o) need "$@"; shift; out="$1" ;;
+    -o*) out="${1#-o}" ;;
+    -O0|-O1|-O2|-O3|-Os|-Oz) opt="$1" ;;
+    -I) need "$@"; shift; opts="$opts include($(q "$1"))," ;;
+    -I*) opts="$opts include($(q "${1#-I}"))," ;;
+    -l*|-L*|-shared|-Wl,*|-framework|-static|-rdynamic|-fPIC|-pthread|-m*) case "$1" in -framework) need "$@"; opts="$opts link('-framework'),"; shift ;; esac; opts="$opts link($(q "$1"))," ;;
+    -g|-D*|-U*|-W*|-f*|-std=*|-pedantic) ;;   # accepted for clang's sake; no preprocessor, no debug info yet
+    -*) echo "cicili: error: unknown argument: '$1'" >&2; exit 1 ;;
+    *) inputs="$inputs $(q "$1"),";;
+  esac
+  shift
+done
+[ -n "$inputs" ] || { echo "cicili: error: no input files" >&2; exit 1; }
+[ -n "$out" ] && opts="$opts out($(q "$out")),"
+[ -n "$opt" ] && opts="$opts opt('$opt'),"
+inputs="[${inputs%,}]"; opts="[${opts%,}]"
+case "$store" in --embed*) mkdir -p "$KB" ;; esac
+res=$("$C" $store query "use_module(library(cicili)), ccl_drive($inputs, $opts)" 2>&1)
+printf '%s\n' "$res" | grep -a ": error: \|^cicili: \|^unit(" | grep -av "^cicili: ok$"
+printf '%s\n' "$res" | grep -aq "^cicili: ok$" && exit 0
+printf '%s\n' "$res" | grep -aq "^cicili: [0-9]* error" || { printf '%s\n' "$res" | grep -a "ERROR\|error" | head -3 | sed 's/^/cicili: /'; }
+exit 1

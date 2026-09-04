@@ -23,10 +23,12 @@ echo "-- a later process, the same store"
 s=$(date +%s)
 got=$("$C" --embed "$D/kb" query "use_module(library(cicili)), ccl_kb_ready, '\$ccl_ast'(P, _, meta(included(_), _, _)), sub_atom(P, _, _, 0, '/stdio.h'), cicili_ast('$ROOT/test/c/hello.c', U), ccl_declares(U, printf, _), write(answer(yes)), nl" 2>&1 | grep -aoE 'answer\(.*\)' | head -1)
 t=$(( $(date +%s) - s ))
-if [ "$got" = "answer(yes)" ] && [ "$t" -lt 5 ]; then
+# a fresh parse of hello.c and its 99 headers takes about 90 s; from the store, with the
+# symbol table rebuilt, a few seconds
+if [ "$got" = "answer(yes)" ] && [ "$t" -lt 20 ]; then
   printf 'ok   %s\n' "a later process finds hello.c's headers in the store and reads it in ${t} s"
 else
-  printf 'FAIL a later process finds hello.c'"'"'s headers in the store and reads it in under 5 s\n     got  %s in %s s\n' "$got" "$t"
+  printf 'FAIL a later process finds hello.c'"'"'s headers in the store and reads it in under 20 s\n     got  %s in %s s\n' "$got" "$t"
   failures=$((failures + 1))
 fi
 

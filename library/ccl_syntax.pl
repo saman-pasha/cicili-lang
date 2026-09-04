@@ -266,6 +266,67 @@ ccl_note_items([I|Is]) :- ccl_note_item(I), ccl_note_items(Is).
 ccl_declare(N, T) :- nb_getval('$ccl_scope', [F|S]), nb_setval('$ccl_scope', [[N-T|F]|S]).
 ccl_note_typedef(N, T) :- nb_getval('$ccl_typedefs', L), nb_setval('$ccl_typedefs', [N-T|L]).
 ccl_note_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), nb_setval('$ccl_tags', [Tag-Ms|L]).
+%% ---- the bulk noter: a whole unit tree into the tables, each set once ------------
+%% ccl_note_item/1 above is the parser's, one item at a time. Rebuilding the
+%% table from units -- the checker, the lowering, an included unit's scope --
+%% notes tens of thousands of items, and nb_setval/2 copies the whole list
+%% every time; so the bulk noter collects first and sets each table once.
+ccl_items_note(Is) :-
+    ccl_collect_items(Is, D, [], T, [], G, [], E, []),
+    nb_getval('$ccl_scope', [F|S]), append(D, F, F1), nb_setval('$ccl_scope', [F1|S]),
+    nb_getval('$ccl_typedefs', T0), append(T, T0, T1), nb_setval('$ccl_typedefs', T1),
+    nb_getval('$ccl_tags', G0), append(G, G0, G1), nb_setval('$ccl_tags', G1),
+    nb_getval('$ccl_enums', E0), append(E, E0, E1), nb_setval('$ccl_enums', E1).
+%% accumulators as difference lists: declarations, typedefs, tags, enumerators
+ccl_collect_items([], D, D, T, T, G, G, E, E).
+ccl_collect_items([I|Is], D0, D, T0, T, G0, G, E0, E) :-
+    ccl_collect_item(I, D0, D1, T0, T1, G0, G1, E0, E1),
+    ccl_collect_items(Is, D1, D, T1, T, G1, G, E1, E).
+ccl_collect_item(include(_, _, file(_, _, U)), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_unit(U, D0, D, T0, T, G0, G, E0, E).
+ccl_collect_item(include(_, _, _), D, D, T, T, G, G, E, E) :- !.
+ccl_collect_item(declaration(_, _, Base, Vs), D0, D, T, T, G0, G, E0, E) :- !,
+    ccl_collect_type(Base, G0, G1, E0, E1), ccl_collect_vars(Vs, D0, D, G1, G, E1, E).
+ccl_collect_item(typedef(_, Vs), D, D, T0, T, G0, G, E0, E) :- !, ccl_collect_typedefs(Vs, T0, T, G0, G, E0, E).
+ccl_collect_item(declare(_, Base), D, D, T, T, G0, G, E0, E) :- !, ccl_collect_type(Base, G0, G, E0, E).
+ccl_collect_item(function(_, _, Ret, Name, Ps, V, _), [Name-fn(Ret, Ps, V)|D], D, T, T, G0, G, E0, E) :- !,
+    ccl_collect_type(Ret, G0, G1, E0, E1), ccl_collect_params(Ps, G1, G, E1, E).
+ccl_collect_item(_, D, D, T, T, G, G, E, E).
+ccl_collect_unit(unit(Is), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_items(Is, D0, D, T0, T, G0, G, E0, E).
+ccl_collect_unit(partial(U, _, _), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_unit(U, D0, D, T0, T, G0, G, E0, E).
+ccl_collect_unit(_, D, D, T, T, G, G, E, E).
+ccl_collect_vars([], D, D, G, G, E, E).
+ccl_collect_vars([var(N, Ty, _)|Vs], [N-Ty|D0], D, G0, G, E0, E) :- ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_vars(Vs, D0, D, G1, G, E1, E).
+ccl_collect_typedefs([], T, T, G, G, E, E).
+ccl_collect_typedefs([var(N, Ty, _)|Vs], [N-Ty|T0], T, G0, G, E0, E) :- ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_typedefs(Vs, T0, T, G1, G, E1, E).
+ccl_collect_params([], G, G, E, E).
+ccl_collect_params([param(Ty, _)|Ps], G0, G, E0, E) :- ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_params(Ps, G1, G, E1, E).
+ccl_collect_type(base(_, Specs), G0, G, E0, E) :- !, ccl_collect_specs(Specs, G0, G, E0, E).
+ccl_collect_type(ptr(_, Ty), G0, G, E0, E) :- !, ccl_collect_type(Ty, G0, G, E0, E).
+ccl_collect_type(block(_, Ty), G0, G, E0, E) :- !, ccl_collect_type(Ty, G0, G, E0, E).
+ccl_collect_type(arr(_, Ty), G0, G, E0, E) :- !, ccl_collect_type(Ty, G0, G, E0, E).
+ccl_collect_type(fn(R, Ps, _), G0, G, E0, E) :- !, ccl_collect_type(R, G0, G1, E0, E1), ccl_collect_params(Ps, G1, G, E1, E).
+ccl_collect_type(_, G, G, E, E).
+ccl_collect_specs([], G, G, E, E).
+ccl_collect_specs([S|Ss], G0, G, E0, E) :- ccl_collect_spec(S, G0, G1, E0, E1), ccl_collect_specs(Ss, G1, G, E1, E).
+ccl_collect_spec(struct(Tag, Ms), G0, G, E0, E) :- Ms \== none, !, ( Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).
+ccl_collect_spec(union(Tag, Ms), G0, G, E0, E) :- Ms \== none, !, ( Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).
+ccl_collect_spec(enum(Tag, Es), G0, G, E0, E) :- Es \== none, !, ( Tag == anon -> G = G0 ; G0 = [Tag-Es|G] ), ccl_collect_enumerators(Es, 0, [], E0, E).
+ccl_collect_spec(_, G, G, E, E).
+ccl_collect_members([], G, G, E, E).
+ccl_collect_members([member(Ty, _, _)|Ms], G0, G, E0, E) :- ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_members(Ms, G1, G, E1, E).
+%% enumerators: a value may name an earlier one of the same enum, so the ones
+%% met so far are kept in a closed list (never memberchk on the open accumulator:
+%% it would bind its tail)
+ccl_collect_enumerators([], _, _, E, E).
+ccl_collect_enumerators([enumerator(N, Ex)|Es], Next, Sofar, [N-V|E0], E) :-
+    ( Ex == none -> V = Next ; ccl_const_eval_in(Ex, Sofar, V0) -> V = V0 ; V = Next ),
+    Next1 is V + 1, ccl_collect_enumerators(Es, Next1, [N-V|Sofar], E0, E).
+ccl_const_eval_in(id(N), Sofar, V) :- !, ( memberchk(N-V0, Sofar) -> V = V0 ; ccl_enum_value(N, V) ).
+ccl_const_eval_in(neg(Ex), Sofar, V) :- !, ccl_const_eval_in(Ex, Sofar, V0), V is -V0.
+ccl_const_eval_in(bin(Op, A, B), Sofar, V) :- !, ccl_const_eval_in(A, Sofar, X), ccl_const_eval_in(B, Sofar, Y), ccl_const_op(Op, X, Y, V).
+ccl_const_eval_in(cast(_, Ex), Sofar, V) :- !, ccl_const_eval_in(Ex, Sofar, V).
+ccl_const_eval_in(Ex, _, V) :- ccl_const_eval(Ex, V).
+
 ccl_note_item(declaration(_, _, Base, Ds)) :- !, ccl_note_tags(Base), ccl_declare_vars(Ds).
 ccl_note_item(typedef(_, Ds)) :- !, ccl_note_typedefs(Ds).
 ccl_note_item(declare(_, Base)) :- !, ccl_note_tags(Base).

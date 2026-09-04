@@ -36,6 +36,25 @@ what runs today.
   80 checks GREEN, including five real C files from the neighbours read
   entirely with their system headers.
 
+## The `cicili` command
+
+`bin/cicili` takes clang's arguments, so nothing about it is new:
+
+```sh
+cicili prog.c -o prog              # read, check, lower, compile, link
+cicili -c prog.c                   # prog.o        cicili -S prog.c   # prog.s
+cicili -emit-llvm -c prog.c        # prog.ll       cicili -fsyntax-only prog.c
+cicili -O2 a.c b.c util.o -lm -o app
+cicili -shared -O1 lib.c -o lib.dylib
+cicili -I include prog.c           cicili -ast-dump prog.c           cicili --version
+```
+
+`--version` prints the version, which every commit raises, and the back
+end's. A diagnostic is `file:line: error: what`, the exit status 1 when there is
+one; the knowledge base is `./KB` in the working directory, or `$CICILI_KB`,
+so headers are parsed once per project (`--no-kb` keeps everything in
+memory). `test/driver.sh` is its gate.
+
 ## The compiler, in four predicates
 
 ```prolog
@@ -330,6 +349,8 @@ library/ccl_format.pl    the global macros format, print, println
 library/ccl_ir.pl        cicili_ir: the lowering, the AST to LLVM IR text
 library/ccl_build.pl     cicili_compile and cicili_link
 library/ccl_check.pl     the safe part: the ownership check cicili_ir runs first
+library/ccl_driver.pl    what the cicili command does; bin/cicili reads the arguments
+test/driver.sh           the command's gate
 module/ccl_llvm.cicili   the embedded LLVM, a cocolog module over llvm-c (module/build-llvm.sh)
 test/compile.sh          the compiler's gate: test/c/run/*.c built, run, checked
 library/cicili.so        built output; never committed (library/*.pl is)
@@ -348,6 +369,7 @@ Build and prove:
 CICILI=~/Projects/GitHub/cicili COCOLOG=~/Projects/GitHub/cocolog sh module/build.sh
 sh test/reader.sh
 sh test/compile.sh
+sh test/driver.sh
 sh proof/run.sh
 ```
 

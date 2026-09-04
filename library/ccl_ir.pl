@@ -29,8 +29,8 @@
 :- use_module(library(ccl_check)).
 
 ccl_ir_units(Units, IR) :-
-    ccl_check_units(Units),                                             % the safe part first: a violation is a compile error
-    ir_reset, ccl_scope_init, ir_note_units(Units),
+    ir_reset, ccl_scope_init, ir_note_units(Units),                     % the symbol table, once
+    ccl_check_noted(Units),                                             % the safe part first: a violation is a compile error
     nb_setval('$ir_fdefs', []), nb_setval('$ir_gdefs', []),
     ir_units(Units),
     ir_assemble(IR).
@@ -46,7 +46,7 @@ ir_items([I|Is]) :- ir_item(I), ir_items(Is).
 %% ---- state -----------------------------------------------------------------------
 ir_reset :-
     ( once(catch(os_env('CCL_IR_TRACE', Tr), _, fail)), Tr \== '' -> nb_setval('$ir_trace', yes) ; nb_setval('$ir_trace', no) ),
-    nb_setval('$ir_reg', 0), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
+    nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
     nb_setval('$ir_externs', []), nb_setval('$ir_defined', []), nb_setval('$ir_gmap', []).
 ir_get(K, V) :- once(catch(nb_getval(K, V), _, fail)).
 ir_fresh(R) :- nb_getval('$ir_reg', N), N1 is N + 1, nb_setval('$ir_reg', N1), atomic_list_concat(['%t', N1], R).
@@ -120,10 +120,13 @@ ir_struct(Tag, Ms0, Name) :-
         ir_member_types(Ms, LLs), ir_join(LLs, ', ', Body),
         atomic_list_concat([Name, ' = type { ', Body, ' }'], Def),
         nb_getval('$ir_structs', Ss1), ir_replace(Ss1, Name, Def, Ss2), nb_setval('$ir_structs', Ss2) ).
+%% an anonymous struct is named by its members, in a registry of its own --
+%% not in '$ir_structs', where a name means "defined"
 ir_anon_name(Ms, Name) :-
-    nb_getval('$ir_structs', Ss),
-    ( member(N-anon(Ms0), Ss), Ms0 == Ms -> Name = N
-    ; length(Ss, K), atomic_list_concat(['%struct.anon.', K], Name), nb_setval('$ir_structs', [Name-anon(Ms)|Ss]) ).
+    ir_get('$ir_anons', As0), !, As = As0,
+    ( member(N-Ms0, As), Ms0 == Ms -> Name = N
+    ; length(As, K), atomic_list_concat(['%struct.anon.', K], Name), nb_setval('$ir_anons', [Name-Ms|As]) ).
+ir_anon_name(Ms, Name) :- nb_setval('$ir_anons', []), ir_anon_name(Ms, Name).
 ir_replace([], _, _, []).
 ir_replace([N-_|T], N, D, [N-D|T]) :- !.
 ir_replace([X|T], N, D, [X|T1]) :- ir_replace(T, N, D, T1).
@@ -560,7 +563,6 @@ ir_assemble(IR) :-
     append(['; cicili-lang', ''|SDefs], Strings, L1), append(L1, Gs, L2), append(L2, [''|Fs], L3), append(L3, Decls, L4),
     ir_join(L4, '\n', IR).
 ir_struct_defs([], []).
-ir_struct_defs([_-anon(_)|T], D) :- !, ir_struct_defs(T, D).
 ir_struct_defs([_-pending|T], D) :- !, ir_struct_defs(T, D).
 ir_struct_defs([_-Def|T], [Def|D]) :- ir_struct_defs(T, D).
 ir_declares([], _, []).

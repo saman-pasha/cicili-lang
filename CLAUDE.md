@@ -35,6 +35,9 @@ library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause p
 library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, else clang -c -x ir), cicili_link/3 (cc)
 library/ccl_check.pl     the safe part: owners (own), move, the flow walk; run first by cicili_ir
 test/c/safe/             programs the check must REFUSE, each with the error its .expect names
+bin/cicili               the command: clang's arguments, one cocolog run over ./KB (ccl_drive/2)
+library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, and diagnostics in clang's shape
+test/driver.sh           the command's gate; test/c/link and test/c/inc its fixtures
 test/compile.sh          the compiler's gate: every test/c/run/*.c built and run, its output checked
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh  ->  library/cicili.so
 module/ccl_llvm.cicili   the embedded LLVM: a cocolog module in Cicili over llvm-c; parse,
@@ -58,8 +61,19 @@ Build and prove, always in this order:
 CICILI=~/Projects/GitHub/cicili COCOLOG=~/Projects/GitHub/cocolog sh module/build.sh
 sh test/reader.sh
 sh test/compile.sh
+sh test/driver.sh
 sh proof/run.sh
 ```
+
+**`bin/cicili` takes clang's arguments** (owner's rule: no new flags to
+learn): `-c -S -emit-llvm -fsyntax-only -o -O0..-Oz -I -l -L -shared -v
+--version -ast-dump`; `-g -D -W -f -std` are accepted and ignored for now.
+It builds one Prolog options list and runs `ccl_drive/2` in one cocolog
+process over `./KB` (`$CICILI_KB`, or `--no-kb` for `--local`); the run ends
+`cicili: ok` or `cicili: N error(s)`, which the shell turns into the exit
+status. A diagnostic is `file:line: error: what` (`dr_diag/3`, one clause per
+error term; `once/1` around the report, since the callers' recovery fails
+after it).
 
 **The surface is four predicates** (owner's rule): `cicili_ast(+File, -AST)`
 (and `/3`), `cicili_ir(+Units, -IR)`, `cicili_compile(+IR, +ObjFile, +Flags)`,
@@ -132,9 +146,13 @@ is the global `'$ccl_macros'`, saved and restored with the others.
 (frames of Name-Type, innermost first; pushed by `ccl_compound` and at a
 function's parameters, only when `{` is next), `'$ccl_typedefs'`
 (Name-Type), `'$ccl_tags'` (Tag-Members; enumerators declared as int).
-`ccl_note_item/1` feeds them from every declaration, typedef, tag and
-function the grammar produces, and `ccl_include_scope/1` from every
-included unit. `library(ccl_infer)` reads them: `ccl_type_of/2` with the
+`ccl_note_item/1` feeds them one item at a time as the grammar produces
+them; a whole unit tree (an included unit, the checker's and the lowering's
+rebuild) goes through the BULK noter `ccl_items_note/1`, which collects
+into difference lists and sets each table once -- per-item `nb_setval/2`
+copies the whole list and was quadratic over the headers' 40k items.
+Never `memberchk` on the open accumulator: it binds the tail (the
+enumerators keep a closed list of their own). `library(ccl_infer)` reads them: `ccl_type_of/2` with the
 usual arithmetic conversions, `ccl_resolve_type/2`, `ccl_size_of/2` (LP64).
 
 **`name := expr;` is a declaration by inference** (owner's rule): the lexer
@@ -202,7 +220,8 @@ scope's bodies LIFO at its end, at `break`/`continue` (the frames inside the
 loop) and at `return` (all). Doubles print as LLVM's hex (`ir_double/2`);
 structs are named types registered once; an anonymous struct is keyed by
 its members. Externals used get `declare` lines from their prototypes.
-Not lowered yet: bitfields, unions' members, static locals, VLAs, `_Complex`,
+An anonymous struct's name lives in `'$ir_anons'`, not in `'$ir_structs'`
+where a name means "defined". Not lowered yet: bitfields, unions' members, static locals, VLAs, `_Complex`,
 `long double` (as double) -- each `error(not_lowered(What), where(F))`.
 
 ## How the safe part is checked
@@ -231,8 +250,12 @@ the header (compatible types, one token each -- `LLVMBool`,
 from a header cannot be named in Cicili at all: it goes behind a one-line
 raw C helper, `(code "static T ccl_ll_x(...) { ... }")`, itself declared with
 `(decl)` -- the numpy module's way. `(cof p)` is `*p`, `(? c a b)` the
-conditional, `(cond ((test) ...) ...)` a chain. A parameter may not be
-named `asm`. The build mirrors `module/build.sh` plus `llvm-config
+conditional, `(cond ((test) ...) ...)` a chain; a `let` initializer that is
+not a call is written `(T x . nil)` then `(set x ...)`. A parameter may not
+be named `asm`. **What `coco_m_error/3` returns is the predicate's answer,
+not a status** -- a helper that raises must hand that back in an out
+parameter and return 0 itself, or its caller walks on into LLVM with a null
+module (a segfault that looked like the error path's). The build mirrors `module/build.sh` plus `llvm-config
 --cflags/--ldflags`, `-lLLVM-C` and an rpath to LLVM's lib.
 
 ## Findings about the neighbours, worked around here
@@ -288,7 +311,11 @@ named `asm`. The build mirrors `module/build.sh` plus `llvm-config
 
 ## Commits
 
-Commit and push only when the owner asks. Every commit ends with
+Commit and push only when the owner asks. **Every commit raises the
+version** (owner's rule): the one string in `ccl_p_version` in
+`module/cicili.cicili`, `0.N` with N one more than the last commit's; then
+rebuild, since the `.so` carries it, and `bin/cicili --version` shows it.
+Every commit ends with
 
     Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
     Claude-Session: https://claude.ai/code/session_01FUuQ3oBiKs3XpXAEHLCL1F
