@@ -6,5 +6,6 @@
 set -e
 HERE=$(cd "$(dirname "$0")" && pwd)
 clang "$HERE/forty2.ll" -o "$HERE/forty2"
-"$HERE/forty2"; rc=$?
+# not `cmd; rc=$?': under set -e a non-zero exit -- the 42 we want -- would abort the script
+if "$HERE/forty2"; then rc=0; else rc=$?; fi
 if [ "$rc" = 42 ]; then echo "GREEN: LLVM IR -> native binary -> exit 42"; else echo "RED: exit $rc"; exit 1; fi

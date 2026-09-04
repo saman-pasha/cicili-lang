@@ -1,12 +1,13 @@
-# cicili-cpp — a Safe Modern C compiler to LLVM, written on cocolog
+# cicili-lang — a Safe Modern C compiler to LLVM, written on cocolog
 
-**Status: design, for review. Nothing here is built yet except the M0 proof
-below, which runs.**
+**Status: M0 (the LLVM path), M1 (the reader, with includes and the
+knowledge-base cache) and M1b (macros and the symbol table) are built and
+GREEN; M2, the first function lowered to a binary, is next.**
 
-cicili-cpp is a compiler for Cicili's language — Safe Modern C in
-S-expressions — that lowers straight to **LLVM IR** and produces a native
-object. It is **not a transpiler**: it does not emit C. Cicili (the existing
-one) emits C text and hands it to a C compiler; cicili-cpp does the
+cicili-lang is a compiler for Safe Modern C — C source, extended by macros
+written in Prolog — that lowers straight to **LLVM IR** and produces a
+native object. It is **not a transpiler**: it does not emit C. Cicili (the existing
+one) emits C text and hands it to a C compiler; cicili-lang does the
 compiler's own work — parse, type, check ownership, lower to IR — and reaches
 a binary through LLVM. The C compiler, where it appears, is only the
 assembler and linker driver for the IR, the way Cicili drives `cc` for
@@ -29,10 +30,10 @@ does the thing it is best at, and none is modified.
 
 | neighbour | its job here | how it is used, not touched |
 |---|---|---|
-| **cicili** | the LANGUAGE and its meaning: `func`, `struct`, `let`, `letin`, ownership, `maybe`/`either`, generics. Its `doc/DOC-C.md` and `doc/DOC-CPP.md` are the spec cicili-cpp compiles to the same meaning. And it is the language any NATIVE piece of cicili-cpp is written in — the LLVM binding and the driver are Cicili modules. | we read its docs and reuse its surface; we never edit its Common Lisp transpiler. cicili-cpp is a second, independent back end for the same language: LLVM where the original is C. |
+| **cicili** | the LANGUAGE and its meaning: `func`, `struct`, `let`, `letin`, ownership, `maybe`/`either`, generics. Its `doc/DOC-C.md` and `doc/DOC-CPP.md` are the spec cicili-lang compiles to the same meaning. And it is the language any NATIVE piece of cicili-lang is written in — the LLVM binding and the driver are Cicili modules. | we read its docs and reuse its surface; we never edit its Common Lisp transpiler. cicili-lang is a second, independent back end for the same language: LLVM where the original is C. |
 | **cocolog** | the compiler's HOST. Every pass is cocolog clauses: the reader → an AST of terms, the type checker (unification), the ownership and lifetime checker (the "safe"), and the lowering to LLVM IR. Its DCG reads the surface; its store holds the symbol tables; the objects-and-modules module already here may structure the passes. | the compiler is a set of `.pl` files and, where a pass needs C speed, cocolog modules — all loaded through `COCOLOG_LIBRARY`, none of cocolog's own source changed. |
 | **ZiguratIP** | through cocolog's store: a PERSISTENT compilation cache. A module's checked AST and its emitted IR, keyed by the hash of its source, live in the store, so a rebuild recompiles only what changed — cocolog's suspend-to-store nature applied to compilation. | reached only as cocolog's backing store, never directly. A design proposal, not required for M0–M2. |
-| **LLVM** | the TARGET and the optimizer and the code generator. cicili-cpp emits LLVM IR; LLVM lowers it to native code. | reached first as textual IR + `clang` as assembler/linker (PROVEN, see M0), later — if wanted — as an in-memory `llvm-c` binding written as a Cicili cocolog module, for optimization passes and object emission without shelling out. |
+| **LLVM** | the TARGET and the optimizer and the code generator. cicili-lang emits LLVM IR; LLVM lowers it to native code. | reached first as textual IR + `clang` as assembler/linker (PROVEN, see M0), later — if wanted — as an in-memory `llvm-c` binding written as a Cicili cocolog module, for optimization passes and object emission without shelling out. |
 
 ## The pipeline
 
@@ -81,10 +82,18 @@ it is done (see below); the checker and the lowering take the AST from here.
   this machine before any of the compiler exists.
 * **M1 — the reader. DONE.** `cicili/2,3` over two DCGs: C11 plus the GNU
   forms Cicili's emitted C carries (`__attribute__`, `typeof`, `({…})`,
-  compound literals). `test/reader.sh`: 32 checks GREEN, one per construct,
+  compound literals), every `#include` found and read, the knowledge base
+  as the cache. `test/reader.sh`: 77 checks GREEN, one per construct,
   the error positions, and five real C files from the neighbours
   (`cicili/test/c/main.c`, `shared.c`, `macro.c`, `example/cimath.c`,
   `numpy_example.c`) read entirely.
+* **M1b — macros and the symbol table. DONE.** `#include "m.pl"` makes
+  every predicate of a Prolog file a macro over ASTs (a DCG rule a variadic
+  one), run at parse time; the parser keeps the scope, the typedefs and the
+  tags as it reads, and `library(ccl_infer)` gives a macro type inference
+  and layout over them. This is Cicili's macro philosophy -- the language
+  extended in the language that compiles it -- with Prolog as the macro
+  language and C as the surface.
 * **M2 — a function to a binary.** cocolog clauses that lower a parsed
   `int main(void) { return 42; }` to `.ll`, driven through clang, exit 42 —
   end to end, the compiler's own IR. A gate that compiles and runs it.
@@ -95,8 +104,25 @@ it is done (see below); the checker and the lowering take the AST from here.
   deterministic cleanup lowered as IR, and the first ownership check: use
   after `move` is a compile error naming the form. This is where "Safe
   Modern C" stops being a tagline.
-* **M4 — the cache.** The store keyed by source hash; a rebuild that touches
-  one module recompiles one module.
+* **M4 — the cache. STARTED at the reader.** Every file read whole -- the
+  source and every header under it -- is in the store as
+  `'$ccl_ast'(Path, key(MTime, ReaderVersion), …)` and loaded from there
+  while the file's time is unchanged (`library(ccl_include)`); a bare
+  `--embed` is the per-directory `./KB`. The checked AST and the emitted
+  IR join it when they exist, so a rebuild that touches one file redoes one
+  file.
+* **M5 — the C++ reader.** After the C part is finished (M2 to M4), the
+  reader grows the C++ forms, because the libraries are in C++: classes
+  with member functions, constructors and destructors and access labels;
+  `namespace` and `::`; references; `new`/`delete`; templates, on
+  declarations and in type names (which needs the symbol table to tell
+  `vec<int>` from a comparison); `auto`; lambdas; `operator` functions;
+  default arguments; `extern "C"`. Gated the same way: a sample per
+  construct, then a real C++ file from the neighbours read whole (Cicili's
+  emitted C++ first); `<vector>` and friends preprocess to tens of
+  thousands of lines and are a one-time cost per project through the cache.
+  `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
+  learns `this`, bases and overloads.
 * **Later — the llvm-c module**, optimization passes, and the objects layer's
   fate (below).
 

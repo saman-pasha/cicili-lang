@@ -3,6 +3,6 @@
 #include <stdlib.h>
 
 int main(void) {
-    printf("hello, %s\n", "cicili-cpp");   // a line comment
+    printf("hello, %s\n", "cicili-lang");   // a line comment
     return 0;
 }

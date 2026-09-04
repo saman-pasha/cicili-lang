@@ -1,4 +1,4 @@
-;;;; cicili-cpp -- library(cicili): Prolog with objects and modules, as a
+;;;; cicili-lang -- library(cicili): Prolog with objects and modules, as a
 ;;;; cocolog module.
 ;;;;
 ;;;; WHAT THIS IS. An object is a named scope with slots and methods; a
@@ -70,11 +70,13 @@
            ;; cicili/2 acts like phrase/2 -- the whole file or a syntax error
            ;; naming the line -- and cicili/3 like phrase/3, answering the
            ;; tokens left unparsed. The grammars are library(ccl_syntax).
-           ":- use_module(library(ccl_syntax))."
+           ;; library(ccl_include) loads library(ccl_syntax); an #include met while
+           ;; parsing is found on the inclusion path and read into the AST too
+           ":- use_module(library(ccl_include))."
            ;; the error names the line the unread item begins on, and the farthest
            ;; line the grammar reached inside it -- where it actually gave up
            "cicili(File, AST) :- cicili(File, AST, Rest), ( Rest == [] -> true ; Rest = [tok(_, _, L)|_], ccl_farthest(Far), throw(error(syntax_error(cicili(File, line(L), near(Far))), cicili(File, AST))) )."
-           "cicili(File, AST, Rest) :- read_file_to_codes(File, Codes), ccl_tokens(Codes, Tokens, RestCodes), ( RestCodes == [] -> true ; ccl_line_of(Codes, RestCodes, L), throw(error(syntax_error(cicili(File, lexical, line(L))), cicili(File, AST, Rest))) ), ccl_unit(Tokens, AST, Rest)."
+           "cicili(File, AST, Rest) :- ccl_read_file(File, AST, Rest)."
 
            ;; ---- the two operators, and the tables ------------------------
            ":- op(200, xfy, ::)."
@@ -107,7 +109,7 @@
            ;; ---- the snapshot, and what a file added after it ---------------
            "'$ccl_snapshot'(Snap) :- findall(F/A-N, ( current_predicate(F/A), '$ccl_count'(F, A, N) ), Snap)."
            "'$ccl_count'(F, A, N) :- functor(H, F, A), ( catch(findall(x, clause(H, _), Xs), _, fail) -> length(Xs, N) ; N = 0 )."
-           "'$ccl_collect'(Snap, Added) :- findall(H-B, ( current_predicate(F/A), \\+ '$ccl_reserved'(F/A), functor(H0, F, A), ( memberchk(F/A-N, Snap) -> true ; N = 0 ), '$ccl_count'(F, A, Now), Now > N, catch(findall(H0-B0, clause(H0, B0), All), _, fail), '$ccl_drop'(N, All, New), member(H-B, New) ), Added)."
+           "'$ccl_collect'(Snap, Added) :- findall(H-B, ( current_predicate(F/A), \\+ '$ccl_reserved'(F/A), functor(H0, F, A), ( memberchk(F/A-N, Snap) -> true ; N = 0 ), '$ccl_count'(F, A, Now), Now > N, once(catch(findall(H0-B0, clause(H0, B0), All), _, fail)), '$ccl_drop'(N, All, New), member(H-B, New) ), Added)."
            "'$ccl_drop'(0, L, L) :- !."
            "'$ccl_drop'(N, [_|T], L) :- N1 is N - 1, '$ccl_drop'(N1, T, L)."
            "'$ccl_reserved'(object/1). '$ccl_reserved'(object/2). '$ccl_reserved'(end_object/0)."
@@ -122,7 +124,7 @@
            "'$ccl_methods'([state(_)-_|T], C, Ms) :- !, '$ccl_methods'(T, C, Ms)."
            "'$ccl_methods'([H-B|T], C, Ms) :- '$ccl_method'(C, Ms, H, B), '$ccl_methods'(T, C, Ms)."
            "'$ccl_retract_all'([])."
-           "'$ccl_retract_all'([H-B|T]) :- ( retract((H :- B)) -> true ; true ), functor(H, F, A), ( catch(clause(H, _), _, fail) -> true ; catch(abolish(F/A), _, true) ), '$ccl_retract_all'(T)."
+           "'$ccl_retract_all'([H-B|T]) :- ( retract((H :- B)) -> true ; true ), functor(H, F, A), ( catch(clause(H, _), _, fail) -> true ; once(catch(abolish(F/A), _, true)) ), '$ccl_retract_all'(T)."
            "'$ccl_method'(C, Ms, H, B) :- H =.. [F|Args], length(Args, A), atomic_list_concat([C, '::', F], QF), Head =.. [QF, Self|Args], '$ccl_slots_of'(C, Slots), '$ccl_body'(C, Self, Slots, Ms, B, Body), assertz((Head :- Body))."
 
            ;; every slot the class has: its own and its ancestors'

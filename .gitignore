@@ -9,3 +9,5 @@ module/sdk.cicili
 .DS_Store
 proof/forty2
 proof/*.o
+# the per-directory knowledge base a bare --embed opens; the reader caches parsed files there
+KB/
