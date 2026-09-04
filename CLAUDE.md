@@ -34,7 +34,11 @@ library/ccl_format.pl    format, print, println: the global macros, Rust's holes
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh  ->  library/cicili.so
 proof/forty2.ll, run.sh  M0: LLVM IR through clang to a native binary, exit 42
 test/config.sh           the neighbours and the library path, sourced by every gate
-test/reader.sh           the reader's gate; test/c/hello.c and rich.c its samples
+test/reader.pl           the reader's gate: a cocolog program, one clause per check (71),
+                         one process over one fresh store, every header parsed once
+test/reader.sh           runs it, and adds the check only a second process can make
+test/c/                  the gate's fixtures: hello.c, rich.c, the macro, :=, pattern,
+                         format and shorthand samples, the bad ones
 test/objects.sh          the objects layer's gate
 tutorials/NN-*.pl        the objects layer's lessons; goal `main', last line `done'
 DESIGN.md                the architecture, the neighbours' roles, M0..M4
@@ -159,8 +163,8 @@ it stored as `ref(Path, How)` and re-linked on load through
 Both predicates are declared dynamic by `ccl_kb_ready/0`. A bare `--embed` is `./KB` in the working directory -- the
 per-project store. BUMP `ccl_reader_version/1` whenever the grammar
 changes, or a partial read from an older grammar stays cached. The reader
-gate runs every check in its own process over one `--embed "$D/kb"`, so a
-header is parsed by the first check that needs it and loaded by the rest.
+gate is one process over one fresh `--embed`, so every header is parsed
+once; `test/reader.sh` then asks a second process for what the first read.
 
 ## Findings about the neighbours, worked around here
 
@@ -174,6 +178,12 @@ header is parsed by the first check that needs it and loaded by the rest.
   the `catch/3` around it is probably the same defect seen from the other
   side; loops that can raise stay plain recursion, and `new/3` checks its
   initial values BEFORE the instance exists.
+* **Consulting a file of about 70 facts whose arguments carry goals into
+  an embedded store segfaults cocolog**, so the gate's checks are clauses
+  (`k1 :- check(Name, Goal).`), not facts driven by `findall/3`.
+* **`atomic_list_concat/2` with an unbound element segfaults cocolog**
+  (exit 139, no message) instead of raising an instantiation error; the
+  gate's `k17` did that before its scratch directory was bound.
 * **An unset global throws** (`nb_getval/2`: existence_error), so a global
   is read through `ccl_global/3` or a `once(catch(...))`.
 * cocolog has `abolish/1`, `clause/2` on consulted clauses and `retract/1`

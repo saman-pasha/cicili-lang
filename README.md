@@ -232,7 +232,8 @@ library/ccl_format.pl    the global macros format, print, println
 library/cicili.so        built output; never committed (library/*.pl is)
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh
 proof/                   M0: LLVM IR to a native binary, and the script that proves it
-test/reader.sh           the reader's gate; test/c/ its C samples
+test/reader.pl           the reader's gate, a cocolog program: 71 checks in one process
+test/reader.sh           runs it; test/c/ holds its fixtures
 test/objects.sh          the objects layer's gate
 tutorials/NN-*.pl        the objects layer's lessons, goal `main', last line `done'
 DESIGN.md                the architecture, the four neighbours' roles, the milestones
