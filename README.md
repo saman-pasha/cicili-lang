@@ -20,24 +20,67 @@ what runs today.
 * **M0 -- the LLVM path.** `proof/run.sh`: a hand-written LLVM IR module,
   compiled by the system `clang` (which consumes textual IR and drives the
   LLVM backend, no LLVM install) to a native binary that exits 42. GREEN.
-* **M1 -- the reader.** `cicili(+File, -AST)` reads a C file whole into an
+* **M2 -- the lowering.** `cicili_ir/2`, `cicili_compile/3`, `cicili_link/3`:
+  C11's core -- every type but bitfields and unions, every statement and
+  operator, calls and variadic calls, structs by value and by pointer,
+  `defer` -- lowered to LLVM IR and run. `test/compile.sh`: nine programs
+  built, run and checked, GREEN.
+* **M1 -- the reader.** `cicili_ast(+File, -AST)` reads a C file whole into an
   AST, through a DCG; each `#include` is found on the toolchain's path and
   read too; the knowledge base remembers every file by its modification
   time; a `.pl` included is a set of macros over ASTs with type inference.
   80 checks GREEN, including five real C files from the neighbours read
   entirely with their system headers.
 
-## The reader: `cicili/2`, like `phrase/2`
+## The compiler, in four predicates
 
 ```prolog
 ?- use_module(library(cicili)).
-?- cicili('test/c/hello.c', AST).
+?- cicili_ast('prog.c', AST),                     % the file, read whole, headers and all
+   cicili_ir([AST], IR),                          % the units lowered to one LLVM IR module (text)
+   cicili_compile(IR, 'prog.o', ['-O1']),          % the object file, through LLVM
+   cicili_link(['prog.o'], [], 'prog').           % the binary (or a library: ['-shared'])
+```
+
+`cicili_ir` rebuilds the symbol table from the units the way the parser
+builds it and lowers with the same inference the macros use: allocas in the
+entry block, C's usual conversions, `defer` as the static cleanup chain,
+structs laid out as LLVM named types, calls through the prototypes the
+headers gave. `cicili_compile` parses, verifies, optimizes and emits through
+the embedded LLVM, `library(ccl_llvm)`, a cocolog module over `llvm-c` built
+by `module/build-llvm.sh` from Homebrew's LLVM; where that module is not
+built it goes through `clang -c -x ir`, the same backend by another door.
+`cicili_link` drives the system linker. Errors: `not_lowered(What)` with the function,
+`compile_failed(Message)`, `link_failed(Message)`. `test/compile.sh` builds
+and runs the programs under `test/c/run/` and checks what they print and
+return.
+
+## The embedded LLVM: `library(ccl_llvm)`
+
+A cocolog module written in Cicili over LLVM's C API: `ccl_llvm_version/1`,
+`ccl_llvm_triple/1`, `ccl_llvm_check(+IR, -Report)` (`ok`, or what the
+parser or the verifier said, with its line), and `ccl_llvm_compile(+IR,
++File, +Flags)`: the IR text parsed in a fresh context, verified, given the
+host's target machine and data layout, run through `default<On>` for the
+`-O` flag given (`-O1` if none; `-O0` runs nothing), and written as an
+object file, or assembly with `-S`. LLVM is Homebrew's (`brew install
+llvm`; Apple's toolchain ships no `llvm-c`):
+
+```sh
+LLVM=/usr/local/opt/llvm sh module/build-llvm.sh     # -> library/ccl_llvm.so
+```
+
+## The reader: `cicili_ast/2`, like `phrase/2`
+
+```prolog
+?- use_module(library(cicili)).
+?- cicili_ast('test/c/hello.c', AST).
 ```
 
 reads the whole file -- two DCGs, one over character codes into tokens
 that carry their line, one over tokens into terms -- and answers the AST,
 or throws a syntax error naming the line the unread item begins on and the
-line the grammar gave up at. `cicili(+File, -AST, -Rest)` is the `phrase/3`
+line the grammar gave up at. `cicili_ast(+File, -AST, -Rest)` is the `phrase/3`
 form: the AST of what parsed and the tokens that remain.
 
 For this file:
@@ -103,7 +146,7 @@ it reads is C11 plus the GNU and Apple forms system headers and Cicili's
 emitted C carry (`__attribute__`, `__asm`, `typeof`, `({ ... })`, `_Nonnull`,
 `(^block)`); the C++ forms are not read yet -- they come after the C part
 of the compiler is finished, because the libraries are in C++ (`DESIGN.md`,
-M5) -- and `cicili/3` says where a file stopped.
+M5) -- and `cicili_ast/3` says where a file stopped.
 
 ## Macros: `#include "m.pl"`
 
@@ -247,12 +290,16 @@ the compiler's authoring layer or is set aside is decided after the design.
 
 ```
 module/cicili.cicili     the module: registration, ccl_version/1, and the Prolog half
-                         (cicili/2,3 and the objects layer)
+                         (cicili_ast/2,3 and the objects layer)
 library/ccl_syntax.pl    the two grammars: the lexer and the parser, as DCGs; the symbol table
 library/ccl_include.pl   #include: the inclusion path, headers read raw or preprocessed, .pl macro
                          files, the knowledge-base cache
 library/ccl_infer.pl     what a macro can ask: type inference over the symbol table, sizes, lookups
 library/ccl_format.pl    the global macros format, print, println
+library/ccl_ir.pl        cicili_ir: the lowering, the AST to LLVM IR text
+library/ccl_build.pl     cicili_compile and cicili_link
+module/ccl_llvm.cicili   the embedded LLVM, a cocolog module over llvm-c (module/build-llvm.sh)
+test/compile.sh          the compiler's gate: test/c/run/*.c built, run, checked
 library/cicili.so        built output; never committed (library/*.pl is)
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh
 proof/                   M0: LLVM IR to a native binary, and the script that proves it
@@ -268,6 +315,7 @@ Build and prove:
 ```sh
 CICILI=~/Projects/GitHub/cicili COCOLOG=~/Projects/GitHub/cocolog sh module/build.sh
 sh test/reader.sh
+sh test/compile.sh
 sh proof/run.sh
 ```
 

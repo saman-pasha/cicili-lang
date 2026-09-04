@@ -28,7 +28,7 @@
 %% (`clang -E -x c -v /dev/null', the lines between "search starts here"
 %% and "End of search list") and cached; ccl_include_path_reset/0 forgets it.
 %%
-%% THE CACHE: a file read whole -- the one cicili/2 was given, and every
+%% THE CACHE: a file read whole -- the one cicili_ast/2 was given, and every
 %% include -- is remembered in the knowledge base keyed by its modification
 %% time and the reader's version, one clause per top-level item, so under
 %% --embed it is in the store for the next process and is loaded from there
@@ -38,7 +38,7 @@
 %% directory and each system header is parsed once per project.
 %%
 %% THE SURFACE:
-%%   ccl_read_file(+File, -AST, -Rest)      the top of cicili/3
+%%   ccl_read_file(+File, -AST, -Rest)      the top of cicili_ast/3
 %%   ccl_kb_forget                          drop every remembered file
 %%   ccl_kb_forget_file(+Path)              drop one
 %%   ccl_include(+Spec, -Resolved)          one include, from the current file
@@ -93,7 +93,7 @@ ccl_read_file(File, AST, Rest) :-
     read_file_to_codes(File, Codes),
     ccl_tokens(Codes, Tokens, RestCodes),
     ( RestCodes == [] -> true
-    ; ccl_line_of(Codes, RestCodes, L), throw(error(syntax_error(cicili(File, lexical, line(L))), cicili(File))) ),
+    ; ccl_line_of(Codes, RestCodes, L), throw(error(syntax_error(cicili_ast(File, lexical, line(L))), cicili_ast(File))) ),
     ccl_with_file(File, ( ccl_unit(Tokens, AST, Rest), ccl_farthest(F) )),
     nb_setval('$ccl_far', F),
     ( Rest == [] -> ccl_kb_remember(File, top, AST) ; true ).
@@ -156,12 +156,12 @@ ccl_with_file(File, Goal) :-
     ( catch(Goal, E, (ccl_restore_globals(Saved), throw(E)))
     -> ccl_restore_globals(Saved)
     ;  ccl_restore_globals(Saved), fail ).
-ccl_save_globals(g(F, E, Far, M, Sc, Td, Tg)) :-
+ccl_save_globals(g(F, E, Far, M, Sc, Td, Tg, En)) :-
     ccl_global('$ccl_file', F, none), ccl_global('$ccl_env', E, []), ccl_global('$ccl_far', Far, 0), ccl_global('$ccl_macros', M, []),
-    ccl_global('$ccl_scope', Sc, [[]]), ccl_global('$ccl_typedefs', Td, []), ccl_global('$ccl_tags', Tg, []).
-ccl_restore_globals(g(F, E, Far, M, Sc, Td, Tg)) :-
+    ccl_global('$ccl_scope', Sc, [[]]), ccl_global('$ccl_typedefs', Td, []), ccl_global('$ccl_tags', Tg, []), ccl_global('$ccl_enums', En, []).
+ccl_restore_globals(g(F, E, Far, M, Sc, Td, Tg, En)) :-
     nb_setval('$ccl_file', F), nb_setval('$ccl_env', E), nb_setval('$ccl_far', Far), nb_setval('$ccl_macros', M),
-    nb_setval('$ccl_scope', Sc), nb_setval('$ccl_typedefs', Td), nb_setval('$ccl_tags', Tg).
+    nb_setval('$ccl_scope', Sc), nb_setval('$ccl_typedefs', Td), nb_setval('$ccl_tags', Tg), nb_setval('$ccl_enums', En).
 ccl_global(K, V, D) :- ( catch(nb_getval(K, V0), _, fail), V0 \== '$unset' -> V = V0 ; V = D ).
 
 %% ---- the directive's text -----------------------------------------------------

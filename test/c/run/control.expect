@@ -1,0 +1,7 @@
+for 8 12
+while 0 15
+do 45
+other 3
+medium
+goto 3
+exit 1

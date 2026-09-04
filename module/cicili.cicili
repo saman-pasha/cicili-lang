@@ -67,16 +67,23 @@
   (FORMAT NIL "~{~A ~}"
           (LIST
            ;; ---- the reader: a C file, read whole, into an AST ----------------
-           ;; cicili/2 acts like phrase/2 -- the whole file or a syntax error
-           ;; naming the line -- and cicili/3 like phrase/3, answering the
+           ;; cicili_ast/2 acts like phrase/2 -- the whole file or a syntax error
+           ;; naming the line -- and cicili_ast/3 like phrase/3, answering the
            ;; tokens left unparsed. The grammars are library(ccl_syntax).
            ;; library(ccl_include) loads library(ccl_syntax); an #include met while
            ;; parsing is found on the inclusion path and read into the AST too
            ":- use_module(library(ccl_include))."
            ;; the error names the line the unread item begins on, and the farthest
            ;; line the grammar reached inside it -- where it actually gave up
-           "cicili(File, AST) :- cicili(File, AST, Rest), ( Rest == [] -> true ; Rest = [tok(_, _, L)|_], ccl_farthest(Far), throw(error(syntax_error(cicili(File, line(L), near(Far))), cicili(File, AST))) )."
-           "cicili(File, AST, Rest) :- ccl_read_file(File, AST, Rest)."
+           "cicili_ast(File, AST) :- cicili_ast(File, AST, Rest), ( Rest == [] -> true ; Rest = [tok(_, _, L)|_], ccl_farthest(Far), throw(error(syntax_error(cicili_ast(File, line(L), near(Far))), cicili_ast(File, AST))) )."
+           "cicili_ast(File, AST, Rest) :- ccl_read_file(File, AST, Rest)."
+           ;; the rest of the compiler: the lowering (library(ccl_ir)), the object
+           ;; and the link (library(ccl_build))
+           ":- use_module(library(ccl_ir))."
+           ":- use_module(library(ccl_build))."
+           "cicili_ir(Units, IR) :- ccl_ir_units(Units, IR)."
+           "cicili_compile(IR, File, Flags) :- ccl_compile(IR, File, Flags)."
+           "cicili_link(Objects, Flags, Out) :- ccl_link(Objects, Flags, Out)."
 
            ;; ---- the two operators, and the tables ------------------------
            ":- op(200, xfy, ::)."

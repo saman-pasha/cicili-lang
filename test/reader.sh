@@ -21,7 +21,7 @@ echo "$out" | grep -aq "^GREEN\|^RED" || { echo "RED: the gate did not finish"; 
 
 echo "-- a later process, the same store"
 s=$(date +%s)
-got=$("$C" --embed "$D/kb" query "use_module(library(cicili)), ccl_kb_ready, '\$ccl_ast'(P, _, meta(included(_), _, _)), sub_atom(P, _, _, 0, '/stdio.h'), cicili('$ROOT/test/c/hello.c', U), ccl_declares(U, printf, _), write(answer(yes)), nl" 2>&1 | grep -aoE 'answer\(.*\)' | head -1)
+got=$("$C" --embed "$D/kb" query "use_module(library(cicili)), ccl_kb_ready, '\$ccl_ast'(P, _, meta(included(_), _, _)), sub_atom(P, _, _, 0, '/stdio.h'), cicili_ast('$ROOT/test/c/hello.c', U), ccl_declares(U, printf, _), write(answer(yes)), nl" 2>&1 | grep -aoE 'answer\(.*\)' | head -1)
 t=$(( $(date +%s) - s ))
 if [ "$got" = "answer(yes)" ] && [ "$t" -lt 5 ]; then
   printf 'ok   %s\n' "a later process finds hello.c's headers in the store and reads it in ${t} s"

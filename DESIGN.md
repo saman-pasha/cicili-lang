@@ -64,9 +64,9 @@ compiler.
 
 ## The source surface: C, read by a DCG (decided)
 
-The input is a **C/C++ source file**, read whole. `cicili(+File, -AST)`
+The input is a **C/C++ source file**, read whole. `cicili_ast(+File, -AST)`
 acts like `phrase/2`: it reads the file entirely and, through a DCG, answers
-its AST; `cicili/3` is the `phrase/3` form, answering what remained. The
+its AST; `cicili_ast/3` is the `phrase/3` form, answering what remained. The
 grammars are `library/ccl_syntax.pl`: a lexer over character codes into
 tokens that carry their line, and a parser over tokens into terms. The
 preprocessor is not expanded; a `#` line is a node, and typedef names from
@@ -80,7 +80,7 @@ it is done (see below); the checker and the lowering take the AST from here.
   prints a line and exits 42. No LLVM install: Apple clang consumes textual
   IR and drives the backend. This proves the target end of the pipeline on
   this machine before any of the compiler exists.
-* **M1 — the reader. DONE.** `cicili/2,3` over two DCGs: C11 plus the GNU
+* **M1 — the reader. DONE.** `cicili_ast/2,3` over two DCGs: C11 plus the GNU
   forms Cicili's emitted C carries (`__attribute__`, `typeof`, `({…})`,
   compound literals), every `#include` found and read, the knowledge base
   as the cache. `test/reader.sh`: 80 checks GREEN, one per construct,
@@ -94,12 +94,15 @@ it is done (see below); the checker and the lowering take the AST from here.
   and layout over them. This is Cicili's macro philosophy -- the language
   extended in the language that compiles it -- with Prolog as the macro
   language and C as the surface.
-* **M2 — a function to a binary.** cocolog clauses that lower a parsed
-  `int main(void) { return 42; }` to `.ll`, driven through clang, exit 42 —
-  end to end, the compiler's own IR. A gate that compiles and runs it.
-* **M2b — the C core.** Integer and float types, arithmetic, locals, `if`,
-  `while`, `for`, calls, `printf`. Each with a gate program that runs and
-  checks its result.
+* **M2 — the lowering. DONE.** `cicili_ir/2` lowers the units to an LLVM
+  IR module, `cicili_compile/3` makes the object, `cicili_link/3` the
+  binary: C11's core (every type but bitfields and unions, every statement
+  and operator, variadic calls, structs by value and by pointer, `defer` as
+  the static cleanup chain) built and run by `test/compile.sh`, which
+  checks each program's output and exit code -- through the embedded
+  LLVM, `library(ccl_llvm)`, a cocolog module over `llvm-c` (parse, verify,
+  target, passes, object), with `clang -c -x ir` as the door where the
+  module is not built.
 * **M3 — structs and the safe part.** `struct`, members, scopes and
   `defer` lowered as IR, and the first ownership check: use after `move`
   is a compile error naming the form. This is where "Safe Modern C" stops
@@ -133,8 +136,8 @@ it is done (see below); the checker and the lowering take the AST from here.
   thousands of lines and are a one-time cost per project through the cache.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
-* **Later — the llvm-c module**, optimization passes, and the objects layer's
-  fate (below).
+* **Later — the objects layer's fate (below)**, and, on the LLVM module
+  already here, ORC JIT: a macro running C at compile time.
 
 Nothing is claimed before its GREEN line, the same rule as the neighbours.
 

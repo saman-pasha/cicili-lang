@@ -1,0 +1,235 @@
+;;;; cicili-lang -- library(ccl_llvm): the embedded LLVM, as a cocolog module.
+;;;;
+;;;; cicili_compile/3 (library(ccl_build)) comes here when this module is
+;;;; built: the IR module text is parsed in an LLVM context, verified, given
+;;;; the host's target and data layout, run through the pass pipeline the
+;;;; flags ask for, and written as an object file -- all inside the process,
+;;;; through llvm-c, no clang. Errors are what LLVM says, as the detail of
+;;;; error(ccl_llvm(What), Detail).
+;;;;
+;;;; THE SURFACE:
+;;;;   ccl_llvm_version(-Atom)              LLVM's version, e.g. '23.1.0'
+;;;;   ccl_llvm_triple(-Atom)               the host's target triple
+;;;;   ccl_llvm_check(+IR, -Report)         parse and verify only: ok, or the message
+;;;;   ccl_llvm_compile(+IR, +File, +Flags) the object (or assembly) file
+;;;;     Flags: '-O0' .. '-O3', '-Os', '-Oz' (the pipeline default<On>; -O1 if none),
+;;;;            '-S' for assembly instead of an object; others are ignored
+;;;;
+;;;; BUILD: sh module/build-llvm.sh, with LLVM naming the LLVM prefix
+;;;; (Homebrew's, /usr/local/opt/llvm or /opt/homebrew/opt/llvm).
+
+(DEFPARAMETER *ccl-llvm-predicates*
+  '(("ccl_llvm_version" 1 ccl_llvm_p_version)
+    ("ccl_llvm_triple"  1 ccl_llvm_p_triple)
+    ("ccl_llvm_check"   2 ccl_llvm_p_check)
+    ("ccl_llvm_compile" 3 ccl_llvm_p_compile)))
+
+(DEFPARAMETER *ccl-llvm-prolog*
+  (FORMAT NIL "~{~A ~}"
+          (LIST "ccl_llvm_loaded.")))
+
+(source "ccl_llvm.c"
+  (make :std #t :compile #f)
+
+  (import "./sdk.cicili")
+  (coco-sdk)
+
+  (include <stdio.h>)
+  (include <stdlib.h>)
+  (include <string.h>)
+  (include <llvm-c/Core.h>)
+  (include <llvm-c/IRReader.h>)
+  (include <llvm-c/Analysis.h>)
+  (include <llvm-c/Target.h>)
+  (include <llvm-c/TargetMachine.h>)
+  (include <llvm-c/Error.h>)
+  (include <llvm-c/Transforms/PassBuilder.h>)
+
+  ;;; What Cicili is told of llvm-c: the functions used, prototypes mirroring
+  ;;; the headers (compatible types, one token each); and the enum constants
+  ;;; and the static-inline initializers, which only raw C can name, behind
+  ;;; five small helpers the way the numpy module wraps its macros.
+  (@define (code "uint_t unsigned"))
+  (code "static void ccl_ll_native(void) { LLVMInitializeNativeTarget(); LLVMInitializeNativeAsmPrinter(); LLVMInitializeNativeAsmParser(); }")
+  (code "static LLVMCodeGenOptLevel ccl_ll_codegen(int l) { return l <= 0 ? LLVMCodeGenLevelNone : l == 1 ? LLVMCodeGenLevelLess : l == 2 ? LLVMCodeGenLevelDefault : LLVMCodeGenLevelAggressive; }")
+  (code "static LLVMRelocMode ccl_ll_reloc(void) { return LLVMRelocPIC; }")
+  (code "static LLVMCodeModel ccl_ll_model(void) { return LLVMCodeModelDefault; }")
+  (code "static LLVMVerifierFailureAction ccl_ll_verify_action(void) { return LLVMReturnStatusAction; }")
+  (code "static LLVMCodeGenFileType ccl_ll_filetype(int emit_asm) { return emit_asm ? LLVMAssemblyFile : LLVMObjectFile; }")
+  (decl) (func ccl_ll_native ())
+  (decl) (func ccl_ll_codegen ((int l)) (out LLVMCodeGenOptLevel))
+  (decl) (func ccl_ll_reloc () (out LLVMRelocMode))
+  (decl) (func ccl_ll_model () (out LLVMCodeModel))
+  (decl) (func ccl_ll_verify_action () (out LLVMVerifierFailureAction))
+  (decl) (func ccl_ll_filetype ((int emit_asm)) (out LLVMCodeGenFileType))
+  (decl) (func LLVMGetVersion ((uint_t * major) (uint_t * minor) (uint_t * patch)))
+  (decl) (func LLVMContextCreate () (out LLVMContextRef))
+  (decl) (func LLVMContextDispose ((LLVMContextRef c)))
+  (decl) (func LLVMCreateMemoryBufferWithMemoryRangeCopy ((const char * data) (size_t len) (const char * name)) (out LLVMMemoryBufferRef))
+  (decl) (func LLVMParseIRInContext ((LLVMContextRef c) (LLVMMemoryBufferRef b) (LLVMModuleRef * m) (char ** msg)) (out LLVMBool))
+  (decl) (func LLVMVerifyModule ((LLVMModuleRef m) (LLVMVerifierFailureAction a) (char ** msg)) (out LLVMBool))
+  (decl) (func LLVMDisposeMessage ((char * m)))
+  (decl) (func LLVMDisposeModule ((LLVMModuleRef m)))
+  (decl) (func LLVMGetDefaultTargetTriple () (out char *))
+  (decl) (func LLVMGetHostCPUName () (out char *))
+  (decl) (func LLVMGetHostCPUFeatures () (out char *))
+  (decl) (func LLVMGetTargetFromTriple ((const char * triple) (LLVMTargetRef * t) (char ** msg)) (out LLVMBool))
+  (decl) (func LLVMCreateTargetMachine ((LLVMTargetRef t) (const char * triple) (const char * cpu) (const char * features) (LLVMCodeGenOptLevel level) (LLVMRelocMode reloc) (LLVMCodeModel model)) (out LLVMTargetMachineRef))
+  (decl) (func LLVMDisposeTargetMachine ((LLVMTargetMachineRef t)))
+  (decl) (func LLVMSetTarget ((LLVMModuleRef m) (const char * triple)))
+  (decl) (func LLVMCreateTargetDataLayout ((LLVMTargetMachineRef t)) (out LLVMTargetDataRef))
+  (decl) (func LLVMSetModuleDataLayout ((LLVMModuleRef m) (LLVMTargetDataRef dl)))
+  (decl) (func LLVMDisposeTargetData ((LLVMTargetDataRef dl)))
+  (decl) (func LLVMCreatePassBuilderOptions () (out LLVMPassBuilderOptionsRef))
+  (decl) (func LLVMDisposePassBuilderOptions ((LLVMPassBuilderOptionsRef o)))
+  (decl) (func LLVMRunPasses ((LLVMModuleRef m) (const char * passes) (LLVMTargetMachineRef tm) (LLVMPassBuilderOptionsRef o)) (out LLVMErrorRef))
+  (decl) (func LLVMGetErrorMessage ((LLVMErrorRef err)) (out char *))
+  (decl) (func LLVMDisposeErrorMessage ((char * m)))
+  (decl) (func LLVMTargetMachineEmitToFile ((LLVMTargetMachineRef t) (LLVMModuleRef m) (const char * file) (LLVMCodeGenFileType kind) (char ** msg)) (out LLVMBool))
+
+  ;; the flags: the -O level (0..3; 4 is -Os, 5 is -Oz) and -S
+  (func ccl_llvm_flags ((coco_engine * e) (size_t t) (int * level) (int * emit_asm)) (out int)
+    (let ((size_t * cells . nil) (size_t n . 0) (size_t i . 0))
+      (if (not (coco_m_list_array e t (aof cells) (aof n))) (return 0))
+      (while (< i n)
+        (let ((const char * f . #'(coco_m_atom e (nth i cells))))
+          (if f
+            (cond
+              ((== 0 (strcmp f "-O0")) (set (cof level) 0))
+              ((== 0 (strcmp f "-O1")) (set (cof level) 1))
+              ((== 0 (strcmp f "-O2")) (set (cof level) 2))
+              ((== 0 (strcmp f "-O3")) (set (cof level) 3))
+              ((== 0 (strcmp f "-Os")) (set (cof level) 4))
+              ((== 0 (strcmp f "-Oz")) (set (cof level) 5))
+              ((== 0 (strcmp f "-S"))  (set (cof emit_asm) 1)))))
+        (set i (+ i 1)))
+      (free (cast (void *) cells))
+      (return 1)))
+
+  (func ccl_llvm_pipeline ((int level)) (out const char *)
+    (cond
+      ((== level 1) (return "default<O1>"))
+      ((== level 2) (return "default<O2>"))
+      ((== level 3) (return "default<O3>"))
+      ((== level 4) (return "default<Os>"))
+      ((== level 5) (return "default<Oz>")))
+    (return "default<O0>"))
+
+  ;; the IR text -> a verified module in a fresh context; 0 and the error
+  ;; term raised when it is not; the caller disposes both when it is
+  (func ccl_llvm_load ((coco_engine * e) (const char * ir) (LLVMContextRef * ctx) (LLVMModuleRef * mod)) (out int)
+    (let ((char * msg . nil) (LLVMMemoryBufferRef buf . nil) (int rc . 0))
+      (set (cof ctx) (LLVMContextCreate))
+      (set buf (LLVMCreateMemoryBufferWithMemoryRangeCopy ir (strlen ir) "cicili"))
+      (if (LLVMParseIRInContext (cof ctx) buf mod (aof msg))
+        (block
+          (set rc (coco_m_error e "ir_parse_failed" (? msg msg "")))
+          (if msg (LLVMDisposeMessage msg))
+          (LLVMContextDispose (cof ctx))
+          (set (cof ctx) nil)
+          (return rc)))
+      (if (LLVMVerifyModule (cof mod) (ccl_ll_verify_action) (aof msg))
+        (block
+          (set rc (coco_m_error e "ir_invalid" (? msg msg "")))
+          (if msg (LLVMDisposeMessage msg))
+          (LLVMDisposeModule (cof mod))
+          (LLVMContextDispose (cof ctx))
+          (set (cof ctx) nil)
+          (return rc)))
+      (if msg (LLVMDisposeMessage msg))
+      (return 1)))
+
+  ;; ccl_llvm_version(-Atom)
+  (func ccl_llvm_p_version ((coco_engine * e) (size_t g)) (out int)
+    (let ((uint_t major . 0) (uint_t minor . 0) (uint_t patch . 0) (char buf [64]))
+      (LLVMGetVersion (aof major) (aof minor) (aof patch))
+      (snprintf buf (sizeof buf) "%u.%u.%u" major minor patch)
+      (return (coco_m_unify_atom e (coco_m_arg e g 0) buf))))
+
+  ;; ccl_llvm_triple(-Atom)
+  (func ccl_llvm_p_triple ((coco_engine * e) (size_t g)) (out int)
+    (let ((char * triple . #'(LLVMGetDefaultTargetTriple)) (int rc . 0))
+      (set rc (coco_m_unify_atom e (coco_m_arg e g 0) triple))
+      (LLVMDisposeMessage triple)
+      (return rc)))
+
+  ;; ccl_llvm_check(+IR, -Report): ok, or what the parser or the verifier said
+  (func ccl_llvm_p_check ((coco_engine * e) (size_t g)) (out int)
+    (let ((const char * ir . #'(coco_m_atom e (coco_m_arg e g 0)))
+          (LLVMContextRef ctx . nil) (LLVMModuleRef mod . nil) (LLVMMemoryBufferRef buf . nil)
+          (char * msg . nil) (int rc . 0))
+      (if (not ir) (return (coco_m_instantiation_error e)))
+      (set ctx (LLVMContextCreate))
+      (set buf (LLVMCreateMemoryBufferWithMemoryRangeCopy ir (strlen ir) "cicili"))
+      (if (LLVMParseIRInContext ctx buf (aof mod) (aof msg))
+        (block
+          (set rc (coco_m_unify_atom e (coco_m_arg e g 1) (? msg msg "parse failed")))
+          (if msg (LLVMDisposeMessage msg))
+          (LLVMContextDispose ctx)
+          (return rc)))
+      (if (LLVMVerifyModule mod (ccl_ll_verify_action) (aof msg))
+        (set rc (coco_m_unify_atom e (coco_m_arg e g 1) (? msg msg "invalid")))
+        (set rc (coco_m_unify_atom e (coco_m_arg e g 1) "ok")))
+      (if msg (LLVMDisposeMessage msg))
+      (LLVMDisposeModule mod)
+      (LLVMContextDispose ctx)
+      (return rc)))
+
+  ;; ccl_llvm_compile(+IR, +File, +Flags)
+  (func ccl_llvm_p_compile ((coco_engine * e) (size_t g)) (out int)
+    (let ((const char * ir . #'(coco_m_atom e (coco_m_arg e g 0)))
+          (const char * file . #'(coco_m_atom e (coco_m_arg e g 1)))
+          (int level . 1) (int emit_asm . 0) (int rc . 0)
+          (LLVMContextRef ctx . nil) (LLVMModuleRef mod . nil)
+          (LLVMTargetRef target . nil) (LLVMTargetMachineRef tm . nil) (LLVMTargetDataRef dl . nil)
+          (char * triple . nil) (char * cpu . nil) (char * features . nil) (char * msg . nil)
+          (LLVMPassBuilderOptionsRef opts . nil) (LLVMErrorRef err . nil))
+      (if (or (not ir) (not file)) (return (coco_m_instantiation_error e)))
+      (if (not (ccl_llvm_flags e (coco_m_arg e g 2) (aof level) (aof emit_asm)))
+        (return (coco_m_type_error e "list" (coco_m_arg e g 2))))
+      (if (not (ccl_llvm_load e ir (aof ctx) (aof mod))) (return 0))
+      (ccl_ll_native)
+      (set triple (LLVMGetDefaultTargetTriple))
+      (if (LLVMGetTargetFromTriple triple (aof target) (aof msg))
+        (block
+          (set rc (coco_m_error e "no_target" (? msg msg triple)))
+          (if msg (LLVMDisposeMessage msg))
+          (LLVMDisposeMessage triple)
+          (LLVMDisposeModule mod)
+          (LLVMContextDispose ctx)
+          (return rc)))
+      (set cpu (LLVMGetHostCPUName))
+      (set features (LLVMGetHostCPUFeatures))
+      (set tm (LLVMCreateTargetMachine target triple cpu features (ccl_ll_codegen level) (ccl_ll_reloc) (ccl_ll_model)))
+      (LLVMSetTarget mod triple)
+      (set dl (LLVMCreateTargetDataLayout tm))
+      (LLVMSetModuleDataLayout mod dl)
+      (LLVMDisposeTargetData dl)
+      (if (> level 0)
+        (block
+          (set opts (LLVMCreatePassBuilderOptions))
+          (set err (LLVMRunPasses mod (ccl_llvm_pipeline level) tm opts))
+          (LLVMDisposePassBuilderOptions opts)
+          (if err
+            (block
+              (let ((char * em . #'(LLVMGetErrorMessage err)))
+                (set rc (coco_m_error e "passes_failed" em))
+                (LLVMDisposeErrorMessage em))
+              (LLVMDisposeTargetMachine tm)
+              (LLVMDisposeMessage triple) (LLVMDisposeMessage cpu) (LLVMDisposeMessage features)
+              (LLVMDisposeModule mod)
+              (LLVMContextDispose ctx)
+              (return rc)))))
+      (if (LLVMTargetMachineEmitToFile tm mod file (ccl_ll_filetype emit_asm) (aof msg))
+        (block
+          (set rc (coco_m_error e "emit_failed" (? msg msg file)))
+          (if msg (LLVMDisposeMessage msg)))
+        (set rc 1))
+      (LLVMDisposeTargetMachine tm)
+      (LLVMDisposeMessage triple) (LLVMDisposeMessage cpu) (LLVMDisposeMessage features)
+      (LLVMDisposeModule mod)
+      (LLVMContextDispose ctx)
+      (return rc)))
+
+  (static) (coco-emit-module-dispatch ccl_llvm_dispatch *ccl-llvm-predicates*)
+  (coco-deflibrary "ccl_llvm" ccl_llvm_dispatch *ccl-llvm-prolog*))

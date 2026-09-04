@@ -24,14 +24,20 @@ reads them and puts this checkout's `library/` at the FRONT of
 
 ```
 module/cicili.cicili     the module: the C side (registration, ccl_version/1) and the Prolog
-                         half -- cicili/2,3 (the reader's door) and the objects layer
+                         half -- cicili_ast/2,3 (the reader's door) and the objects layer
 library/ccl_syntax.pl    the lexer and the parser, two DCGs; COMMITTED (library/*.so is not)
 library/ccl_include.pl   #include: the inclusion path (asked of clang), resolution, the
                          nested read (raw, else clang -E -dD), .pl macro files, the cycle
                          guard, the KB cache
 library/ccl_infer.pl     the macro facilities: ccl_type_of/2 and lookups over the symbol table
 library/ccl_format.pl    format, print, println: the global macros, Rust's holes
+library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause per construct
+library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, else clang -c -x ir), cicili_link/3 (cc)
+test/compile.sh          the compiler's gate: every test/c/run/*.c built and run, its output checked
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh  ->  library/cicili.so
+module/ccl_llvm.cicili   the embedded LLVM: a cocolog module in Cicili over llvm-c; parse,
+                         verify, target, passes, object (ccl_llvm_compile/3, ccl_llvm_check/2)
+module/build-llvm.sh     LLVM=… sh module/build-llvm.sh  ->  library/ccl_llvm.so (Homebrew's LLVM)
 proof/forty2.ll, run.sh  M0: LLVM IR through clang to a native binary, exit 42
 test/config.sh           the neighbours and the library path, sourced by every gate
 test/reader.pl           the reader's gate: a cocolog program, one clause per check (71),
@@ -49,8 +55,13 @@ Build and prove, always in this order:
 ```sh
 CICILI=~/Projects/GitHub/cicili COCOLOG=~/Projects/GitHub/cocolog sh module/build.sh
 sh test/reader.sh
+sh test/compile.sh
 sh proof/run.sh
 ```
+
+**The surface is four predicates** (owner's rule): `cicili_ast(+File, -AST)`
+(and `/3`), `cicili_ir(+Units, -IR)`, `cicili_compile(+IR, +ObjFile, +Flags)`,
+`cicili_link(+Objects, +Flags, +Out)`. Everything else is `ccl_`.
 
 **Nothing is claimed before its GREEN line.** A rule is a `check` in a gate;
 a milestone has a proof that runs. Run the gate the change touches, not
@@ -68,8 +79,8 @@ Internals are `'$ccl_…'`. The repository is `cicili-lang`, the library
 
 ## How the reader is implemented, and why that way
 
-`cicili(+File, -AST)` mirrors `phrase/2`: the whole file or an error;
-`cicili/3` mirrors `phrase/3`, answering the tokens left. Two DCGs in
+`cicili_ast(+File, -AST)` mirrors `phrase/2`: the whole file or an error;
+`cicili_ast/3` mirrors `phrase/3`, answering the tokens left. Two DCGs in
 `library(ccl_syntax)`: `ccl_lex//2` over character codes -> tokens
 `tok(Kind, Value, Line)`; `ccl_externals//2` over tokens -> the AST (its
 vocabulary is the file's header). Precedence is a level per operator
@@ -174,6 +185,38 @@ changes, or a partial read from an older grammar stays cached. The reader
 gate is one process over one fresh `--embed`, so every header is parsed
 once; `test/reader.sh` then asks a second process for what the first read.
 
+## How the lowering is implemented
+
+`library(ccl_ir)`: `ccl_ir_units/2` rebuilds the symbol table from the units
+(`ccl_items_note/1`) and emits text. Per function, globals hold the state:
+`'$ir_body'` (lines, reversed), `'$ir_allocas'` (the entry block's),
+`'$ir_env'` (frames of Name-loc(Addr, Type)), `'$ir_defers'` (frames of
+defer bodies), `'$ir_loops'` (break/continue targets with the defer depth
+at entry), `'$ir_term'` (is the current block terminated). `ir_expr/3` gives
+a value and its C type, `ir_lval/3` an address, `ir_cond/2` an i1,
+`ir_convert/4` C's conversions; `ir_ins/1` opens a dead block after a
+terminator so every block ends once. `defer`: `ir_run_defers/1` inlines a
+scope's bodies LIFO at its end, at `break`/`continue` (the frames inside the
+loop) and at `return` (all). Doubles print as LLVM's hex (`ir_double/2`);
+structs are named types registered once; an anonymous struct is keyed by
+its members. Externals used get `declare` lines from their prototypes.
+Not lowered yet: bitfields, unions' members, static locals, VLAs, `_Complex`,
+`long double` (as double) -- each `error(not_lowered(What), where(F))`.
+
+## How the LLVM module is written (the Cicili module pattern)
+
+Every C function a Cicili module calls that is not in Cicili's std is
+declared with `(decl) (func Name ((Type arg) ...) (out Type))`, mirroring
+the header (compatible types, one token each -- `LLVMBool`,
+`LLVMContextRef`, `char **`; `unsigned` needs an alias,
+`(@define (code "uint_t unsigned"))`). An enum constant or a `static inline`
+from a header cannot be named in Cicili at all: it goes behind a one-line
+raw C helper, `(code "static T ccl_ll_x(...) { ... }")`, itself declared with
+`(decl)` -- the numpy module's way. `(cof p)` is `*p`, `(? c a b)` the
+conditional, `(cond ((test) ...) ...)` a chain. A parameter may not be
+named `asm`. The build mirrors `module/build.sh` plus `llvm-config
+--cflags/--ldflags`, `-lLLVM-C` and an rpath to LLVM's lib.
+
 ## Findings about the neighbours, worked around here
 
 * **A `catch/3` whose goal succeeds leaves a live frame: a later `throw/1`
@@ -192,6 +235,10 @@ once; `test/reader.sh` then asks a second process for what the first read.
 * **`atomic_list_concat/2` with an unbound element segfaults cocolog**
   (exit 139, no message) instead of raising an instantiation error; the
   gate's `k17` did that before its scratch directory was bound.
+* **`atomic_list_concat/2` dies silently once its result passes about
+  8 KB** (no error term; a later message may show garbage), while
+  `atom_codes/2` takes hundreds of KB: anything long is joined as codes
+  (`ir_join/3`) and made an atom once.
 * **An unset global throws** (`nb_getval/2`: existence_error), so a global
   is read through `ccl_global/3` or a `once(catch(...))`.
 * cocolog has `abolish/1`, `clause/2` on consulted clauses and `retract/1`

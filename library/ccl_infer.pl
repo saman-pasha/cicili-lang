@@ -12,6 +12,8 @@
 %%   ccl_member_type(+Type, +Name, -T)
 %%   ccl_is_integer(+T) ccl_is_float(+T) ccl_is_arith(+T) ccl_is_pointer(+T)
 %%   ccl_size_of(+T, -Bytes)          LP64: char 1 short 2 int 4 long 8 float 4 double 8 pointer 8
+%%   ccl_enum_value(+Name, -Int)      an enumerator's value
+%%   ccl_const_eval(+Expr, -Int)      an integer constant expression, folded as C folds it
 %%   ccl_scope(-Frames)               every frame, innermost first
 %%   ccl_gensym(+Prefix, -Atom)       a fresh identifier for a macro's temporary
 %%   ccl_here(-File, -Line)           where the parser is
@@ -27,6 +29,40 @@ ccl_declared(N, T) :- ccl_scope(Fs), ccl_in_frames(Fs, N, T).
 ccl_in_frames([F|Fs], N, T) :- ( memberchk(N-T0, F) -> T = T0 ; ccl_in_frames(Fs, N, T) ).
 ccl_typedef_of(N, T) :- once(catch(nb_getval('$ccl_typedefs', L), _, fail)), memberchk(N-T, L).
 ccl_tag(Tag, Ms) :- once(catch(nb_getval('$ccl_tags', L), _, fail)), memberchk(Tag-Ms, L).
+
+%% ---- constants ---------------------------------------------------------------------
+ccl_enum_value(N, V) :- once(catch(nb_getval('$ccl_enums', L), _, fail)), memberchk(N-V, L).
+%% an integer constant expression, as C folds it
+ccl_const_eval(int(N), N) :- !.
+ccl_const_eval(chr(C), C) :- !.
+ccl_const_eval(id(N), V) :- !, ccl_enum_value(N, V).
+ccl_const_eval(neg(E), V) :- !, ccl_const_eval(E, V0), V is -V0.
+ccl_const_eval(pos(E), V) :- !, ccl_const_eval(E, V).
+ccl_const_eval(bitnot(E), V) :- !, ccl_const_eval(E, V0), V is \ V0.
+ccl_const_eval(not(E), V) :- !, ccl_const_eval(E, V0), ( V0 =:= 0 -> V = 1 ; V = 0 ).
+ccl_const_eval(cast(_, E), V) :- !, ccl_const_eval(E, V).
+ccl_const_eval(sizeof_type(T), V) :- !, ccl_size_of(T, V).
+ccl_const_eval(sizeof(E), V) :- !, ccl_type_of(E, T), ccl_size_of(T, V).
+ccl_const_eval(cond(C, A, B), V) :- !, ccl_const_eval(C, CV), ( CV =\= 0 -> ccl_const_eval(A, V) ; ccl_const_eval(B, V) ).
+ccl_const_eval(bin(Op, A, B), V) :- ccl_const_eval(A, X), ccl_const_eval(B, Y), ccl_const_op(Op, X, Y, V).
+ccl_const_op('+', X, Y, V) :- V is X + Y.
+ccl_const_op('-', X, Y, V) :- V is X - Y.
+ccl_const_op('*', X, Y, V) :- V is X * Y.
+ccl_const_op('/', X, Y, V) :- Y =\= 0, V is X // Y.
+ccl_const_op('%', X, Y, V) :- Y =\= 0, V is X mod Y.
+ccl_const_op('<<', X, Y, V) :- V is X << Y.
+ccl_const_op('>>', X, Y, V) :- V is X >> Y.
+ccl_const_op('&', X, Y, V) :- V is X /\ Y.
+ccl_const_op('|', X, Y, V) :- V is X \/ Y.
+ccl_const_op('^', X, Y, V) :- V is xor(X, Y).
+ccl_const_op('<', X, Y, V) :- ( X < Y -> V = 1 ; V = 0 ).
+ccl_const_op('>', X, Y, V) :- ( X > Y -> V = 1 ; V = 0 ).
+ccl_const_op('<=', X, Y, V) :- ( X =< Y -> V = 1 ; V = 0 ).
+ccl_const_op('>=', X, Y, V) :- ( X >= Y -> V = 1 ; V = 0 ).
+ccl_const_op('==', X, Y, V) :- ( X =:= Y -> V = 1 ; V = 0 ).
+ccl_const_op('!=', X, Y, V) :- ( X =\= Y -> V = 1 ; V = 0 ).
+ccl_const_op('&&', X, Y, V) :- ( X =\= 0, Y =\= 0 -> V = 1 ; V = 0 ).
+ccl_const_op('||', X, Y, V) :- ( ( X =\= 0 ; Y =\= 0 ) -> V = 1 ; V = 0 ).
 
 ccl_here(File, Line) :- once(catch(nb_getval('$ccl_file', File), _, File = none)), once(catch(nb_getval('$ccl_far', Line), _, Line = 0)).
 ccl_gensym(Prefix, Atom) :-

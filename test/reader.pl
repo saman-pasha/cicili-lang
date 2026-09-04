@@ -46,7 +46,7 @@ sh_line([A|As], L) :- sh_line(As, L0), atomic_list_concat(['\'', A, '\' ', L0], 
 unit(Name, U) :-
     c(Name, P), atom_concat('$t_unit:', P, K),
     (   once(catch(nb_getval(K, U0), _, fail)) -> U = U0
-    ;   cicili(P, U0), nb_setval(K, U0), U = U0 ).
+    ;   cicili_ast(P, U0), nb_setval(K, U0), U = U0 ).
 fn_body(Name, F, B) :- unit(Name, unit(Is)), member(function(_, _, _, F, _, _, block(B)), Is).
 codes_atom(S, A) :- atom_codes(A, S).
 
@@ -57,7 +57,7 @@ codes_atom(S, A) :- atom_codes(A, S).
 %% by findall/3: consulting 71 goal-carrying facts into an embedded store
 %% segfaults cocolog.)
 
-k1 :- check('cicili/2 reads the file and answers a unit of 3 items',
+k1 :- check('cicili_ast/2 reads the file and answers a unit of 3 items',
     ( unit('hello.c', unit(Is)), length(Is, 3) )).
 
 k2 :- check('a directive that is not an include is kept whole',
@@ -69,8 +69,8 @@ k3 :- check('main is a function at its line, returning int, taking void',
 k4 :- check('its body: a call with a string (10 codes, ending in newline), then return 0',
     ( fn_body('hello.c', main, [expr(call(id(printf), [str(S), _])), return(int(0))]), length(S, 10), last(S, 10) )).
 
-k5 :- check('cicili/3 leaves nothing when the whole file parses',
-    ( c('hello.c', P), cicili(P, _, []) )).
+k5 :- check('cicili_ast/3 leaves nothing when the whole file parses',
+    ( c('hello.c', P), cicili_ast(P, _, []) )).
 
 k6 :- check('<stdio.h> resolves to a file on the toolchain\'s path and is read',
     ( unit('hello.c', unit([include(2, system('stdio.h'), file(P, How, unit(_)))|_])), sub_atom(P, _, _, 0, '/stdio.h'), memberchk(How, [raw, preprocessed]) )).
@@ -103,15 +103,15 @@ k15 :- check('and hello.c itself, read whole, keyed by its time and the reader\'
     ( c('hello.c', P), '$ccl_ast'(P, key(T, V), meta(top, 3, [_, _])), number(T), ccl_reader_version(V) )).
 
 k16 :- check('a cached read is the same AST as a fresh one',
-    ( c('rich.c', P), cicili(P, A), ccl_kb_forget_file(P), cicili(P, B), A == B )).
+    ( c('rich.c', P), cicili_ast(P, A), ccl_kb_forget_file(P), cicili_ast(P, B), A == B )).
 
 k17 :- check('a touched file is read again, not served stale',
     ( tmp(D), c('uses.c', U), c('local.h', H), atomic_list_concat([D, '/uses.c'], U2), copy(U, U2), copy(H, D),
-            cicili(U2, _), '$ccl_ast'(U2, key(T0, _), _), touch(U2), cicili(U2, _), '$ccl_ast'(U2, key(T1, _), _), T1 > T0 )).
+            cicili_ast(U2, _), '$ccl_ast'(U2, key(T0, _), _), touch(U2), cicili_ast(U2, _), '$ccl_ast'(U2, key(T1, _), _), T1 > T0 )).
 
 k18 :- check('a changed macro file makes its includer\'s cached read a miss',
     ( tmp(D), c('macros.pl', M), c('uses_macros.c', UM), atomic_list_concat([D, '/uses_macros.c'], UM2), copy(M, D), copy(UM, UM2),
-            cicili(UM2, _), ccl_kb_cached(UM2, top, _), atomic_list_concat([D, '/macros.pl'], M2), touch(M2), \+ ccl_kb_cached(UM2, top, _) )).
+            cicili_ast(UM2, _), ccl_kb_cached(UM2, top, _), atomic_list_concat([D, '/macros.pl'], M2), touch(M2), \+ ccl_kb_cached(UM2, top, _) )).
 
 k19 :- check('the include node names the macro file and its predicates, DCG ones too',
     ( c('macros.pl', MP), unit('uses_macros.c', unit([include(1, local('macros.pl'), macros(MP, Ps))|_])),
@@ -145,10 +145,10 @@ k27 :- check('the size of a struct, LP64: int + double = 16',
     ( fn_body('uses_macros.c', f, B), member(declaration(_, _, _, [var(sz, _, int(16))]), B) )).
 
 k28 :- check('a macro that fails stops the read with its name and arguments',
-    ( c('bad_macro.c', P), catch(cicili(P, _), error(E, _), true), E == macro_failed(boom, [int(1)]) )).
+    ( c('bad_macro.c', P), catch(cicili_ast(P, _), error(E, _), true), E == macro_failed(boom, [int(1)]) )).
 
 k29 :- check('a macro that throws reports the macro, its arguments and the ball',
-    ( c('throwing_macro.c', P), catch(cicili(P, _), error(E, _), true), E == macro_error(bang, [int(1)], oops) )).
+    ( c('throwing_macro.c', P), catch(cicili_ast(P, _), error(E, _), true), E == macro_error(bang, [int(1)], oops) )).
 
 k30 :- check('n := 42; is an int declaration with that initializer',
     ( fn_body('walrus.c', f, B), member(declaration(4, none, base([], [int]), [var(n, base([], [int]), int(42))]), B) )).
@@ -169,7 +169,7 @@ k35 :- check('g := 7; at file scope is a global int',
     ( unit('walrus.c', unit(Is)), member(declaration(2, none, base([], [int]), [var(g, _, int(7))]), Is) )).
 
 k36 :- check('a right-hand side whose type is unknown is an error naming the variable, the file and the line',
-    ( c('no_infer.c', P), catch(cicili(P, _), error(E, here(F, L)), true), E == cannot_infer(z, id(nothing)), F == P, L =:= 2 )).
+    ( c('no_infer.c', P), catch(cicili_ast(P, _), error(E, here(F, L)), true), E == cannot_infer(z, id(nothing)), F == P, L =:= 2 )).
 
 k37 :- check('{ a, b } := p; binds the members by position, each a declaration by inference',
     ( fn_body('pattern.c', f, B), member(declaration(5, none, _, [var(a, base([], [int]), member(id(p), x))]), B), member(declaration(5, none, _, [var(b, base([], [double]), member(id(p), y))]), B) )).
@@ -182,10 +182,10 @@ k39 :- check('a right-hand side that is not a variable is evaluated once, into a
     ( fn_body('pattern.c', f, B), append(_, [declaration(_, _, _, [var(T, base([], [typedef(point_t)]), call(id(make), []))]), declaration(_, _, _, [var(u, _, member(id(T), x))]), declaration(_, _, _, [var(v, _, member(id(T), y))])|_], B), sub_atom(T, 0, 4, _, tmp_) )).
 
 k40 :- check('a pattern longer than the struct is an error naming the position',
-    ( c('pattern_bad.c', P), catch(cicili(P, _), error(E, here(_, L)), true), E == no_member(position(3), base([], [typedef(point_t)])), L =:= 2 )).
+    ( c('pattern_bad.c', P), catch(cicili_ast(P, _), error(E, here(_, L)), true), E == no_member(position(3), base([], [typedef(point_t)])), L =:= 2 )).
 
 k41 :- check('a field the struct has not is an error naming it',
-    ( c('pattern_bad2.c', P), catch(cicili(P, _), error(E, _), true), E == no_member(zz, base([], [typedef(point_t)])) )).
+    ( c('pattern_bad2.c', P), catch(cicili_ast(P, _), error(E, _), true), E == no_member(zz, base([], [typedef(point_t)])) )).
 
 k42 :- check('println: {} next, {name} by name, {0} by index, {p} a struct by its members, % kept, newline added',
     ( fn_body('fmt.c', main, B), member(expr(call(id(printf), [str(S), id(n), id(name), id(n), member(id(p), x), member(id(p), y)])), B),
@@ -200,10 +200,10 @@ k44 :- check('a struct inside a struct nests; unsigned long is %lu; {{ }} are br
             codes_atom(S, 'node { at: point_t { x: %d, y: %g }, name: %s, id: %lu } {braces}\n') )).
 
 k45 :- check('a hole with no argument is an error with its place',
-    ( c('fmt_bad.c', P), catch(cicili(P, _), error(macro_error(M, here(_, L)), _), true), M == no_argument(1), L =:= 1 )).
+    ( c('fmt_bad.c', P), catch(cicili_ast(P, _), error(macro_error(M, here(_, L)), _), true), M == no_argument(1), L =:= 1 )).
 
 k46 :- check('a name not in scope cannot be formatted',
-    ( c('fmt_bad2.c', P), catch(cicili(P, _), error(macro_error(M, here(F, _)), _), true), M == cannot_format(id(nope)), F == P )).
+    ( c('fmt_bad2.c', P), catch(cicili_ast(P, _), error(macro_error(M, here(F, _)), _), true), M == cannot_format(id(nope)), F == P )).
 
 k47 :- check('point { int x; double y; } is the typedef of a struct with that tag and those members',
     unit('shorthand.c', unit([typedef(1, [var(point, base([], [struct(point, [member(base([], [int]), x, none), member(base([], [double]), y, none)])]), none)])|_]))).
@@ -281,14 +281,14 @@ k67 :- check('the comma operator, logical operators, goto and a label',
 k68 :- check('adjacent string literals are one string',
     ( fn_body('rich.c', main, B), member(expr(call(id(printf), [_, _, str(S)])), B), codes_atom(S, ab) )).
 
-k69 :- check('cicili/3 answers the tokens from the first thing it could not read',
-    ( c('bad.c', P), cicili(P, unit(Is), [tok(_, _, 3)|_]), length(Is, 2) )).
+k69 :- check('cicili_ast/3 answers the tokens from the first thing it could not read',
+    ( c('bad.c', P), cicili_ast(P, unit(Is), [tok(_, _, 3)|_]), length(Is, 2) )).
 
-k70 :- check('cicili/2 makes that a syntax error naming the line, and where it gave up',
-    ( c('bad.c', P), catch(cicili(P, _), error(E, _), true), E == syntax_error(cicili(P, line(3), near(3))) )).
+k70 :- check('cicili_ast/2 makes that a syntax error naming the line, and where it gave up',
+    ( c('bad.c', P), catch(cicili_ast(P, _), error(E, _), true), E == syntax_error(cicili_ast(P, line(3), near(3))) )).
 
 k71 :- check('a lexical error names its line too',
-    ( c('lex.c', P), catch(cicili(P, _), error(syntax_error(cicili(_, lexical, line(L))), _), true), L =:= 2 )).
+    ( c('lex.c', P), catch(cicili_ast(P, _), error(syntax_error(cicili_ast(_, lexical, line(L))), _), true), L =:= 2 )).
 
 t_checks :-
     section('hello.c, whole'),
@@ -387,5 +387,5 @@ t_real :-
 real_file(Cicili, Rel) :-
     atomic_list_concat([Cicili, '/', Rel], P),
     (   exists_file(P)
-    ->  check(Rel, ( cicili(P, unit(_), Rest), ( Rest == [] -> true ; Rest = [tok(_, _, L)|_], ccl_farthest(F), write('     stopped at '), write(L), write(' near '), write(F), nl, fail ) ))
+    ->  check(Rel, ( cicili_ast(P, unit(_), Rest), ( Rest == [] -> true ; Rest = [tok(_, _, L)|_], ccl_farthest(F), write('     stopped at '), write(L), write(' near '), write(F), nl, fail ) ))
     ;   write('SKIP '), write(Rel), write(' (not here)'), nl ).

@@ -12,7 +12,7 @@
 %% GNU forms Cicili's own emitted C carries: __attribute__((...)), which is
 %% read and dropped, and the statement expression ({ ... }). The C++ forms --
 %% classes, templates, namespaces, `::' -- are not read yet; a file that
-%% uses them parses up to the first of them, and cicili/3 answers where.
+%% uses them parses up to the first of them, and cicili_ast/3 answers where.
 %%
 %% Every predicate here is ccl_-prefixed: cocolog has one namespace, and a
 %% grammar full of `expr' and `id' would collide with any program's. Only the
@@ -64,11 +64,11 @@
 %%   ccl_line_of(+Codes, +RestCodes, -Line)      the line a lexical error is on
 %%   ccl_farthest(-Line)                          after ccl_unit: the last line the grammar reached
 %%
-%% library(cicili) wraps these as cicili/2 and cicili/3.
+%% library(cicili) wraps these as cicili_ast/2 and cicili_ast/3.
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(14).
+ccl_reader_version(15).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -253,7 +253,7 @@ ccl_nth(I, [_|T], X) :- I > 1, I1 is I - 1, ccl_nth(I1, T, X).
 %% '$ccl_scope' is a list of frames, innermost first, each [Name-Type ...];
 %% '$ccl_typedefs' is [Name-Type ...]; '$ccl_tags' is [Tag-Members ...].
 %% Enumerators are declared as int. Filled here, read by library(ccl_infer).
-ccl_scope_init :- nb_setval('$ccl_scope', [[]]), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []).
+ccl_scope_init :- nb_setval('$ccl_scope', [[]]), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []), nb_setval('$ccl_enums', []).
 ccl_push_scope --> { ccl_scope_push }.
 ccl_pop_scope --> { ccl_scope_pop }.
 ccl_scope_push :- nb_getval('$ccl_scope', S), nb_setval('$ccl_scope', [[]|S]).
@@ -290,8 +290,15 @@ ccl_note_spec(enum(Tag, Es)) :- Es \== none, !, ( Tag == anon -> true ; ccl_note
 ccl_note_spec(_).
 ccl_note_members([]).
 ccl_note_members([member(T, _, _)|Ms]) :- ccl_note_tags(T), ccl_note_members(Ms).
-ccl_declare_enumerators([]).
-ccl_declare_enumerators([enumerator(N, _)|Es]) :- ccl_declare(N, base([], [int])), ccl_declare_enumerators(Es).
+%% an enumerator is an int in scope, and its value is kept ('$ccl_enums',
+%% Name-Value) for the lowering and for constant expressions
+ccl_declare_enumerators(Es) :- ccl_declare_enumerators(Es, 0).
+ccl_declare_enumerators([], _).
+ccl_declare_enumerators([enumerator(N, E)|Es], Next) :-
+    ( E == none -> V = Next ; ccl_const_eval(E, V0) -> V = V0 ; V = Next ),
+    ccl_declare(N, base([], [int])),
+    nb_getval('$ccl_enums', L), nb_setval('$ccl_enums', [N-V|L]),
+    Next1 is V + 1, ccl_declare_enumerators(Es, Next1).
 
 %% ---- macros: the predicates of an included .pl (library(ccl_include)) ---------
 %% name(a, b) with name/3 registered runs name(ASTa, ASTb, R) now; R replaces

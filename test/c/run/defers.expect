@@ -1,0 +1,15 @@
+open 1
+iter 0 done
+early
+iter 1 done
+freed
+close 1
+open 5
+iter 0 done
+iter 1 done
+iter 2 done
+done
+freed
+close 5
+11
+exit 11
