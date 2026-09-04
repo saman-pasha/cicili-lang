@@ -1,0 +1,11 @@
+# build output: the emitted C and the loadable library are made, never committed
+library/*.so
+module/*.c
+module/*.o
+module/sdk.cicili
+# scratch stores the tutorials and gates make
+/tmp/
+*.log
+.DS_Store
+proof/forty2
+proof/*.o

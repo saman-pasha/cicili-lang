@@ -1,0 +1,240 @@
+;;;; cicili-cpp -- library(cicili): Prolog with objects and modules, as a
+;;;; cocolog module.
+;;;;
+;;;; WHAT THIS IS. An object is a named scope with slots and methods; a
+;;;; method is a clause written inside the object that reads slots by name
+;;;; and assigns them with `:='; a child object `extends' a parent and has
+;;;; its slots and methods, adding or redefining; an instance is made with
+;;;; new/3 and sent a message with `::'. EVERY ONE OF THESE IS CLAUSES IN
+;;;; THE STORE: the object as '$object'/2 and '$slot'/3, a method as a clause
+;;;; of 'Class::name'/N+1 whose first argument is the instance, an instance
+;;;; as '$instance'/2 and one '$value'/3 per slot. So an instance lives as
+;;;; long as the store does, across processes -- which is what building on
+;;;; cocolog is for.
+;;;;
+;;;; HOW A PROGRAM REACHES IT. The reader is cocolog's, after two operators
+;;;; this module declares. `:- object(Name).' is a directive, and a
+;;;; directive is a goal, so it runs as the file is read: it notes the object
+;;;; and takes a snapshot of the clauses in the store. The clauses that
+;;;; follow -- state/1 and the methods -- are consulted as ordinary clauses.
+;;;; `:- end_object.' finds what the file added since the snapshot, turns
+;;;; each state/1 into a slot and each other clause into a method under the
+;;;; qualified name, with its body rewritten over Self, and retracts the
+;;;; originals. Nothing between the directives needs a new reader.
+;;;;
+;;;; INSIDE A METHOD BODY: a slot's name stands for its value wherever it
+;;;; appears as an argument -- except as the KEY of a `Key = Value' pair or
+;;;; the left side of `:=', where it is the name (so `new(rect, [w = S], R)'
+;;;; inside a method names the slot); `Slot := Expr' evaluates Expr
+;;;; (arithmetic when it is arithmetic, unification otherwise) and stores it; a call to a
+;;;; method of this object or an ancestor may be written unqualified, as in
+;;;; C++; `super::Msg' is the parent's method. A class name used as a
+;;;; receiver is a static call, with Self unbound.
+;;;;
+;;;; THE C SIDE is the module's registration and ccl_version/1 today; the
+;;;; language is its Prolog half. The dispatcher and slot access move here
+;;;; when they are measured to matter.
+;;;;
+;;;; THE SURFACE:
+;;;;
+;;;;   object(+Name)                                  a directive; a scope opens
+;;;;   object(+Name, extends(+Parent))                the child of Parent
+;;;;   end_object                                     a directive; the scope closes
+;;;;   state(Slot = Initial)                          a slot, inside an object
+;;;;   Slot := Expr                                   inside a method body
+;;;;   super::Message                                 inside a method body
+;;;;   module(+Name)  end_module                      a scope for objects: Name::Object
+;;;;   new(+Class, +[Slot = Value ...], -Instance)
+;;;;   delete(+Instance)
+;;;;   Instance::Message                              a message
+;;;;   Class::Message                                 a static call, Self unbound
+;;;;   instance_of(?Instance, ?Class)                 Class or any ancestor
+;;;;   slot(+Instance, ?Slot, ?Value)                 read from outside
+;;;;   set_slot(+Instance, +Slot, +Value)             write from outside
+;;;;   object_of(+Instance, -Class)
+;;;;   extends(?Child, ?Parent)                       the declared parent
+;;;;   objects(-Classes)  instances(+Class, -Instances)
+;;;;   ccl_version(-Atom)
+;;;;
+;;;; BUILD: sh module/build.sh, with CICILI and COCOLOG naming the two
+;;;; checkouts; then COCOLOG_LIBRARY=<this repo>/library and
+;;;; `use_module(library(cicili))'.
+
+(DEFPARAMETER *ccl-predicates*
+  '(("ccl_version" 1 ccl_p_version)))
+
+(DEFPARAMETER *ccl-prolog*
+  (FORMAT NIL "~{~A ~}"
+          (LIST
+           ;; ---- the reader: a C file, read whole, into an AST ----------------
+           ;; cicili/2 acts like phrase/2 -- the whole file or a syntax error
+           ;; naming the line -- and cicili/3 like phrase/3, answering the
+           ;; tokens left unparsed. The grammars are library(ccl_syntax).
+           ":- use_module(library(ccl_syntax))."
+           ;; the error names the line the unread item begins on, and the farthest
+           ;; line the grammar reached inside it -- where it actually gave up
+           "cicili(File, AST) :- cicili(File, AST, Rest), ( Rest == [] -> true ; Rest = [tok(_, _, L)|_], ccl_farthest(Far), throw(error(syntax_error(cicili(File, line(L), near(Far))), cicili(File, AST))) )."
+           "cicili(File, AST, Rest) :- read_file_to_codes(File, Codes), ccl_tokens(Codes, Tokens, RestCodes), ( RestCodes == [] -> true ; ccl_line_of(Codes, RestCodes, L), throw(error(syntax_error(cicili(File, lexical, line(L))), cicili(File, AST, Rest))) ), ccl_unit(Tokens, AST, Rest)."
+
+           ;; ---- the two operators, and the tables ------------------------
+           ":- op(200, xfy, ::)."
+           ":- op(990, xfx, :=)."
+           ":- dynamic '$object'/2, '$slot'/3, '$instance'/2, '$value'/3."
+           ":- dynamic '$ccl_current'/2, '$ccl_module'/1, '$ccl_counter'/1."
+
+           ;; ---- the directives -------------------------------------------
+           "object(Name) :- object(Name, extends(none))."
+           "object(Name, extends(Parent)) :- '$ccl_qualify'(Name, C), '$ccl_parent'(Parent, P), '$ccl_forget_class'(C), assertz('$object'(C, P)), '$ccl_snapshot'(Snap), retractall('$ccl_current'(_, _)), assertz('$ccl_current'(C, Snap))."
+           "end_object :- ( retract('$ccl_current'(C, Snap)) -> true ; throw(error(ccl_error('end_object outside an object'), _)) ), '$ccl_collect'(Snap, Added), '$ccl_define'(C, Added)."
+           "module(Name) :- atom(Name), retractall('$ccl_module'(_)), assertz('$ccl_module'(Name))."
+           "end_module :- retractall('$ccl_module'(_))."
+
+           ;; a parent is a declared object, by short or full name; none is none
+           "'$ccl_parent'(none, none) :- !."
+           "'$ccl_parent'(Name, P) :- '$ccl_resolve'(Name, P), !."
+           "'$ccl_parent'(Name, _) :- throw(error(existence_error(object, Name), _))."
+
+           ;; names: Module::Name is one atom 'Module::Name'; inside a module a
+           ;; short name is qualified by it
+           "'$ccl_qualify'(M::N, A) :- !, '$ccl_qualify'(M, MA), atomic_list_concat([MA, '::', N], A)."
+           "'$ccl_qualify'(N, A) :- atom(N), ( '$ccl_module'(M) -> atomic_list_concat([M, '::', N], A) ; A = N )."
+           "'$ccl_resolve'(M::N, C) :- !, '$ccl_qualify'(M::N, C), '$object'(C, _)."
+           "'$ccl_resolve'(N, C) :- atom(N), ( '$ccl_module'(M), atomic_list_concat([M, '::', N], C0), '$object'(C0, _) -> C = C0 ; '$object'(N, _) -> C = N )."
+
+           ;; re-declaring an object replaces it: its slots and methods go first
+           "'$ccl_forget_class'(C) :- retractall('$object'(C, _)), retractall('$slot'(C, _, _)), atom_concat(C, '::', Prefix), forall(( current_predicate(F/A), atom(F), atom_concat(Prefix, _, F), functor(H, F, A) ), retractall(H))."
+
+           ;; ---- the snapshot, and what a file added after it ---------------
+           "'$ccl_snapshot'(Snap) :- findall(F/A-N, ( current_predicate(F/A), '$ccl_count'(F, A, N) ), Snap)."
+           "'$ccl_count'(F, A, N) :- functor(H, F, A), ( catch(findall(x, clause(H, _), Xs), _, fail) -> length(Xs, N) ; N = 0 )."
+           "'$ccl_collect'(Snap, Added) :- findall(H-B, ( current_predicate(F/A), \\+ '$ccl_reserved'(F/A), functor(H0, F, A), ( memberchk(F/A-N, Snap) -> true ; N = 0 ), '$ccl_count'(F, A, Now), Now > N, catch(findall(H0-B0, clause(H0, B0), All), _, fail), '$ccl_drop'(N, All, New), member(H-B, New) ), Added)."
+           "'$ccl_drop'(0, L, L) :- !."
+           "'$ccl_drop'(N, [_|T], L) :- N1 is N - 1, '$ccl_drop'(N1, T, L)."
+           "'$ccl_reserved'(object/1). '$ccl_reserved'(object/2). '$ccl_reserved'(end_object/0)."
+           "'$ccl_reserved'(module/1). '$ccl_reserved'(end_module/0)."
+           "'$ccl_reserved'(F/_) :- atom(F), sub_atom(F, 0, 1, _, '$')."
+
+           ;; ---- defining: slots, then methods over Self ---------------------
+           ;; (plain recursion, not forall: in cocolog a throw inside forall/2
+           ;; escapes the catch around it, and a bad method must report as a term)
+           "'$ccl_define'(C, Added) :- forall(member(state(S = V)-true, Added), assertz('$slot'(C, S, V))), findall(F/A, ( member(H-_, Added), H \\= state(_), functor(H, F, A) ), Ms0), sort(Ms0, Ms), '$ccl_methods'(Added, C, Ms), '$ccl_retract_all'(Added)."
+           "'$ccl_methods'([], _, _)."
+           "'$ccl_methods'([state(_)-_|T], C, Ms) :- !, '$ccl_methods'(T, C, Ms)."
+           "'$ccl_methods'([H-B|T], C, Ms) :- '$ccl_method'(C, Ms, H, B), '$ccl_methods'(T, C, Ms)."
+           "'$ccl_retract_all'([])."
+           "'$ccl_retract_all'([H-B|T]) :- ( retract((H :- B)) -> true ; true ), functor(H, F, A), ( catch(clause(H, _), _, fail) -> true ; catch(abolish(F/A), _, true) ), '$ccl_retract_all'(T)."
+           "'$ccl_method'(C, Ms, H, B) :- H =.. [F|Args], length(Args, A), atomic_list_concat([C, '::', F], QF), Head =.. [QF, Self|Args], '$ccl_slots_of'(C, Slots), '$ccl_body'(C, Self, Slots, Ms, B, Body), assertz((Head :- Body))."
+
+           ;; every slot the class has: its own and its ancestors'
+           "'$ccl_slots_of'(C, Slots) :- findall(S, '$ccl_slot_chain'(C, S, _), Ss), sort(Ss, Slots)."
+           "'$ccl_slot_chain'(C, S, V) :- '$slot'(C, S, V)."
+           "'$ccl_slot_chain'(C, S, V) :- '$object'(C, P), P \\== none, '$ccl_slot_chain'(P, S, V), \\+ '$slot'(C, S, _)."
+           "'$ccl_ancestor'(C, C)."
+           "'$ccl_ancestor'(C, A) :- '$object'(C, P), P \\== none, '$ccl_ancestor'(P, A)."
+
+           ;; ---- the body rewrite --------------------------------------------
+           "'$ccl_body'(_, _, _, _, V, call(V)) :- var(V), !."
+           "'$ccl_body'(C, S, Sl, Ms, (A, B), (A1, B1)) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1), '$ccl_body'(C, S, Sl, Ms, B, B1)."
+           "'$ccl_body'(C, S, Sl, Ms, (A ; B), (A1 ; B1)) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1), '$ccl_body'(C, S, Sl, Ms, B, B1)."
+           "'$ccl_body'(C, S, Sl, Ms, (A -> B), (A1 -> B1)) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1), '$ccl_body'(C, S, Sl, Ms, B, B1)."
+           "'$ccl_body'(C, S, Sl, Ms, (A *-> B), (A1 *-> B1)) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1), '$ccl_body'(C, S, Sl, Ms, B, B1)."
+           "'$ccl_body'(C, S, Sl, Ms, \\+ A, \\+ A1) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1)."
+           "'$ccl_body'(C, S, Sl, Ms, once(A), once(A1)) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1)."
+           "'$ccl_body'(C, S, Sl, Ms, ignore(A), ignore(A1)) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1)."
+           "'$ccl_body'(C, S, Sl, Ms, forall(A, B), forall(A1, B1)) :- !, '$ccl_body'(C, S, Sl, Ms, A, A1), '$ccl_body'(C, S, Sl, Ms, B, B1)."
+           "'$ccl_body'(C, S, Sl, Ms, findall(T, G, L), findall(T, G1, L)) :- !, '$ccl_body'(C, S, Sl, Ms, G, G1)."
+           "'$ccl_body'(C, S, Sl, Ms, catch(G, E, R), catch(G1, E, R1)) :- !, '$ccl_body'(C, S, Sl, Ms, G, G1), '$ccl_body'(C, S, Sl, Ms, R, R1)."
+           ;; Slot := Expr
+           "'$ccl_body'(C, S, Sl, _, Slot := Expr, Goal) :- !, ( memberchk(Slot, Sl) -> true ; throw(error(existence_error(slot, C::Slot), _)) ), '$ccl_reads'(S, Sl, Expr, Expr1, Reads), '$ccl_conj'(Reads, ('$ccl_assign'(Expr1, V), '$ccl_set'(S, Slot, V)), Goal)."
+           ;; super::Msg -- the parent's method, from the class the method belongs to
+           "'$ccl_body'(C, S, Sl, _, super::Msg, Goal) :- !, '$ccl_reads'(S, Sl, Msg, Msg1, Reads), '$ccl_conj'(Reads, '$ccl_super'(C, S, Msg1), Goal)."
+           ;; inside a module, a sibling object named short in new/3, a static
+           ;; call, instances/2 or instance_of/2 is qualified now, while the
+           ;; module is current -- at run time nothing says which module the
+           ;; method came from
+           "'$ccl_body'(C, S, Sl, Ms, new(N, I, R), Goal) :- '$ccl_sibling'(N, N1), !, '$ccl_body'(C, S, Sl, Ms, '$ccl_new'(N1, I, R), Goal)."
+           "'$ccl_body'(C, S, Sl, Ms, N::Msg, Goal) :- '$ccl_sibling'(N, N1), !, '$ccl_body'(C, S, Sl, Ms, '$ccl_static'(N1, Msg), Goal)."
+           "'$ccl_body'(C, S, Sl, Ms, instances(N, Is), Goal) :- '$ccl_sibling'(N, N1), !, '$ccl_body'(C, S, Sl, Ms, '$ccl_instances'(N1, Is), Goal)."
+           "'$ccl_body'(C, S, Sl, Ms, instance_of(I, N), Goal) :- '$ccl_sibling'(N, N1), !, '$ccl_body'(C, S, Sl, Ms, '$ccl_instance_of'(I, N1), Goal)."
+           "'$ccl_sibling'(N, N1) :- atom(N), '$ccl_module'(M), atomic_list_concat([M, '::', N], N1), '$object'(N1, _)."
+           "'$ccl_new'(N, I, R) :- new(N, I, R)."
+           "'$ccl_static'(N, Msg) :- N::Msg."
+           "'$ccl_instances'(N, Is) :- instances(N, Is)."
+           "'$ccl_instance_of'(I, N) :- instance_of(I, N)."
+           ;; an unqualified call to a method of this object or an ancestor is Self::G
+           "'$ccl_body'(C, S, Sl, Ms, G, Goal) :- functor(G, F, A), ( memberchk(F/A, Ms) ; '$ccl_ancestor'(C, An), An \\== C, atomic_list_concat([An, '::', F], QF), A1 is A + 1, current_predicate(QF/A1) ), !, '$ccl_reads'(S, Sl, G, G1, Reads), '$ccl_conj'(Reads, '$ccl_self'(C, S, G1), Goal)."
+           ;; an own-method call: on the instance when there is one (its class
+           ;; decides, so a child's redefinition wins), on the class in a static call
+           "'$ccl_self'(C, S, Msg) :- ( var(S) -> '$ccl_send'(C, S, Msg) ; S::Msg )."
+           ;; any other goal: slot names among its arguments are reads
+           "'$ccl_body'(_, S, Sl, _, G, Goal) :- '$ccl_reads'(S, Sl, G, G1, Reads), '$ccl_conj'(Reads, G1, Goal)."
+
+           ;; replace each slot name in the arguments of a term by a fresh
+           ;; variable, and answer the reads that bind them
+           "'$ccl_reads'(S, Sl, T, T1, Reads) :- T =.. [F|Args], '$ccl_reads_list'(S, Sl, Args, Args1, Reads), T1 =.. [F|Args1]."
+           "'$ccl_reads_list'(_, _, [], [], [])."
+           "'$ccl_reads_list'(S, Sl, [A|As], [A1|As1], Reads) :- '$ccl_read_arg'(S, Sl, A, A1, R), '$ccl_reads_list'(S, Sl, As, As1, Rs), append(R, Rs, Reads)."
+           "'$ccl_read_arg'(_, _, V, V, []) :- var(V), !."
+           ;; the key of a Key = Value pair is a name, not a read: new/3's initial
+           ;; values, and any key-value list, are written with slot names as keys
+           "'$ccl_read_arg'(S, Sl, K = V, K = V1, Reads) :- atom(K), !, '$ccl_read_arg'(S, Sl, V, V1, Reads)."
+           "'$ccl_read_arg'(S, Sl, A, V, ['$ccl_get'(S, A, V)]) :- atom(A), memberchk(A, Sl), !."
+           "'$ccl_read_arg'(S, Sl, T, T1, Reads) :- compound(T), !, T =.. [F|Args], '$ccl_reads_list'(S, Sl, Args, Args1, Reads), T1 =.. [F|Args1]."
+           "'$ccl_read_arg'(_, _, T, T, [])."
+           "'$ccl_conj'([], G, G) :- !."
+           "'$ccl_conj'([R|Rs], G, (R, G1)) :- '$ccl_conj'(Rs, G, G1)."
+
+           ;; ---- running: slots, assignment, dispatch --------------------------
+           "'$ccl_get'(S, _, _) :- var(S), !, throw(error(ccl_error('a slot read needs an instance: this is a static call'), _))."
+           "'$ccl_get'(S, Slot, V) :- ( '$value'(S, Slot, V0) -> V = V0 ; throw(error(existence_error(slot, S::Slot), _)) )."
+           "'$ccl_set'(S, _, _) :- var(S), !, throw(error(ccl_error('a slot assignment needs an instance: this is a static call'), _))."
+           "'$ccl_set'(S, Slot, V) :- retractall('$value'(S, Slot, _)), assertz('$value'(S, Slot, V))."
+           "'$ccl_assign'(E, V) :- ( '$ccl_arith'(E) -> V is E ; V = E )."
+           "'$ccl_arith'(E) :- number(E), !."
+           "'$ccl_arith'(E) :- compound(E), functor(E, F, A), memberchk(F/A, [(+)/2, (-)/2, (*)/2, (/)/2, (//)/2, mod/2, rem/2, (**)/2, (^)/2, (-)/1, abs/1, sign/1, min/2, max/2, sqrt/1, sin/1, cos/1, tan/1, exp/1, log/1, float/1, integer/1, truncate/1, round/1, ceiling/1, floor/1, (>>)/2, (<<)/2, (/\\\\)/2, (\\\\/)/2, xor/2, msb/1, gcd/2]), !."
+           "'$ccl_arith'(E) :- atom(E), memberchk(E, [pi, e, inf, nan, epsilon, max_tagged_integer, random])."
+
+           "Recv::Msg :- var(Recv), !, throw(error(instantiation_error, Recv::Msg))."
+           "Recv::Msg :- var(Msg), !, throw(error(instantiation_error, Recv::Msg))."
+           "Recv::Msg :- '$instance'(Recv, C), !, '$ccl_send'(C, Recv, Msg)."
+           "Recv::Msg :- '$ccl_resolve'(Recv, C), !, '$ccl_send'(C, _, Msg)."
+           ;; :: is xfy, so Module::Object::Msg reads as Module::(Object::Msg):
+           ;; when the receiver is no object but Module::Object is, that is the call
+           "Recv::(Inner::Msg) :- atom(Recv), '$ccl_resolve'(Recv::Inner, C), !, '$ccl_send'(C, _, Msg)."
+           "Recv::Msg :- throw(error(existence_error(object, Recv), Recv::Msg))."
+           "'$ccl_send'(C, Self, Msg) :- Msg =.. [F|Args], length(Args, A), ( '$ccl_find'(C, F, A, QF) -> G =.. [QF, Self|Args], call(G) ; A1 is A + 1, throw(error(existence_error(method, C::F/A1), _)) )."
+           "'$ccl_find'(C, F, A, QF) :- atomic_list_concat([C, '::', F], QF0), A1 is A + 1, ( current_predicate(QF0/A1) -> QF = QF0 ; '$object'(C, P), P \\== none, '$ccl_find'(P, F, A, QF) )."
+           "'$ccl_super'(C, Self, Msg) :- ( '$object'(C, P), P \\== none -> '$ccl_send'(P, Self, Msg) ; throw(error(existence_error(parent, C), super::Msg)) )."
+
+           ;; ---- instances --------------------------------------------------
+           ;; the initial values are checked BEFORE the instance exists, so a
+           ;; refused new/3 leaves nothing behind (and no throw sits inside a forall)
+           "new(Class, Inits, Inst) :- ( '$ccl_resolve'(Class, C) -> true ; throw(error(existence_error(object, Class), new(Class, Inits, Inst))) ), ( is_list(Inits) -> true ; throw(error(type_error(list, Inits), new(Class, Inits, Inst))) ), '$ccl_slots_of'(C, Slots), '$ccl_check_inits'(Inits, C, Slots), '$ccl_next'(N), atomic_list_concat([C, '#', N], Inst), assertz('$instance'(Inst, C)), forall('$ccl_slot_chain'(C, S, V), assertz('$value'(Inst, S, V))), '$ccl_inits'(Inits, Inst)."
+           "'$ccl_check_inits'([], _, _)."
+           "'$ccl_check_inits'([S = _|T], C, Slots) :- !, ( memberchk(S, Slots) -> true ; throw(error(existence_error(slot, C::S), new)) ), '$ccl_check_inits'(T, C, Slots)."
+           "'$ccl_check_inits'([Init|_], _, _) :- throw(error(type_error(slot_assignment, Init), new))."
+           "'$ccl_inits'([], _)."
+           "'$ccl_inits'([S = V|T], Inst) :- '$ccl_set'(Inst, S, V), '$ccl_inits'(T, Inst)."
+           "'$ccl_next'(N) :- ( retract('$ccl_counter'(N0)) -> N is N0 + 1 ; N = 1 ), assertz('$ccl_counter'(N))."
+           "delete(Inst) :- ( retract('$instance'(Inst, _)) -> retractall('$value'(Inst, _, _)) ; throw(error(existence_error(instance, Inst), delete(Inst))) )."
+           "object_of(Inst, C) :- '$instance'(Inst, C)."
+           "instance_of(Inst, Class) :- '$instance'(Inst, C0), '$ccl_ancestor'(C0, C), ( var(Class) -> Class = C ; '$ccl_resolve'(Class, C) )."
+           "slot(Inst, S, V) :- ( '$instance'(Inst, _) -> true ; throw(error(existence_error(instance, Inst), slot(Inst, S, V))) ), '$value'(Inst, S, V)."
+           "set_slot(Inst, S, V) :- ( '$value'(Inst, S, _) -> '$ccl_set'(Inst, S, V) ; throw(error(existence_error(slot, Inst::S), set_slot(Inst, S, V))) )."
+           "extends(Child, Parent) :- '$object'(Child, Parent), Parent \\== none."
+           "objects(Cs) :- findall(C, '$object'(C, _), Cs0), sort(Cs0, Cs)."
+           "instances(Class, Is) :- '$ccl_resolve'(Class, C), findall(I, ( '$instance'(I, C0), '$ccl_ancestor'(C0, C) ), Is)."
+           )))
+
+(source "cicili.c"
+  (make :std #t :compile #f)
+
+  (import "./sdk.cicili")
+  (coco-sdk)
+
+  ;; ccl_version(-Atom)
+  (func ccl_p_version ((coco_engine * e) (size_t g)) (out int)
+        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.1")))
+
+  (static) (coco-emit-module-dispatch ccl_dispatch *ccl-predicates*)
+  (coco-deflibrary "cicili" ccl_dispatch *ccl-prolog*))
