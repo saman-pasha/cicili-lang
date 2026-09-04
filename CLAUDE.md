@@ -33,6 +33,8 @@ library/ccl_infer.pl     the macro facilities: ccl_type_of/2 and lookups over th
 library/ccl_format.pl    format, print, println: the global macros, Rust's holes
 library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause per construct
 library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, else clang -c -x ir), cicili_link/3 (cc)
+library/ccl_check.pl     the safe part: owners (own), move, the flow walk; run first by cicili_ir
+test/c/safe/             programs the check must REFUSE, each with the error its .expect names
 test/compile.sh          the compiler's gate: every test/c/run/*.c built and run, its output checked
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh  ->  library/cicili.so
 module/ccl_llvm.cicili   the embedded LLVM: a cocolog module in Cicili over llvm-c; parse,
@@ -202,6 +204,22 @@ structs are named types registered once; an anonymous struct is keyed by
 its members. Externals used get `declare` lines from their prototypes.
 Not lowered yet: bitfields, unions' members, static locals, VLAs, `_Complex`,
 `long double` (as double) -- each `error(not_lowered(What), where(F))`.
+
+## How the safe part is checked
+
+`library(ccl_check)`: `ccl_check_units/1` walks every function of the
+given units before lowering. The reader gives `own` as a qualifier (on the
+pointee, C's grammar: `own char *p` is `ptr([], base([own], [char]))`, and
+`ck_own_type/1` looks in both places) and `move(E)` as a node. The state is
+`st(Frames)`, a frame `fr([Name-live|moved|partial ...], Defers)`; `ck_stmt/3`
+threads it, `dead` for a path that ended. A join (`ck_merge/3`) makes an
+owner `partial` when the sides differ; `partial` is refused on use and
+counts as leaked. Scope end and `return` run the frames' defers
+(`ck_run_defers`) then demand every owner moved (`ck_leaks`). Loops:
+`ck_no_moves_across/3` refuses an outer owner consumed in the body; a
+`break`/`continue` closes the frames inside the loop and joins the loop's
+exits (`'$ck_loops'`). `ck_consumes/2`: free, fclose, and any callee whose
+i-th parameter is `own`. The lowering treats `move(E)` as `E`.
 
 ## How the LLVM module is written (the Cicili module pattern)
 

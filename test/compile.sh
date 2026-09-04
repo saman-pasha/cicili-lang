@@ -32,4 +32,12 @@ for n in $names; do
     printf 'FAIL %-12s no %s.expect; it printed:\n' "$n" "$n"; echo "$got" | sed 's/^/     /'; failures=$((failures + 1))
   fi
 done
+# the safe part: every test/c/safe/NAME.c must be REFUSED, with the error NAME.expect names
+echo "-- refused, by the ownership check"
+for src in "$ROOT/test/c/safe"/*.c; do
+  n=$(basename "$src" .c)
+  got=$("$C" --embed "$D/kb" query "use_module(library(cicili)), cicili_ast('$src', A), catch(( cicili_ir([A], _), write(answer(compiled)) ), error(ownership(K, N, _), _), write(answer(ownership(K, N)))), nl" 2>&1 | grep -aoE 'answer\(.*\)' | head -1 | sed 's/^answer(//; s/)$//')
+  want=$(cat "$ROOT/test/c/safe/$n.expect")
+  if [ "$got" = "$want" ]; then printf 'ok   %-16s %s\n' "$n" "$got"; else printf 'FAIL %-16s got %s want %s\n' "$n" "$got" "$want"; failures=$((failures + 1)); fi
+done
 if [ "$failures" -eq 0 ]; then echo "GREEN: compile"; else echo "RED: $failures failure(s)"; exit 1; fi

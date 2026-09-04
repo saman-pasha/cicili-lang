@@ -224,6 +224,13 @@ k73 :- check('and a call named defer without a block is still a call',
 k74 :- check('buf := malloc(max); is a void * -- malloc\'s prototype came from <stdlib.h>',
     ( fn_body('defer.c', count_lines, B), member(declaration(10, none, _, [var(buf, ptr([], base([], [void])), call(id(malloc), _))]), B) )).
 
+k75 :- check('own char *b = move(a); -- own is a qualifier, move a node, in the reader',
+    ( fn_body('run/owners.c', main, B), member(declaration(_, _, base([own], [char]), [var(b, ptr([], base([own], [char])), move(id(a)))]), B) )).
+
+k76 :- check('an own parameter and an own return type',
+    ( unit('run/owners.c', unit(Is)), member(function(_, static, _, take, [param(ptr([], base([own], [char])), s)], _, _), Is),
+            member(function(_, static, ptr([], base([own], [char])), make, _, _, _), Is) )).
+
 k50 :- check('a typedef of a basic type',
     ( unit('rich.c', unit(Is)), member(typedef(_, [var(ulong, base([], [unsigned, long]), none)]), Is) )).
 
@@ -352,6 +359,9 @@ t_checks :-
     k72,
     k73,
     k74,
+    section('the safe part, as read: own and move'),
+    k75,
+    k76,
     section('rich.c: the grammar, one construct at a time'),
     k50,
     k51,

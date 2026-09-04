@@ -20,10 +20,14 @@ what runs today.
 * **M0 -- the LLVM path.** `proof/run.sh`: a hand-written LLVM IR module,
   compiled by the system `clang` (which consumes textual IR and drives the
   LLVM backend, no LLVM install) to a native binary that exits 42. GREEN.
+* **M3 -- the safe part, begun.** `own` pointers are linear, `move` hands
+  them on, and use after move, the double free, a leak on any path, a move
+  inside a loop are compile errors naming the form. GREEN: the owners
+  programs run, ten programs are refused each with its error.
 * **M2 -- the lowering.** `cicili_ir/2`, `cicili_compile/3`, `cicili_link/3`:
   C11's core -- every type but bitfields and unions, every statement and
   operator, calls and variadic calls, structs by value and by pointer,
-  `defer` -- lowered to LLVM IR and run. `test/compile.sh`: nine programs
+  `defer` -- lowered to LLVM IR and run. `test/compile.sh`: eleven programs
   built, run and checked, GREEN.
 * **M1 -- the reader.** `cicili_ast(+File, -AST)` reads a C file whole into an
   AST, through a DCG; each `#include` is found on the toolchain's path and
@@ -254,6 +258,33 @@ while (fgets(buf, max, f) != NULL)
 return n;
 ```
 
+## The safe part: `own` and `move`
+
+`own char *p = malloc(n);` declares an **owner**. An owner is linear: it is
+consumed exactly once on every path, by `free(p)` or `fclose(p)`, by
+`move(p)` into another owner or as an argument, by `return p`, or by
+passing it to a function whose parameter is `own`; a `defer(p) { free(p); }`
+consumes it at the scope's exit, on every path, as it is lowered. A consumed
+owner may own again by assignment. `cicili_ir` checks this before lowering
+anything, flow-sensitively, and refuses with `error(ownership(Kind, Name,
+Form), where(Function, line(L)))`, the form named:
+
+| refused as | when |
+|---|---|
+| `use_after_move` | a consumed owner is read, passed, or freed again (the double free) |
+| `owner_leaked` | an owner is live, on any path, at its scope's end or at a `return` |
+| `move_in_loop` | an owner from outside a loop is consumed inside it and not re-owned |
+| `move_of_non_owner` | `move(x)` of something not declared `own` |
+| `owner_overwritten` | assignment to a live owner, which would leak what it held |
+| `goto_with_owners` | a `goto` in a function that has owners, not followed yet |
+
+`test/c/run/owners.c` does all of it and runs, and `own_struct.c` does it
+with a struct on the heap: an `own point *` parameter takes the struct
+over, a `const point *` one only looks; the programs under `test/c/safe/`
+are each refused with the error their `.expect` names.
+Not tracked yet: non-owning pointers copied from an owner, owners inside
+structs, owners through function pointers.
+
 ## `format`, `print`, `println`: global macros
 
 They are there in every file, without an include, like `:=`. The format
@@ -298,6 +329,7 @@ library/ccl_infer.pl     what a macro can ask: type inference over the symbol ta
 library/ccl_format.pl    the global macros format, print, println
 library/ccl_ir.pl        cicili_ir: the lowering, the AST to LLVM IR text
 library/ccl_build.pl     cicili_compile and cicili_link
+library/ccl_check.pl     the safe part: the ownership check cicili_ir runs first
 module/ccl_llvm.cicili   the embedded LLVM, a cocolog module over llvm-c (module/build-llvm.sh)
 test/compile.sh          the compiler's gate: test/c/run/*.c built, run, checked
 library/cicili.so        built output; never committed (library/*.pl is)

@@ -26,8 +26,10 @@
 %%   ccl_ir_function(+Item, -Text) one function, for the curious
 
 :- use_module(library(ccl_infer)).
+:- use_module(library(ccl_check)).
 
 ccl_ir_units(Units, IR) :-
+    ccl_check_units(Units),                                             % the safe part first: a violation is a compile error
     ir_reset, ccl_scope_init, ir_note_units(Units),
     nb_setval('$ir_fdefs', []), nb_setval('$ir_gdefs', []),
     ir_units(Units),
@@ -246,6 +248,7 @@ ir_expr(cond(C, A, B), V, T) :- !,
     ir_block(LF), ir_expr(B, VB0, TB1), ir_convert(VB0, TB1, T, VB), ir_cur_label(LF1), ir_end(['br label %', LE]),
     ir_block(LE), ir_type(T, LL), ir_fresh(V), ir_ins([V, ' = phi ', LL, ' [ ', VA, ', %', LT1, ' ], [ ', VB, ', %', LF1, ' ]']).
 ir_expr(comma(A, B), V, T) :- !, ir_expr(A, _, _), ir_expr(B, V, T).
+ir_expr(move(E), V, T) :- !, ir_expr(E, V, T).                        % a move is the value; the checker did the rest
 ir_expr(compound_lit(T, Init), V, T1) :- !,
     ir_fresh(Addr), ir_type(T, LL), ir_alloca(Addr, LL), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E) ; T1 = T ).
 ir_expr(stmt_expr(block(Is)), V, T) :- !,

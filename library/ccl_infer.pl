@@ -136,6 +136,7 @@ ccl_type_of(postdec(E), T) :- !, ccl_type_of(E, T).
 ccl_type_of(sizeof(_), T) :- !, ccl_size_type(T).
 ccl_type_of(sizeof_type(_), T) :- !, ccl_size_type(T).
 ccl_type_of(cast(T, _), T) :- !.
+ccl_type_of(move(E), T) :- !, ccl_type_of(E, T).
 ccl_type_of(compound_lit(T, _), T) :- !.
 ccl_type_of(assign(_, L, _), T) :- !, ccl_type_of(L, T).
 ccl_type_of(comma(_, B), T) :- !, ccl_type_of(B, T).

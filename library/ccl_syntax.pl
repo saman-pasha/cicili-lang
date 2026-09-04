@@ -57,6 +57,9 @@
 %%   sizeof_type(T) cast(T, E) bin(Op, A, B) assign(Op, L, R) cond(C, A, B)
 %%   comma(A, B) init([item(Designators, Value) ...]) stmt_expr(Block)
 %%   compound_lit(Type, init(Items))            C99's (T){ ... }
+%%   move(E)                                    the safe part: ownership leaves E (an owner)
+%% Owners: `own T *p' is ptr([own|...], T): linear, consumed once on every path
+%% (library(ccl_check))
 %%
 %% THE SURFACE:
 %%   ccl_tokens(+Codes, -Tokens, -RestCodes)     the lexer, as phrase/3
@@ -68,7 +71,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(15).
+ccl_reader_version(16).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -314,6 +317,7 @@ ccl_expand_macro(N, As, R) :-
     (   catch(G, E, ( E = error(macro_error(_, here(_, _)), _) -> throw(E) ; throw(error(macro_error(N, As, E), _)) ))
     ->  ( is_list(R0) -> R = '$splice'(R0) ; R = R0 )
     ;   throw(error(macro_failed(N, As), _)) ).
+ccl_call_or_macro(id(move), [E], move(E)) :- !.                      % the safe part: ownership leaves E
 ccl_call_or_macro(id(N), As, R) :- length(As, K), ccl_is_macro(N, K), !, ccl_expand_macro(N, As, R).
 ccl_call_or_macro(F, As, call(F, As)).
 ccl_stmt_of(E, E) :- ccl_is_stmt(E), !.
@@ -389,6 +393,7 @@ ccl_decl_specs(Env, Scope, Sto, base(Quals, Specs)) -->
 
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_storage(K) }, !, ccl_specs(Env, Sc, [K|St0], Q0, S0, St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_qualifier(K) }, !, ccl_specs(Env, Sc, St0, [K|Q0], S0, St, Q, S).
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_id(own), !, ccl_specs(Env, Sc, St0, [own|Q0], S0, St, Q, S).   % the safe part's owner
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_basic_type(K) }, !, ccl_specs(Env, Sc, St0, Q0, [K|S0], St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_struct_spec(Env, T), !, ccl_specs(Env, Sc, St0, Q0, [T|S0], St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_enum_spec(T), !, ccl_specs(Env, Sc, St0, Q0, [T|S0], St, Q, S).
@@ -494,6 +499,7 @@ ccl_pointers([ptr(Qs)|Ps]) --> ccl_p('*'), !, ccl_quals(Qs), ccl_pointers(Ps).
 ccl_pointers([block(Qs)|Ps]) --> ccl_p('^'), !, ccl_quals(Qs), ccl_pointers(Ps).   % Apple's block pointer, (^f)(int)
 ccl_pointers([]) --> [].
 ccl_quals([Q|Qs]) --> ccl_kw(Q), { ccl_qualifier(Q) }, !, ccl_quals(Qs).
+ccl_quals([own|Qs]) --> ccl_id(own), !, ccl_quals(Qs).
 ccl_quals(Qs) --> ccl_gnu_attr, !, ccl_quals(Qs).             % char * _Nonnull p, char * __restrict q
 ccl_quals([]) --> [].
 ccl_direct(_, name(N)) --> ccl_id(N), !.
