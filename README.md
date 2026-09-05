@@ -51,14 +51,16 @@ cicili -shared -O1 lib.c -o lib.dylib
 cicili -I include prog.c           cicili -ast-dump prog.c           cicili --version
 ```
 
-`--version` prints the version, which every commit raises, and the back
-end's. A diagnostic is `file:line: error: what`, the exit status 1 when there is
+`--version` prints the version, which every commit raises, with the
+versions of the cocolog it runs on and of the back end. A diagnostic is `file:line: error: what`, the exit status 1 when there is
 one. The knowledge base is `~/.cicili/KB`, the user's (or `$CICILI_KB`;
 `--no-kb` keeps everything in memory): the first call is the initialization
 phase, reading the C standard library, the OS's and POSIX's headers
 **once**; every later call, in any project, the tests included, is served
-from it as static data, until the SDK or the reader's grammar changes.
-`test/driver.sh` is its gate.
+from it as static data, until the SDK or the reader's grammar changes. A
+grammar change starts a new store (`KB.version` beside it names the
+reader's version): every row of the old one is dead, and the store keeps
+what is retracted. `test/driver.sh` is its gate.
 
 ## The compiler, in four predicates
 
@@ -167,7 +169,11 @@ store is the user's, `~/.cicili/KB`: the first call is the initialization
 phase, when the system headers -- the C standard library, the OS's,
 POSIX's -- are parsed once; every later run, in any project, is served from
 it, the gates included; the reader's version is part of the key, so a
-better grammar re-reads what an older one left partial.
+better grammar re-reads what an older one left partial -- into a new store,
+since cocolog's store never reclaims a retracted row and a store grown fat
+slows every predicate's first call in a process (`KB.version` beside the
+store is the reader's version; `bin/cicili` and `test/config.sh` start
+afresh when it differs).
 
 Otherwise the preprocessor is not expanded: any other `#` line is kept
 whole as `directive(Line, Text)`, and a typedef name from a header the

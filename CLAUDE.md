@@ -23,7 +23,8 @@ reads them and puts this checkout's `library/` at the FRONT of
 ## Where things are
 
 ```
-module/cicili.cicili     the module: the C side (registration, ccl_version/1) and the Prolog
+module/cicili.cicili     the module: the C side (registration, ccl_version/1, and
+                         ccl_cocolog_version/1 over the engine's coco_version_text) and the Prolog
                          half -- cicili_ast/2,3 (the reader's door) and the objects layer
 library/ccl_syntax.pl    the lexer and the parser, two DCGs; COMMITTED (library/*.so is not)
 library/ccl_include.pl   #include: the inclusion path (asked of clang), resolution, the
@@ -208,14 +209,16 @@ is how `s := format(...)` is a `char *`.
 
 **The knowledge base is the cache.** A file read whole is
 `'$ccl_ast'(Path, key(MTime, Version), meta(What, Count, Deps))` plus one
-`'$ccl_item'(Path, Key, Index, Item)` per top-level item, an include inside
+`'$ccl_items:<Path>'(Key, Index, Item)` per top-level item -- one predicate
+per file, since the store grows by the written predicate's whole row count
+at every writing process (below) -- an include inside
 it stored as `ref(Path, How)` and re-linked on load through
 `ccl_include_read/2`; `ccl_kb_cached/3` checks `time_file/2`,
 `ccl_reader_version/1`, every dep's remembered key, and the item count.
 Both predicates are declared dynamic by `ccl_kb_ready/0`. **The store is the user's, `~/.cicili/KB`** (`$CICILI_KB`; owner's rule,
 final after two turns: not per working directory): the first call is the
 initialization phase, reading the C standard library, the OS's deep headers
-and POSIX once, ~90 s; every later call, in any project, is served from the
+and POSIX once, ~40 s; every later call, in any project, is served from the
 store as static data, the gates included -- `test/config.sh` exports
 `CICILI_KB=$HOME/.cicili/KB` and every gate runs over it. BUMP `ccl_reader_version/1` whenever the
 grammar changes, or a partial read from an older grammar stays cached (and
@@ -294,22 +297,62 @@ module (a segfault that looked like the error path's). The build mirrors `module
   condition. The older finding that a `throw/1` inside `forall/2` escapes
   the `catch/3` around it is probably the same defect seen from the other
   side; loops that can raise stay plain recursion, and `new/3` checks its
-  initial values BEFORE the instance exists.
+  initial values BEFORE the instance exists. FIXED in cocolog 1.1.0
+  (640f86e, 2026-09-05; the minimal case gives 7, and a throw inside
+  `findall/forall/aggregate_all` reaches the catch around it). The wrappers
+  stay: harmless, and a cocolog before the fix still runs this library.
 * **Consulting a file of about 70 facts whose arguments carry goals into
   an embedded store segfaults cocolog**, so the gate's checks are clauses
   (`k1 :- check(Name, Goal).`), not facts driven by `findall/3`.
 * **`atomic_list_concat/2` with an unbound element segfaults cocolog**
   (exit 139, no message) instead of raising an instantiation error; the
-  gate's `k17` did that before its scratch directory was bound.
+  gate's `k17` did that before its scratch directory was bound. FIXED in
+  cocolog 1.1.0 (an instantiation error).
 * **`atomic_list_concat/2` dies silently once its result passes about
   8 KB** (no error term; a later message may show garbage), while
   `atom_codes/2` takes hundreds of KB: anything long is joined as codes
-  (`ir_join/3`) and made an atom once.
+  (`ir_join/3`) and made an atom once. FIXED in cocolog 1.1.0 (up to
+  16 MB); `ir_join/3` stays.
 * **`cocolog run FILE goal` under `--embed` consults FILE INTO the store**:
   its clauses persist, and a second program's `main` meets the first's. A
   gate program is loaded with `ensure_loaded/1` from a `query`, whose
   clauses are not stored, and its entry point has a name of its own
   (`reader_main`, `compile_main`).
+* **`catch/3` costs in proportion to the terms bound inside it**: a read of
+  the symbol table through `once(catch(nb_getval(...)))` took 37 ms, bare
+  0.3 ms, and the checker and the lowering read it at every name. So the
+  globals are all set once per process (`ccl_ensure_globals/0`) and read
+  bare; a catch stays only where a call can really throw (`time_file/2`,
+  `proc_run/4`, the macro call) and never on a hot path.
+* **Under `--embed`, the first call of EVERY predicate probes the store, at
+  a cost that follows the store's size in bytes** (a consulted 3-clause
+  file: first call 39 µs on an empty store, 0.06-0.16 s on a 119 MB one,
+  0.4-1.1 s on a 1 GB one; a second call microseconds; `use_module/1`
+  itself instant; the same under `--local`: microseconds). A parse touches
+  ~500 predicates, so every `cicili` command pays a floor: 13 s over the
+  119 MB store, 83 s over the 1 GB one, 2 s with no store (6-11 s over the
+  24-30 MB store the per-file layout leaves; 2.8 s under cocolog 1.2.2,
+  against 2.2 s with no store). And **the store
+  never reclaims a retracted row**: each reader version bump re-reads the
+  headers into ~120 MB of new rows beside the dead ones (eight generations
+  made the 1 GB). So the store is stamped with the reader version
+  (`KB.version` beside it) and started afresh when it changes (`kb_prepare`
+  in `bin/cicili`, `ccl_kb_prepare` in `test/config.sh`), and the gates run
+  their checks in one process. (An earlier note here read this as lazy
+  compilation at ~1 s per predicate; it had been measured only under the
+  fat store.) The probe is FIXED in cocolog 1.2.2 (7f6a1ac, 2026-09-05:
+  the store's string keys indexed): a first call is 52 µs over the 119 MB
+  store. The stamp and the one-process gates stay, for the dead rows below.
+* **A process that writes a predicate grows the store by about 500 bytes
+  per row THAT predicate holds, whatever it writes** (one `assertz` of a
+  five-byte fact into the 39k-row item predicate: +19.5 MB; three writes in
+  one process the same; into a 158-row predicate +90 KB; into a fresh one
+  +0; a read-only process +0). Forty writing gate processes turned a fresh
+  123 MB store into 870 MB in one run. So a file's items are a predicate of
+  their own (`ccl_kb_items/2`), and a routine compile writes only the
+  source's small one and the 158-row index. Still so under cocolog 1.2.2
+  (a 20,000-row predicate: +7.8 MB per writing process). To raise with
+  cocolog's owner, with compaction.
 * **An unset global throws** (`nb_getval/2`: existence_error), so a global
   is read through `ccl_global/3` or a `once(catch(...))`.
 * cocolog has `abolish/1`, `clause/2` on consulted clauses and `retract/1`
@@ -319,6 +362,12 @@ module (a segfault that looked like the error path's). The build mirrors `module
 * `0'"` and `0''` read badly in cocolog; the lexer writes 34, 39, 92 as
   numbers. `( A -> B ; C )` inside a DCG body is avoided in favour of
   `( A, ! ; C )`.
+* **Since cocolog 1.2.0 (601e85b) a clause over the store's budget raises
+  `error(resource_error(clause_length), _)` and stores nothing** -- the
+  budget is the page less its header, about 7997 characters of the clause's
+  text; `ccl_kb_remember/3` catches it, drops the file's rows and leaves the
+  file uncached (read again next time). The silent loss below is what the
+  budget replaced.
 * **A predicate with ONE clause over about 8 KB loses EVERY clause in the
   embedded store, silently** -- the ones asserted before it and after it
   too (a list of 1000 integers survives a process, 2000 do not, and a small

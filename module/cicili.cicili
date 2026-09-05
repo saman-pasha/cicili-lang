@@ -55,13 +55,15 @@
 ;;;;   extends(?Child, ?Parent)                       the declared parent
 ;;;;   objects(-Classes)  instances(+Class, -Instances)
 ;;;;   ccl_version(-Atom)
+;;;;   ccl_cocolog_version(-Atom)                     the engine this process runs on
 ;;;;
 ;;;; BUILD: sh module/build.sh, with CICILI and COCOLOG naming the two
 ;;;; checkouts; then COCOLOG_LIBRARY=<this repo>/library and
 ;;;; `use_module(library(cicili))'.
 
 (DEFPARAMETER *ccl-predicates*
-  '(("ccl_version" 1 ccl_p_version)))
+  '(("ccl_version" 1 ccl_p_version)
+    ("ccl_cocolog_version" 1 ccl_p_cocolog_version)))
 
 (DEFPARAMETER *ccl-prolog*
   (FORMAT NIL "~{~A ~}"
@@ -245,7 +247,14 @@
   ;; ccl_version(-Atom): THE VERSION. Every commit raises it (owner's rule),
   ;; one number per change; `cicili --version' prints it with LLVM's.
   (func ccl_p_version ((coco_engine * e) (size_t g)) (out int)
-        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.9")))
+        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.10")))
+
+  ;; ccl_cocolog_version(-Atom): the engine's own version text, from the
+  ;; running binary (coco_version_text is cocolog's, resolved at load like
+  ;; the SDK's coco_m_* are), so `cicili --version' names what it runs on.
+  (decl) (func coco_version_text () (out const char *))
+  (func ccl_p_cocolog_version ((coco_engine * e) (size_t g)) (out int)
+        (return (coco_m_unify_atom e (coco_m_arg e g 0) (coco_version_text))))
 
   (static) (coco-emit-module-dispatch ccl_dispatch *ccl-predicates*)
   (coco-deflibrary "cicili" ccl_dispatch *ccl-prolog*))

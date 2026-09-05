@@ -36,7 +36,7 @@
 
 :- use_module(library(ccl_infer)).
 
-ccl_check_units(Units) :- ccl_scope_init, ck_note_units(Units), ck_units(Units).
+ccl_check_units(Units) :- ccl_ensure_globals, ccl_scope_init, ck_note_units(Units), ck_units(Units).
 ccl_check_noted(Units) :- ck_units(Units).                            % on the table the caller built
 ck_note_units([]).
 ck_note_units([unit(Is)|Us]) :- ccl_items_note(Is), ck_note_units(Us).

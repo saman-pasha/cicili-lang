@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(18).
+ccl_reader_version(19).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -194,7 +194,7 @@ ccl_one_char(0':, ':').  ccl_one_char(0';, ';').  ccl_one_char(0'=, '=').  ccl_o
 %% ---- the parser: a DCG over tokens -----------------------------------------
 
 ccl_unit(Tokens, unit(Items), Rest) :-
-    ccl_seed_typedefs(Env), nb_setval('$ccl_env', Env), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []), nb_setval('$ccl_expansions', []),
+    ccl_ensure_globals, ccl_seed_typedefs(Env), nb_setval('$ccl_env', Env), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []), nb_setval('$ccl_expansions', []),
     ccl_standard_macros, ccl_scope_init,
     phrase(ccl_externals(Env, Items0), Tokens, Rest),
     nb_getval('$ccl_expansions', Es0),
@@ -376,8 +376,8 @@ ccl_declare_enumerators([enumerator(N, E)|Es], Next) :-
 %% name(a, b) with name/3 registered runs name(ASTa, ASTb, R) now; R replaces
 %% the call. A list R is spliced into the items around it ('$splice').
 %% the registry holds macro(CName, Pred, Arity|dcg) entries (library(ccl_include))
-ccl_is_macro(N, K) :- once(catch(nb_getval('$ccl_macros', Ms), _, fail)), ( K1 is K + 1, memberchk(macro(N, _, K1), Ms) -> true ; memberchk(macro(N, _, dcg), Ms) ).
-ccl_macro_name(N) :- once(catch(nb_getval('$ccl_macros', Ms), _, fail)), memberchk(macro(N, _, _), Ms).
+ccl_is_macro(N, K) :- nb_getval('$ccl_macros', Ms), ( K1 is K + 1, memberchk(macro(N, _, K1), Ms) -> true ; memberchk(macro(N, _, dcg), Ms) ).
+ccl_macro_name(N) :- nb_getval('$ccl_macros', Ms), memberchk(macro(N, _, _), Ms).
 %% a plain macro name/K+1 is called pred(A1..AK, R); a DCG macro name//1 is
 %% phrase(pred(R), [A1..AK]): the arguments are the list it parses
 %% An error in a macro names both places: where the macro was called in the
@@ -394,8 +394,8 @@ ccl_expand_macro(N, As, R) :-
     ->  ( is_list(R0) -> ccl_add_lines(L, '$splice'(R0), R) ; ccl_add_lines(L, R0, R) ),
         ccl_note_expansion(L, N, As)
     ;   throw(error(macro_failed(N, As), here(File, L, in_macro(P, MF)))) ).
-ccl_macro_file(P, File) :- ( once(catch(nb_getval('$ccl_macro_files', L), _, fail)), member(File-Preds, L), memberchk(macro(_, P, _), Preds) -> true ; File = unknown ).
-ccl_note_expansion(L, N, As) :- ( once(catch(nb_getval('$ccl_expansions', Es), _, fail)) -> true ; Es = [] ), nb_setval('$ccl_expansions', [expansion(L, N, As)|Es]).
+ccl_macro_file(P, File) :- ( nb_getval('$ccl_macro_files', L), member(File-Preds, L), memberchk(macro(_, P, _), Preds) -> true ; File = unknown ).
+ccl_note_expansion(L, N, As) :- nb_getval('$ccl_expansions', Es), nb_setval('$ccl_expansions', [expansion(L, N, As)|Es]).
 ccl_call_or_macro(id(move), [E], move(E)) :- !.                      % the safe part: ownership leaves E
 ccl_call_or_macro(id(N), As, R) :- length(As, K), ccl_is_macro(N, K), !, ccl_expand_macro(N, As, R).
 ccl_call_or_macro(F, As, call(F, As)).
@@ -458,7 +458,7 @@ ccl_far(L) :- nb_getval('$ccl_far', F), ( L > F -> nb_setval('$ccl_far', L) ; tr
 ccl_farthest(L) :- nb_getval('$ccl_far', L).
 
 ccl_externals(Env, Is) --> [tok(pp, T, _)], { ccl_line_marker(T) }, !, ccl_externals(Env, Is).   % clang -E's `# 93 "file"', dropped
-ccl_externals(Env0, Items) --> ccl_external(Env0, Env1, I), !, ccl_set_env(Env1), ccl_externals(Env1, More), { ccl_splice(I, More, Items) }.
+ccl_externals(Env0, Items) --> ccl_external(Env0, Env1, I), !, { ( Env1 == Env0 -> true ; nb_setval('$ccl_env', Env1) ) }, ccl_externals(Env1, More), { ccl_splice(I, More, Items) }.
 ccl_externals(_, []) --> [].
 ccl_line_marker(T) :- sub_atom(T, 0, 2, _, '# '), sub_atom(T, 2, 1, _, D), atom_codes(D, [C]), C >= 0'0, C =< 0'9.
 
@@ -657,7 +657,7 @@ ccl_designator(at(E)) --> ccl_p('['), ccl_cond_expr(E), ccl_p(']').
 
 %% ---- statements -------------------------------------------------------------
 ccl_compound(Env, block(Items)) --> ccl_p('{'), ccl_push_scope, ccl_block_items(Env, Items), ccl_p('}'), ccl_pop_scope.
-ccl_block_items(Env0, Items) --> ccl_block_item(Env0, Env1, I), !, ccl_set_env(Env1), ccl_block_items(Env1, More), { ccl_splice(I, More, Items) }.
+ccl_block_items(Env0, Items) --> ccl_block_item(Env0, Env1, I), !, { ( Env1 == Env0 -> true ; nb_setval('$ccl_env', Env1) ) }, ccl_block_items(Env1, More), { ccl_splice(I, More, Items) }.
 ccl_block_items(_, []) --> [].
 ccl_block_item(Env, Env, directive(L, Text)) --> [tok(pp, Text, L)], !.
 ccl_block_item(Env, Env, '$splice'(Ds)) --> ccl_line(L), ccl_p('{'), ccl_pattern(P), ccl_p('}'), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_destructure(L, P, E, Ds) }.

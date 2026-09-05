@@ -126,10 +126,16 @@ it is done (see below); the checker and the lowering take the AST from here.
 * **M4 — the cache. STARTED at the reader.** Every file read whole -- the
   source and every header under it -- is in the store as
   `'$ccl_ast'(Path, key(MTime, ReaderVersion), …)` and loaded from there
-  while the file's time is unchanged (`library(ccl_include)`); a bare
-  `--embed` is the per-directory `./KB`. The checked AST and the emitted
-  IR join it when they exist, so a rebuild that touches one file redoes one
-  file.
+  while the file's time is unchanged (`library(ccl_include)`); the store
+  is the user's, `~/.cicili/KB`, stamped with the reader's version and
+  started afresh when that changes. The checked AST and the emitted IR
+  join it when they exist, so a rebuild that touches one file redoes one
+  file. The store's own costs are cocolog's: every predicate's first call
+  under `--embed` probed the store in proportion to its bytes (fixed in
+  cocolog 1.2.2 by indexing the string keys), and a process that writes a
+  predicate still grows the store by that predicate's whole row count,
+  never reclaimed -- hence one item predicate per file here, and
+  compaction raised with cocolog.
 * **M5 — the C++ reader.** After the C part is finished (M2 to M4), the
   reader grows the C++ forms, because the libraries are in C++: classes
   with member functions, constructors and destructors and access labels;

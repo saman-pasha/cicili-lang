@@ -61,8 +61,8 @@
 %% A `:- dynamic' here PERSISTS under the store (see CLAUDE.md), so the units
 %% read in this process, the files being read (the cycle guard) and the macro
 %% files loaded are globals, not clauses: nb_setval/2 is the process's own.
-ccl_unit_cached(Path, How, Unit) :- atom_concat('$ccl_unit:', Path, K), once(catch(nb_getval(K, How-Unit), _, fail)).
-ccl_unit_cache(Path, How, Unit) :- atom_concat('$ccl_unit:', Path, K), nb_setval(K, How-Unit).
+ccl_unit_cached(Path, How, Unit) :- ccl_global('$ccl_unit_paths', Ps, []), memberchk(Path, Ps), atom_concat('$ccl_unit:', Path, K), nb_getval(K, How-Unit).
+ccl_unit_cache(Path, How, Unit) :- atom_concat('$ccl_unit:', Path, K), nb_setval(K, How-Unit), ccl_global('$ccl_unit_paths', Ps, []), nb_setval('$ccl_unit_paths', [Path|Ps]).
 ccl_reading(Path) :- ccl_global('$ccl_reading', L, []), memberchk(Path, L).
 ccl_reading_push(Path) :- ccl_global('$ccl_reading', L, []), nb_setval('$ccl_reading', [Path|L]).
 ccl_reading_pop(Path) :- ccl_global('$ccl_reading', L, []), ccl_delete_one(L, Path, L1), nb_setval('$ccl_reading', L1).
@@ -77,18 +77,28 @@ ccl_macro_note(Path, Preds) :- ccl_global('$ccl_macro_files', L, []), nb_setval(
 %% predicate with ONE clause over about 8 KB loses EVERY clause in the store,
 %% silently -- so a unit is stored one clause per top-level item, with its
 %% count, and an include inside it as a reference to the header's own cached
-%% unit; '$ccl_ast'/3 and '$ccl_item'/4 are declared by ccl_kb_ready/0:
+%% unit; '$ccl_ast'/3 is declared by ccl_kb_ready/0, a file's item predicate
+%% by ccl_kb_items/2 (the '$ccl_item'(Path, ...) below reads '$ccl_items:Path'(...)):
 %%      '$ccl_ast'(Path, Key, meta(What, Count, Deps))
 %%      '$ccl_item'(Path, Key, Index, Item)     Item's include(L, S, file(P, How, U))
 %%                                              stored as include(L, S, ref(P, How))
 %%    What is top | included(How) | included_partial(How, Line, Near); Deps is
 %%    [DepPath-DepKey ...], each checked against the header's current key on
 %%    load; a count that does not match (an item too big to store) is a miss.
-ccl_kb_ready :- ( ccl_global('$ccl_kb_ready', yes, no) -> true ; dynamic('$ccl_ast'/3), dynamic('$ccl_item'/4), nb_setval('$ccl_kb_ready', yes) ).
-ccl_kb_forget_file(Path) :- ccl_kb_ready, retractall('$ccl_ast'(Path, _, _)), retractall('$ccl_item'(Path, _, _, _)).
+ccl_kb_ready :- ccl_ensure_globals, ( nb_getval('$ccl_kb_ready', yes) -> true ; dynamic('$ccl_ast'/3), nb_setval('$ccl_kb_ready', yes) ).
+%% The items of a file are a predicate of their own, '$ccl_items:<Path>'(Key,
+%% Index, Item): the store grows, once per process that writes a predicate, by
+%% about 500 bytes per row THAT predicate holds, whatever the write -- one
+%% assertz into a 39k-row '$ccl_item'/4 cost 19.5 MB, and forty writing gate
+%% processes made the 870 MB store. A source file's rows are written at every
+%% change; in their own small predicate that costs one page.
+ccl_kb_items(Path, F) :- atom_concat('$ccl_items:', Path, F), dynamic(F/3).
+ccl_kb_items_goal(Path, K, I, It, T) :- ccl_kb_items(Path, F), T =.. [F, K, I, It].
+ccl_kb_forget_items(Path) :- ccl_kb_items_goal(Path, _, _, _, T), retractall(T).
+ccl_kb_forget_file(Path) :- ccl_kb_ready, retractall('$ccl_ast'(Path, _, _)), ccl_kb_forget_items(Path).
 
 ccl_read_file(File, AST, Rest) :-
-    ccl_kb_cached(File, top, AST0), !, AST = AST0, Rest = [], nb_setval('$ccl_far', 0).
+    ccl_ensure_globals, ccl_kb_cached(File, top, AST0), !, AST = AST0, Rest = [], nb_setval('$ccl_far', 0).
 ccl_read_file(File, AST, Rest) :-
     read_file_to_codes(File, Codes),
     ccl_tokens(Codes, Tokens, RestCodes),
@@ -99,26 +109,33 @@ ccl_read_file(File, AST, Rest) :-
     ( Rest == [] -> ccl_kb_remember(File, top, AST) ; true ).
 
 ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V).
-ccl_kb_forget :- ccl_kb_ready, retractall('$ccl_ast'(_, _, _)), retractall('$ccl_item'(_, _, _, _)).
+ccl_kb_forget :- ccl_kb_ready, findall(P, '$ccl_ast'(P, _, _), Ps), ccl_kb_forget_each(Ps), retractall('$ccl_ast'(_, _, _)).
+ccl_kb_forget_each([]).
+ccl_kb_forget_each([P|Ps]) :- ccl_kb_forget_items(P), ccl_kb_forget_each(Ps).
 
 %% remember: What and a unit (or a partial one) -> meta + one clause per item
 ccl_kb_remember(Path, What0, Unit) :-
     ccl_kb_ready,
     (   ccl_kb_key(Path, K)
     ->  ccl_kb_what(What0, Unit, What, Items),
-        retractall('$ccl_ast'(Path, _, _)), retractall('$ccl_item'(Path, _, _, _)),
-        ccl_kb_store_items(Items, Path, K, 0, N, [], Deps),
-        assertz('$ccl_ast'(Path, K, meta(What, N, Deps)))
+        retractall('$ccl_ast'(Path, _, _)), ccl_kb_forget_items(Path),
+        ccl_kb_items(Path, F),
+        (   catch(ccl_kb_store_items(Items, F, K, 0, N, [], Deps), error(resource_error(clause_length), _), fail)
+        ->  assertz('$ccl_ast'(Path, K, meta(What, N, Deps)))
+        ;   % an item over the store's clause budget (cocolog 1.2: an error, no
+            % longer a silent loss): this file is read again next time, not cached
+            ccl_kb_forget_items(Path)
+        )
     ;   true ).
 ccl_kb_what(top, unit(Is), top, Is) :- !.
 ccl_kb_what(included(How), unit(Is), included(How), Is) :- !.
 ccl_kb_what(included(How), partial(unit(Is), line(L), near(F)), included_partial(How, L, F), Is).
 ccl_kb_store_items([], _, _, N, N, Deps, Deps).
-ccl_kb_store_items([I|Is], Path, K, N0, N, D0, Deps) :-
+ccl_kb_store_items([I|Is], F, K, N0, N, D0, Deps) :-
     ccl_kb_flatten(I, I1, D0, D1),
-    assertz('$ccl_item'(Path, K, N0, I1)),
+    T =.. [F, K, N0, I1], assertz(T),
     N1 is N0 + 1,
-    ccl_kb_store_items(Is, Path, K, N1, N, D1, Deps).
+    ccl_kb_store_items(Is, F, K, N1, N, D1, Deps).
 ccl_kb_flatten(include(L, S, file(P, How, _)), include(L, S, ref(P, How)), D0, D) :- !,
     ( ccl_kb_key(P, PK) -> D = [P-PK|D0] ; D = D0 ).
 ccl_kb_flatten(include(L, S, macros(P, Preds)), include(L, S, macros(P, Preds)), D0, D) :- !,
@@ -131,7 +148,7 @@ ccl_kb_cached(Path, What, Unit) :-
     ccl_kb_ready, ccl_kb_key(Path, K),
     '$ccl_ast'(Path, K, meta(What0, N, Deps)), !,
     ccl_kb_deps_fresh(Deps),
-    findall(I-It, '$ccl_item'(Path, K, I, It), Pairs),
+    ccl_kb_items_goal(Path, K, I, It, T), findall(I-It, T, Pairs),
     length(Pairs, N),
     sort(Pairs, Sorted), ccl_kb_values(Sorted, Items0),
     ccl_kb_link(Items0, Items),
@@ -164,7 +181,17 @@ ccl_restore_globals(g(F, E, Far, M, Sc, Td, Tg, En, Ex)) :-
     nb_setval('$ccl_file', F), nb_setval('$ccl_env', E), nb_setval('$ccl_far', Far), nb_setval('$ccl_macros', M),
     nb_setval('$ccl_scope', Sc), nb_setval('$ccl_typedefs', Td), nb_setval('$ccl_tags', Tg), nb_setval('$ccl_enums', En),
     nb_setval('$ccl_expansions', Ex).
-ccl_global(K, V, D) :- ( catch(nb_getval(K, V0), _, fail), V0 \== '$unset' -> V = V0 ; V = D ).
+%% every global is set once per process (ccl_ensure_globals/0), so reads are
+%% bare nb_getval/2: a catch/3 costs in proportion to the terms bound inside
+%% it, 37 ms with the symbol table -- a finding, in CLAUDE.md
+ccl_global(K, V, _) :- ccl_ensure_globals, nb_getval(K, V).
+ccl_ensure_globals :-
+    ( catch(nb_getval('$ccl_inited', yes), _, fail) -> true
+    ; nb_setval('$ccl_file', none), nb_setval('$ccl_env', []), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []),
+      nb_setval('$ccl_scope', [[]]), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []), nb_setval('$ccl_enums', []),
+      nb_setval('$ccl_expansions', []), nb_setval('$ccl_incpath', none), nb_setval('$ccl_kb_ready', no), nb_setval('$ccl_reading', []),
+      nb_setval('$ccl_macro_files', []), nb_setval('$ccl_std_macros', none), nb_setval('$ccl_gensym', 0), nb_setval('$ccl_unit_paths', []),
+      nb_setval('$ccl_inited', yes) ).
 
 %% ---- the directive's text -----------------------------------------------------
 ccl_include_spec(Text, Spec) :- atom_codes(Text, Cs), phrase(ccl_inc_spec(Spec), Cs).

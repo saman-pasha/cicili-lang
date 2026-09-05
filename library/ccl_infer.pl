@@ -22,16 +22,17 @@
 %% Types are the AST's: base(Quals, Specs), ptr(Quals, T), arr(Size, T),
 %% fn(Ret, Params, Variadic), block(Quals, T); and unknown.
 
-%% every catch here is once/1: a bare catch that succeeds leaves a frame a
-%% later throw runs (a cocolog finding, in CLAUDE.md)
-ccl_scope(Fs) :- once(catch(nb_getval('$ccl_scope', Fs), _, Fs = [[]])).
+%% no catch on a read of a global here: the keys are set once per process
+%% (ccl_ensure_globals/0, library(ccl_include)), and a catch costs in
+%% proportion to the terms bound inside it (a cocolog finding, in CLAUDE.md)
+ccl_scope(Fs) :- nb_getval('$ccl_scope', Fs).                        % set by ccl_scope_init; bare: a catch would copy it
 ccl_declared(N, T) :- ccl_scope(Fs), ccl_in_frames(Fs, N, T).
 ccl_in_frames([F|Fs], N, T) :- ( memberchk(N-T0, F) -> T = T0 ; ccl_in_frames(Fs, N, T) ).
-ccl_typedef_of(N, T) :- once(catch(nb_getval('$ccl_typedefs', L), _, fail)), memberchk(N-T, L).
-ccl_tag(Tag, Ms) :- once(catch(nb_getval('$ccl_tags', L), _, fail)), memberchk(Tag-Ms, L).
+ccl_typedef_of(N, T) :- nb_getval('$ccl_typedefs', L), memberchk(N-T, L).
+ccl_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), memberchk(Tag-Ms, L).
 
 %% ---- constants ---------------------------------------------------------------------
-ccl_enum_value(N, V) :- once(catch(nb_getval('$ccl_enums', L), _, fail)), memberchk(N-V, L).
+ccl_enum_value(N, V) :- nb_getval('$ccl_enums', L), memberchk(N-V, L).
 %% an integer constant expression, as C folds it
 ccl_const_eval(int(N), N) :- !.
 ccl_const_eval(chr(C), C) :- !.
@@ -64,9 +65,9 @@ ccl_const_op('!=', X, Y, V) :- ( X =\= Y -> V = 1 ; V = 0 ).
 ccl_const_op('&&', X, Y, V) :- ( X =\= 0, Y =\= 0 -> V = 1 ; V = 0 ).
 ccl_const_op('||', X, Y, V) :- ( ( X =\= 0 ; Y =\= 0 ) -> V = 1 ; V = 0 ).
 
-ccl_here(File, Line) :- once(catch(nb_getval('$ccl_file', File), _, File = none)), once(catch(nb_getval('$ccl_far', Line), _, Line = 0)).
+ccl_here(File, Line) :- ccl_ensure_globals, nb_getval('$ccl_file', File), nb_getval('$ccl_far', Line).
 ccl_gensym(Prefix, Atom) :-
-    ( catch(nb_getval('$ccl_gensym', N0), _, fail) -> true ; N0 = 0 ), N is N0 + 1, nb_setval('$ccl_gensym', N),
+    ccl_ensure_globals, nb_getval('$ccl_gensym', N0), N is N0 + 1, nb_setval('$ccl_gensym', N),
     atomic_list_concat([Prefix, '_', N], Atom).
 ccl_macro_error(Msg) :- ccl_here(F, L), throw(error(macro_error(Msg, here(F, L)), _)).
 

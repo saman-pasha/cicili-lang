@@ -45,10 +45,10 @@ ir_items([I|Is]) :- ir_item(I), ir_items(Is).
 
 %% ---- state -----------------------------------------------------------------------
 ir_reset :-
-    ( once(catch(os_env('CCL_IR_TRACE', Tr), _, fail)), Tr \== '' -> nb_setval('$ir_trace', yes) ; nb_setval('$ir_trace', no) ),
-    nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
+    ccl_ensure_globals, ( once(catch(os_env('CCL_IR_TRACE', Tr), _, fail)), Tr \== '' -> nb_setval('$ir_trace', yes) ; nb_setval('$ir_trace', no) ),
+    nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_fn', file), nb_setval('$ir_line', 0), nb_setval('$ir_ret', none), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no), nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
     nb_setval('$ir_externs', []), nb_setval('$ir_defined', []), nb_setval('$ir_gmap', []).
-ir_get(K, V) :- once(catch(nb_getval(K, V), _, fail)).
+ir_get(K, V) :- nb_getval(K, V).                                       % every '$ir_*' key is set by ir_reset / ir_function
 ir_fresh(R) :- nb_getval('$ir_reg', N), N1 is N + 1, nb_setval('$ir_reg', N1), atomic_list_concat(['%t', N1], R).
 ir_label(L) :- nb_getval('$ir_reg', N), N1 is N + 1, nb_setval('$ir_reg', N1), atomic_list_concat(['L', N1], L).
 ir_emit(Parts) :-
@@ -63,8 +63,7 @@ ir_end(Parts) :- ( ir_terminated(yes) -> true ; ir_emit(['  '|Parts]), ir_set_te
 %% a block starts: fall in from the block before unless it ended
 ir_block(L) :- ( ir_terminated(yes) -> true ; ir_emit(['  br label %', L]) ), ir_emit([L, ':']), ir_set_term(no).
 ir_alloca(R, LL) :- nb_getval('$ir_allocas', A), atomic_list_concat(['  ', R, ' = alloca ', LL], Line), nb_setval('$ir_allocas', [Line|A]).
-ir_where(where(F, line(L))) :- ir_get('$ir_fn', F), !, ( ir_get('$ir_line', L) -> true ; L = 0 ).
-ir_where(where(file, line(0))).
+ir_where(where(F, line(L))) :- nb_getval('$ir_fn', F), nb_getval('$ir_line', L).
 ir_fail(What) :- ir_where(W), throw(error(not_lowered(What), W)).
 
 
@@ -124,10 +123,9 @@ ir_struct(Tag, Ms0, Name) :-
 %% an anonymous struct is named by its members, in a registry of its own --
 %% not in '$ir_structs', where a name means "defined"
 ir_anon_name(Ms, Name) :-
-    ir_get('$ir_anons', As0), !, As = As0,
+    nb_getval('$ir_anons', As),
     ( member(N-Ms0, As), Ms0 == Ms -> Name = N
     ; length(As, K), atomic_list_concat(['%struct.anon.', K], Name), nb_setval('$ir_anons', [Name-Ms|As]) ).
-ir_anon_name(Ms, Name) :- nb_setval('$ir_anons', []), ir_anon_name(Ms, Name).
 ir_replace([], _, _, []).
 ir_replace([N-_|T], N, D, [N-D|T]) :- !.
 ir_replace([X|T], N, D, [X|T1]) :- ir_replace(T, N, D, T1).
