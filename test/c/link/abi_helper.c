@@ -21,3 +21,9 @@ double via_f12(f12 v) { return sum_f12(bump_f12(v)); }
 double via_pi(pi v) { return sum_pi(bump_pi(v)); }
 double via_d24(d24 v) { return sum_d24(bump_d24(v)); }
 double via_csi(csi v) { return sum_csi(bump_csi(v)); }
+bf mk_bf(int a, int b, short s, int c) { bf v = { a, b, s, c }; return v; }
+double sum_bf(bf v) { return v.a + 10.0 * v.b + 100.0 * v.s + 1000.0 * v.c; }
+un mk_un(double d) { un v; v.d = d; return v; }
+double sum_un(un v) { return v.d; }
+double via_bf(bf v) { return sum_bf(bump_bf(v)); }
+double via_un(un v) { return sum_un(bump_un(v)); }

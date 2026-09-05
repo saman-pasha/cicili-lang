@@ -18,7 +18,10 @@
 %% structs, typedefs, enums; declarations with initializers; if, while, do,
 %% for, switch, return, break, continue, goto, defer; every operator, calls
 %% (variadic too), casts, sizeof, ?:, the comma, compound literals,
-%% statement expressions. Not yet: bitfields, unions, static locals, VLAs,
+%% statement expressions; unions (a scalar of the union's alignment, padded,
+%% every member at its address), bitfields (a struct's shape follows its C
+%% layout, a run of bitfields one [K x i8] read and written through masks),
+%% static locals (a private global of the function's). Not yet: VLAs,
 %% long double, _Complex -- each throws error(not_lowered(What), where(F)).
 %%
 %% A struct by value crosses a call the way the platform's C ABI says (M3):
@@ -58,6 +61,7 @@ ir_reset :-
     ccl_ensure_globals, ( once(catch(os_env('CCL_IR_TRACE', Tr), _, fail)), Tr \== '' -> nb_setval('$ir_trace', yes) ; nb_setval('$ir_trace', no) ),
     nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_fn', file), nb_setval('$ir_line', 0), nb_setval('$ir_ret', none), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no), nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
     nb_setval('$ir_externs', []), nb_setval('$ir_defined', []), nb_setval('$ir_gmap', []), nb_setval('$ir_ret_abi', scalar),
+    nb_setval('$ir_maps', []), nb_setval('$ir_statics', 0),
     ir_arch_init.
 ir_get(K, V) :- nb_getval(K, V).                                       % every '$ir_*' key is set by ir_reset / ir_function
 %% the host's architecture, once per process: sysv (x86-64) or aapcs (arm64)
@@ -132,19 +136,108 @@ ir_base(S, i64) :- memberchk(long, S), !.
 ir_base(S, i32) :- ( memberchk(int, S) ; memberchk(unsigned, S) ; memberchk(signed, S) ), !.
 ir_base([enum(_, _)], i32) :- !.
 ir_base([struct(Tag, Ms)], LL) :- !, ir_struct(Tag, Ms, LL).
-ir_base([union(_, Ms)], LL) :- !, ( Ms == none -> ir_fail(union) ; ccl_union_layout(Ms, 0, 1, N, _), atomic_list_concat(['[', N, ' x i8]'], LL) ).
+%% a union is a scalar of its alignment (so it lies where C puts it) padded
+%% to its size; every member is read and written at its address
+ir_base([union(Tag, Ms0)], LL) :- !,
+    ( Ms0 == none -> ( ccl_tag(Tag, Ms) -> true ; ir_fail(union(Tag)) ) ; Ms = Ms0 ),
+    ccl_union_layout(Ms, 0, 1, N, A), ir_union_type(N, A, LL).
 ir_base([typedef(N)], _) :- !, ir_fail(typedef(N)).
 ir_base(S, _) :- ir_fail(specs(S)).
-%% a struct type is named once; the members are laid out in order
+ir_union_type(N, A, LL) :-
+    ( A >= 8 -> H = i64, HS = 8 ; A =:= 4 -> H = i32, HS = 4 ; A =:= 2 -> H = i16, HS = 2 ; H = i8, HS = 1 ),
+    Pad is N - HS,
+    ( HS =:= 1 -> atomic_list_concat(['[', N, ' x i8]'], LL)
+    ; Pad =:= 0 -> atomic_list_concat(['{ ', H, ' }'], LL)
+    ; atomic_list_concat(['{ ', H, ', [', Pad, ' x i8] }'], LL) ).
+ir_is_union(T) :- ccl_resolve_type(T, base(_, [union(_, _)])).
+%% a struct type is named once, shaped from its layout (ir_struct_shape/3)
 ir_struct(Tag, Ms0, Name) :-
     ( Ms0 == none -> ( ccl_tag(Tag, Ms) -> true ; ir_fail(struct(Tag)) ) ; Ms = Ms0 ),
     ( Tag == anon -> ir_anon_name(Ms, Name) ; atom_concat('%struct.', Tag, Name) ),
     nb_getval('$ir_structs', Ss),
     (   memberchk(Name-_, Ss) -> true
     ;   nb_setval('$ir_structs', [Name-pending|Ss]),
-        ir_member_types(Ms, LLs), ir_join(LLs, ', ', Body),
+        ir_struct_shape(Ms, Elems, Map), ir_join(Elems, ', ', Body),
         atomic_list_concat([Name, ' = type { ', Body, ' }'], Def),
-        nb_getval('$ir_structs', Ss1), ir_replace(Ss1, Name, Def, Ss2), nb_setval('$ir_structs', Ss2) ).
+        nb_getval('$ir_structs', Ss1), ir_replace(Ss1, Name, Def, Ss2), nb_setval('$ir_structs', Ss2),
+        nb_getval('$ir_maps', Maps), nb_setval('$ir_maps', [Name-shape(Elems, Map)|Maps]) ).
+%% the LLVM shape of a struct, from its C layout: an element per plain member,
+%% one [K x i8] per run of bitfields (the bytes their bits span; runs split
+%% where a byte is not shared), padding wherever C's offset is past LLVM's
+%% natural one and at the tail; the map says which element a member is and,
+%% for a bitfield, its bits within the run: m(Name, Index, T, none | bf(RunLL, BitOff, Width, Signed))
+ir_struct_shape(Ms, Elems, Map) :-
+    ccl_members_layout(Ms, Lays, Size, _),
+    ir_shape(Lays, 0, 0, Elems0, Map, Cur),
+    ( Size > Cur -> Pad is Size - Cur, atomic_list_concat(['[', Pad, ' x i8]'], PadEl), append(Elems0, [PadEl], Elems) ; Elems = Elems0 ).
+ir_shape([], Cur, _, [], [], Cur).
+ir_shape([lay(N, T, Off, none)|Ls], Cur, Idx, Elems, Map, End) :- !,
+    ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ccl_round_up(Cur, A, Nat), ir_type(T, LL),
+    ir_pad_to(Off, Nat, Cur, Idx, Elems, Elems1, Idx1),
+    Elems1 = [LL|Elems2], Cur1 is Off + S, Idx2 is Idx1 + 1,
+    Map = [m(N, Idx1, T, none)|Map1],
+    ir_shape(Ls, Cur1, Idx2, Elems2, Map1, End).
+ir_shape([lay(N, T, Off, Bits)|Ls], Cur, Idx, Elems, Map, End) :-
+    ir_bit_run([lay(N, T, Off, Bits)|Ls], none, none, Run, Rest, Start, Last),
+    K is Last - Start + 1,
+    ir_pad_to(Start, Start, Cur, Idx, Elems, Elems1, Idx1),
+    atomic_list_concat(['[', K, ' x i8]'], El), Elems1 = [El|Elems2], RBits is K * 8, atom_concat(i, RBits, RunLL),
+    ir_run_map(Run, Idx1, Start, RunLL, Map1), append(Map1, Map2, Map),
+    Cur1 is Start + K, Idx2 is Idx1 + 1,
+    ir_shape(Rest, Cur1, Idx2, Elems2, Map2, End).
+%% padding when the member's offset is past where LLVM would put it
+ir_pad_to(Off, Nat, Cur, Idx, Elems, Elems1, Idx1) :-
+    ( Off > Nat, Off > Cur -> Pad is Off - Cur, atomic_list_concat(['[', Pad, ' x i8]'], PadEl), Elems = [PadEl|Elems1], Idx1 is Idx + 1 ; Elems = Elems1, Idx1 = Idx ).
+%% the consecutive bitfields whose bytes chain (each one's first byte within the run so far)
+ir_bit_run([lay(N, T, Off, bits(BOff, W, U))|Ls], S0, L0, [lay(N, T, Off, bits(BOff, W, U))|Run], Rest, Start, Last) :-
+    First is Off + BOff // 8, LastB is Off + (BOff + W - 1) // 8,
+    ( S0 == none -> true ; First =< L0 + 0 ), !,
+    ( S0 == none -> S1 = First ; S1 = S0 ), ( L0 == none -> L1 = LastB ; L1 is max(L0, LastB) ),
+    ir_bit_run(Ls, S1, L1, Run, Rest, Start, Last).
+ir_bit_run(Ls, Start, Last, [], Ls, Start, Last).
+ir_run_map([], _, _, _, []).
+ir_run_map([lay(N, T, Off, bits(BOff, W, _))|Ls], Idx, Start, RunLL, [m(N, Idx, T, bf(RunLL, ROff, W, Signed))|Ms]) :-
+    ROff is Off * 8 + BOff - Start * 8, ( ir_signed(T) -> Signed = true ; Signed = false ),
+    ir_run_map(Ls, Idx, Start, RunLL, Ms).
+%% a member's slot: an address, or bf(Address, RunLL, BitOff, Width, Signed) for a bitfield
+ir_member_slot(Base, ST, N, Slot, T) :-
+    (   ir_is_union(ST) -> ( ccl_member_type(ST, N, T) -> Slot = Base ; ir_fail(no_member(N, ST)) )
+    ;   ir_type(ST, SLL), nb_getval('$ir_maps', Maps), memberchk(SLL-shape(_, Map), Maps), memberchk(m(N, Idx, T, BF), Map)
+    ->  ir_fresh(P), ir_ins([P, ' = getelementptr ', SLL, ', ptr ', Base, ', i32 0, i32 ', Idx]),
+        ( BF == none -> Slot = P ; BF = bf(RunLL, Off, W, Signed), Slot = bf(P, RunLL, Off, W, Signed) )
+    ;   ir_fail(no_member(N, ST)) ).
+ir_slot_addr(bf(_, _, _, _, _), _) :- !, ir_fail(address_of_bitfield).
+ir_slot_addr(A, A).
+%% a load from a slot (an array decays to its address); a bitfield's bits shifted out of its run
+ir_load_slot(bf(P, RunLL, Off, W, Signed), T, V) :- !,
+    ir_fresh(U), ir_ins([U, ' = load ', RunLL, ', ptr ', P, ', align 1']),
+    ir_bits(RunLL, K), Sh1 is K - Off - W, Sh2 is K - W,
+    ( Sh1 =:= 0 -> V1 = U ; ir_fresh(V1), ir_ins([V1, ' = shl ', RunLL, ' ', U, ', ', Sh1]) ),
+    ( Signed == true -> Op = ashr ; Op = lshr ),
+    ( Sh2 =:= 0 -> V2 = V1 ; ir_fresh(V2), ir_ins([V2, ' = ', Op, ' ', RunLL, ' ', V1, ', ', Sh2]) ),
+    ir_type(T, LL), ir_int_convert(V2, RunLL, Signed, LL, V).
+ir_load_slot(A, T, V) :- ir_load_or_decay(A, T, V).
+%% a store to a slot; a bitfield's bits masked into its run
+ir_store_slot(bf(P, RunLL, Off, W, _), T, V) :- !,
+    ir_type(T, LL), ir_bits(RunLL, K), Mask is (1 << W) - 1, ir_iconst(Mask, K, MaskLit),
+    ( K < 64 -> Clear is ((1 << K) - 1) - (Mask << Off) ; Clear is \ (Mask << Off) ), ir_iconst(Clear, K, ClearLit),
+    ir_fresh(U), ir_ins([U, ' = load ', RunLL, ', ptr ', P, ', align 1']),
+    ir_fresh(C), ir_ins([C, ' = and ', RunLL, ' ', U, ', ', ClearLit]),
+    ir_int_convert(V, LL, false, RunLL, V1),
+    ir_fresh(M), ir_ins([M, ' = and ', RunLL, ' ', V1, ', ', MaskLit]),
+    ( Off =:= 0 -> S = M ; ir_fresh(S), ir_ins([S, ' = shl ', RunLL, ' ', M, ', ', Off]) ),
+    ir_fresh(R), ir_ins([R, ' = or ', RunLL, ' ', C, ', ', S]),
+    ir_ins(['store ', RunLL, ' ', R, ', ptr ', P, ', align 1']).
+ir_store_slot(A, T, V) :- ir_type(T, LL), ir_ins(['store ', LL, ' ', V, ', ptr ', A]).
+%% an integer constant as LLVM writes it for iK: two's complement when the top bit is set
+ir_iconst(Val, K, Lit) :- ( K < 64, Val >= 1 << (K - 1) -> Lit is Val - (1 << K) ; Lit = Val ).
+%% an integer of one width to another
+ir_int_convert(V, FL, Signed, TL, V1) :-
+    ir_bits(FL, FB), ir_bits(TL, TB),
+    (   FB =:= TB -> V1 = V
+    ;   FB > TB -> ir_op1(trunc, FL, V, TL, V1)
+    ;   Signed == true -> ir_op1(sext, FL, V, TL, V1)
+    ;   ir_op1(zext, FL, V, TL, V1) ).
 %% an anonymous struct is named by its members, in a registry of its own --
 %% not in '$ir_structs', where a name means "defined"
 ir_anon_name(Ms, Name) :-
@@ -154,9 +247,6 @@ ir_anon_name(Ms, Name) :-
 ir_replace([], _, _, []).
 ir_replace([N-_|T], N, D, [N-D|T]) :- !.
 ir_replace([X|T], N, D, [X|T1]) :- ir_replace(T, N, D, T1).
-ir_member_types([], []).
-ir_member_types([member(_, _, Bits)|_], _) :- Bits \== none, !, ir_fail(bitfield).
-ir_member_types([member(T, _, _)|Ms], [LL|LLs]) :- ir_type(T, LL), ir_member_types(Ms, LLs).
 ir_member_index(T, N, I, MT) :- ccl_members_of(T, Ms), ir_member_index_(Ms, N, 0, I, MT), !.
 ir_member_index(T, N, _, _) :- ir_fail(no_member(N, T)).
 ir_member_index_([member(MT, N, _)|_], N, I, I, MT) :- !.
@@ -184,10 +274,12 @@ ir_leaves(T, Off, Ls) :-
     ;   T1 = arr(int(K), E) -> ccl_size_align(E, ES, _), ir_array_leaves(K, E, ES, Off, Ls)
     ;   ir_is_fp(T1) -> ( T1 = base(_, S), memberchk(float, S) -> Ls = [leaf(Off, float)] ; Ls = [leaf(Off, double)] )
     ;   Ls = [leaf(Off, int)] ).
-ir_member_leaves([], _, _, []).
-ir_member_leaves([member(MT, _, _)|Ms], Base, Cur, Ls) :-
-    ccl_resolve_type(MT, MT1), ccl_size_align(MT1, S, A), ccl_round_up(Cur, A, Off), Off1 is Off + S,
-    AbsOff is Base + Off, ir_leaves(MT1, AbsOff, L1), ir_member_leaves(Ms, Base, Off1, L2), append(L1, L2, Ls).
+ir_member_leaves(Ms, Base, _, Ls) :- ccl_members_layout(Ms, Lays, _, _), ir_lay_leaves(Lays, Base, Ls).
+ir_lay_leaves([], _, []).
+ir_lay_leaves([lay(_, T, Off, Bits)|Lays], Base, Ls) :-
+    AbsOff is Base + Off,
+    ( Bits == none -> ir_leaves(T, AbsOff, L1) ; L1 = [leaf(AbsOff, int)] ),
+    ir_lay_leaves(Lays, Base, L2), append(L1, L2, Ls).
 ir_union_leaves([], _, []).
 ir_union_leaves([member(MT, _, _)|Ms], Off, Ls) :- ir_leaves(MT, Off, L1), ir_union_leaves(Ms, Off, L2), append(L1, L2, Ls).
 ir_array_leaves(0, _, _, _, []) :- !.
@@ -259,7 +351,7 @@ ir_convert(V, From, To, V1) :-
     ;   ir_op1(zext, FL, V, TL, V1) ).
 ir_isfn(T) :- ccl_resolve_type(T, fn(_, _, _)).
 ir_op1(Op, FL, V, TL, R) :- ir_fresh(R), ir_ins([R, ' = ', Op, ' ', FL, ' ', V, ' to ', TL]).
-ir_bits(i1, 1). ir_bits(i8, 8). ir_bits(i16, 16). ir_bits(i32, 32). ir_bits(i64, 64).
+ir_bits(LL, N) :- atom_concat(i, A, LL), atom_codes(A, Cs), catch(number_codes(N, Cs), _, fail), !.
 %% a value as a condition (i1)
 ir_cond(E, C) :- ir_cmp_op(E, _), !, ir_expr_i1(E, C).
 ir_cond(E, C) :-
@@ -308,11 +400,11 @@ ir_expr(id(N), V, T) :- !,
     ;   ir_type(T0, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', Addr]), T = T0 ).
 ir_expr(call(F, Args), V, RT) :- !, ir_call(F, Args, V, RT).
 ir_expr(assign('=', L, R), V, LT) :- !,
-    ir_lval(L, Addr, LT), ir_expr(R, V0, RT), ir_convert(V0, RT, LT, V), ir_type(LT, LL), ir_ins(['store ', LL, ' ', V, ', ptr ', Addr]).
+    ir_lval(L, Slot, LT), ir_expr(R, V0, RT), ir_convert(V0, RT, LT, V), ir_store_slot(Slot, LT, V).
 ir_expr(assign(Op, L, R), V, LT) :- !,
-    atom_concat(BinOp, '=', Op), ir_lval(L, Addr, LT), ir_type(LT, LL),
-    ir_fresh(Cur), ir_ins([Cur, ' = load ', LL, ', ptr ', Addr]),
-    ir_binary(BinOp, Cur, LT, R, V0, RT), ir_convert(V0, RT, LT, V), ir_ins(['store ', LL, ' ', V, ', ptr ', Addr]).
+    atom_concat(BinOp, '=', Op), ir_lval(L, Slot, LT),
+    ir_load_slot(Slot, LT, Cur),
+    ir_binary(BinOp, Cur, LT, R, V0, RT), ir_convert(V0, RT, LT, V), ir_store_slot(Slot, LT, V).
 ir_expr(bin('&&', A, B), V, T) :- !, ir_int(T),
     ir_label(LB), ir_label(LE), ir_cond(A, CA), ir_cur_label(LA0), ir_end(['br i1 ', CA, ', label %', LB, ', label %', LE]),
     ir_block(LB), ir_cond(B, CB), ir_cur_label(LB1), ir_end(['br label %', LE]),
@@ -328,11 +420,11 @@ ir_expr(neg(E), V, T) :- !, ir_expr(E, V0, T0), ccl_promote(T0, T), ir_convert(V
 ir_expr(pos(E), V, T) :- !, ir_expr(E, V, T).
 ir_expr(bitnot(E), V, T) :- !, ir_expr(E, V0, T0), ccl_promote(T0, T), ir_convert(V0, T0, T, V1), ir_type(T, LL), ir_fresh(V), ir_ins([V, ' = xor ', LL, ' ', V1, ', -1']).
 ir_expr(not(E), V, T) :- !, ir_int(T), ir_cond(E, C), ir_fresh(C1), ir_ins([C1, ' = xor i1 ', C, ', true']), ir_bool(C1, V).
-ir_expr(addr(E), Addr, ptr([], T)) :- !, ir_lval(E, Addr, T).
-ir_expr(deref(E), V, T) :- !, ir_lval(deref(E), Addr, T), ir_load_or_decay(Addr, T, V).
-ir_expr(index(A, I), V, T) :- !, ir_lval(index(A, I), Addr, T), ir_load_or_decay(Addr, T, V).
-ir_expr(member(E, N), V, T) :- !, ir_lval(member(E, N), Addr, T), ir_load_or_decay(Addr, T, V).
-ir_expr(arrow(E, N), V, T) :- !, ir_lval(arrow(E, N), Addr, T), ir_load_or_decay(Addr, T, V).
+ir_expr(addr(E), Addr, ptr([], T)) :- !, ir_lval(E, Slot, T), ir_slot_addr(Slot, Addr).
+ir_expr(deref(E), V, T) :- !, ir_lval(deref(E), Slot, T), ir_load_slot(Slot, T, V).
+ir_expr(index(A, I), V, T) :- !, ir_lval(index(A, I), Slot, T), ir_load_slot(Slot, T, V).
+ir_expr(member(E, N), V, T) :- !, ir_lval(member(E, N), Slot, T), ir_load_slot(Slot, T, V).
+ir_expr(arrow(E, N), V, T) :- !, ir_lval(arrow(E, N), Slot, T), ir_load_slot(Slot, T, V).
 ir_expr(preinc(E), V, T) :- !, ir_step(E, add, pre, V, T).
 ir_expr(predec(E), V, T) :- !, ir_step(E, sub, pre, V, T).
 ir_expr(postinc(E), V, T) :- !, ir_step(E, add, post, V, T).
@@ -349,7 +441,7 @@ ir_expr(cond(C, A, B), V, T) :- !,
 ir_expr(comma(A, B), V, T) :- !, ir_expr(A, _, _), ir_expr(B, V, T).
 ir_expr(move(E), V, T) :- !, ir_expr(E, V, T).                        % a move is the value; the checker did the rest
 ir_expr(compound_lit(T, Init), V, T1) :- !,
-    ir_fresh(Addr), ir_type(T, LL), ir_alloca(Addr, LL), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E) ; T1 = T ).
+    ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E) ; T1 = T ).
 ir_expr(stmt_expr(block(Is)), V, T) :- !,
     ir_env_push, ( append(Init, [expr(_, E)], Is) -> ir_stmts(Init), ir_expr(E, V, T) ; ir_stmts(Is), V = none, T = base([], [void]) ),
     ir_run_defers(1), ir_env_pop.
@@ -405,12 +497,12 @@ ir_arith_op('>>', T, Ins) :- ( ir_signed(T) -> Ins = ashr ; Ins = lshr ).
 
 %% ++ and --, on integers, floats and pointers
 ir_step(E, Op, When, V, T) :-
-    ir_lval(E, Addr, T), ir_type(T, LL), ir_fresh(Cur), ir_ins([Cur, ' = load ', LL, ', ptr ', Addr]),
+    ir_lval(E, Slot, T), ir_type(T, LL), ir_load_slot(Slot, T, Cur),
     ir_fresh(New),
     (   ir_is_ptr(T) -> ir_elem(T, El), ir_type(El, ELL), ( Op == add -> D = 1 ; D = -1 ), ir_ins([New, ' = getelementptr ', ELL, ', ptr ', Cur, ', i64 ', D])
     ;   ir_is_fp(T) -> ( Op == add -> F = fadd ; F = fsub ), ir_ins([New, ' = ', F, ' ', LL, ' ', Cur, ', 1.0'])
     ;   ir_ins([New, ' = ', Op, ' ', LL, ' ', Cur, ', 1']) ),
-    ir_ins(['store ', LL, ' ', New, ', ptr ', Addr]),
+    ir_store_slot(Slot, T, New),
     ( When == pre -> V = New ; V = Cur ).
 
 %% ---- calls ------------------------------------------------------------------------------
@@ -463,25 +555,25 @@ ir_lval(deref(E), Addr, T) :- !, ir_expr(E, Addr, PT), ir_elem(PT, T).
 ir_lval(index(A, I), Addr, T) :- !,
     ir_expr(A, P, PT), ir_elem(PT, T), ir_type(T, LL), ir_expr(I, IV, IT), ir_convert(IV, IT, base([], [long]), I1),
     ir_fresh(Addr), ir_ins([Addr, ' = getelementptr ', LL, ', ptr ', P, ', i64 ', I1]).
-ir_lval(member(E, N), Addr, T) :- !,
-    ( ir_lval(E, Base, ST) -> true ; ir_expr(E, SV, ST), ir_type(ST, SLL), ir_fresh(Base), ir_alloca(Base, SLL), ir_ins(['store ', SLL, ' ', SV, ', ptr ', Base]) ),
-    ir_member_gep(Base, ST, N, Addr, T).
-ir_lval(arrow(E, N), Addr, T) :- !, ir_expr(E, P, PT), ir_elem(PT, ST), ir_member_gep(P, ST, N, Addr, T).
-ir_lval(compound_lit(T, Init), Addr, T) :- !, ir_fresh(Addr), ir_type(T, LL), ir_alloca(Addr, LL), ir_init(Addr, T, Init).
+ir_lval(member(E, N), Slot, T) :- !,
+    ( ir_lval(E, Base0, ST) -> ir_slot_addr(Base0, Base) ; ir_expr(E, SV, ST), ir_type(ST, SLL), ir_fresh(Base), ir_alloca_typed(Base, ST), ir_ins(['store ', SLL, ' ', SV, ', ptr ', Base]) ),
+    ir_member_slot(Base, ST, N, Slot, T).
+ir_lval(arrow(E, N), Slot, T) :- !, ir_expr(E, P, PT), ir_elem(PT, ST), ir_member_slot(P, ST, N, Slot, T).
+ir_lval(compound_lit(T, Init), Addr, T) :- !, ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init).
 ir_lval(E, _, _) :- ir_fail(lvalue(E)).
-ir_member_gep(Base, ST, N, Addr, T) :-
-    ir_type(ST, SLL), ir_member_index(ST, N, I, T),
-    ( sub_atom(SLL, 0, 1, _, '[') -> Addr = Base                         % a union: every member at its address
-    ; ir_fresh(Addr), ir_ins([Addr, ' = getelementptr ', SLL, ', ptr ', Base, ', i32 0, i32 ', I]) ).
+%% an alloca for a value of a C type: a struct or a union aligned as C aligns it
+ir_alloca_typed(Addr, T) :-
+    ir_type(T, LL), ccl_resolve_type(T, T1),
+    ( ( T1 = base(_, [struct(_, _)]) ; T1 = base(_, [union(_, _)]) ), ccl_size_align(T1, _, A) -> ir_alloca_aligned(Addr, LL, A) ; ir_alloca(Addr, LL) ).
 
 %% ---- initializers -------------------------------------------------------------------------
 ir_init(_, _, none) :- !.
-ir_init(Addr, T, init(Items)) :- !,
-    ir_type(T, LL), ir_ins(['store ', LL, ' zeroinitializer, ptr ', Addr]), ir_init_items(Items, Addr, T, 0).
-ir_init(Addr, T, E) :-
+ir_init(Slot, T, init(Items)) :- !,
+    ir_slot_addr(Slot, Addr), ir_type(T, LL), ir_ins(['store ', LL, ' zeroinitializer, ptr ', Addr]), ir_init_items(Items, Addr, T, 0).
+ir_init(Slot, T, E) :-
     ccl_resolve_type(T, T1),
-    (   T1 = arr(_, El), E = str(S) -> ir_type(El, _), ir_init_string(Addr, T1, S)
-    ;   ir_expr(E, V0, ET), ir_convert(V0, ET, T, V), ir_type(T, LL), ir_ins(['store ', LL, ' ', V, ', ptr ', Addr]) ).
+    (   T1 = arr(_, El), E = str(S) -> ir_slot_addr(Slot, Addr), ir_type(El, _), ir_init_string(Addr, T1, S)
+    ;   ir_expr(E, V0, ET), ir_convert(V0, ET, T, V), ir_store_slot(Slot, T, V) ).
 ir_init_string(Addr, arr(_, _), S) :- append(S, [0], Cs), ir_init_chars(Cs, Addr, 0).
 ir_init_chars([], _, _).
 ir_init_chars([C|Cs], Addr, I) :- ir_fresh(P), ir_ins([P, ' = getelementptr i8, ptr ', Addr, ', i64 ', I]), ir_ins(['store i8 ', C, ', ptr ', P]), I1 is I + 1, ir_init_chars(Cs, Addr, I1).
@@ -495,8 +587,8 @@ ir_init_items([item(Ds, V)|Is], Addr, T, I) :-
 ir_init_slot(Addr, arr(_, El), I, Ds, V) :- !,
     ir_type(El, LL), ir_fresh(P), ir_ins([P, ' = getelementptr ', LL, ', ptr ', Addr, ', i64 ', I]), ir_init_sub(P, El, Ds, V).
 ir_init_slot(Addr, ST, I, Ds, V) :-
-    ir_type(ST, SLL), ccl_members_of(ST, Ms), I1 is I + 1, ( ccl_nth(I1, Ms, member(MT, _, _)) -> true ; ir_fail(initializer(I)) ),
-    ir_fresh(P), ir_ins([P, ' = getelementptr ', SLL, ', ptr ', Addr, ', i32 0, i32 ', I]), ir_init_sub(P, MT, Ds, V).
+    ccl_members_of(ST, Ms), I1 is I + 1, ( ccl_nth(I1, Ms, member(MT, N, _)) -> true ; ir_fail(initializer(I)) ),
+    ir_member_slot(Addr, ST, N, Slot, MT), ir_init_sub(Slot, MT, Ds, V).
 ir_init_sub(P, T, [], V) :- !, ( V = init(_) -> ir_init(P, T, V) ; ir_init(P, T, V) ).
 ir_init_sub(P, T, Ds, V) :- ir_init_items([item(Ds, V)], P, T, 0).
 
@@ -505,7 +597,7 @@ ir_stmts([]).
 ir_stmts([S|Ss]) :- ir_stmt(S), ir_stmts(Ss).
 ir_stmt(block(Is)) :- !, ir_env_push, ir_stmts(Is), ir_run_defers(1), ir_env_pop.
 ir_stmt('$splice'(Is)) :- !, ir_stmts(Is).
-ir_stmt(declaration(_, Sto, _, Vs)) :- !, ( Sto == static -> ir_fail(static_local) ; true ), ir_locals(Vs, Sto).
+ir_stmt(declaration(_, Sto, _, Vs)) :- !, ( Sto == static -> ir_static_locals(Vs) ; ir_locals(Vs, Sto) ).
 ir_stmt(typedef(_, _)) :- !.
 ir_stmt(declare(_, _)) :- !.
 ir_stmt(directive(_, _)) :- !.
@@ -565,10 +657,19 @@ ir_locals([var(N, T, Init)|Vs], Sto) :-
     ccl_resolve_type(T, T1),
     (   T1 = fn(_, _, _) -> ir_note_extern(N, T)                         % a local prototype
     ;   Sto == extern -> ir_note_extern(N, T)
-    ;   ir_sized_type(T, T1, Init, ST), ir_type(ST, LL),                    % int xs[] = {...}: sized by its initializer
+    ;   ir_sized_type(T, T1, Init, ST),                                     % int xs[] = {...}: sized by its initializer
         nb_getval('$ir_reg', K), K1 is K + 1, nb_setval('$ir_reg', K1), atomic_list_concat(['%', N, '.', K1], Addr),
-        ir_alloca(Addr, LL), ir_local(N, ST, Addr), ir_init(Addr, ST, Init) ),
+        ir_alloca_typed(Addr, ST), ir_local(N, ST, Addr), ir_init(Addr, ST, Init) ),
     ir_locals(Vs, Sto).
+%% a static local is a private global of the function's, initialized once, constant
+ir_static_locals([]).
+ir_static_locals([var(N, T, Init)|Vs]) :-
+    ccl_resolve_type(T, T1), ir_sized_type(T, T1, Init, GT), ir_gconst_typed(Init, GT, LL, C), ir_galign(GT, Al),
+    nb_getval('$ir_fn', F), nb_getval('$ir_statics', K), K1 is K + 1, nb_setval('$ir_statics', K1),
+    atomic_list_concat(['@', F, '.', N, '.', K1], Addr),
+    atomic_list_concat([Addr, ' = internal global ', LL, ' ', C, Al], Def),
+    nb_getval('$ir_gdefs', Gs), nb_setval('$ir_gdefs', [Def|Gs]),
+    ir_local(N, GT, Addr), ir_static_locals(Vs).
 
 %% the loop stack: break target, continue target (none in a switch), and the defer depth at entry
 ir_loop_push(LE, LC) :- ir_depth(D), nb_getval('$ir_loops', L), nb_setval('$ir_loops', [loop(LE, LC, D)|L]).
@@ -658,9 +759,9 @@ ir_globals([], _).
 ir_globals([var(N, T, Init)|Vs], Sto) :-
     ccl_resolve_type(T, T1),
     (   ( T1 = fn(_, _, _) ; Sto == extern ; Sto == typedef ) -> true
-    ;   ir_sized_type(T, T1, Init, GT), ir_type(GT, LL), ir_gconst(Init, GT, C),
+    ;   ir_sized_type(T, T1, Init, GT), ir_gconst_typed(Init, GT, LL, C), ir_galign(GT, Al),
         ( Sto == static -> Link = 'internal global' ; Link = 'global' ),
-        atomic_list_concat(['@', N, ' = ', Link, ' ', LL, ' ', C], Def),
+        atomic_list_concat(['@', N, ' = ', Link, ' ', LL, ' ', C, Al], Def),
         nb_getval('$ir_gdefs', Gs), nb_setval('$ir_gdefs', [Def|Gs]),
         nb_getval('$ir_gmap', M), nb_setval('$ir_gmap', [N-GT|M]),
         nb_getval('$ir_defined', Ds), nb_setval('$ir_defined', [N|Ds]) ),
@@ -680,16 +781,55 @@ ir_gconst(str(S), T, C) :- !,
 ir_gconst(init(Items), T, C) :- !,
     ccl_resolve_type(T, T1),
     (   T1 = arr(int(K), E) -> ir_type(E, EL), ir_gitems(Items, K, E, EL, Parts), ir_join(Parts, ', ', Body), atomic_list_concat(['[', Body, ']'], C)
-    ;   ccl_members_of(T1, Ms) -> ir_gmembers(Ms, Items, Parts), ir_join(Parts, ', ', Body), atomic_list_concat(['{ ', Body, ' }'], C)   % the type is written by whoever holds the constant
+    ;   T1 = base(_, [struct(_, _)]) -> ir_gstruct(Items, T1, C)                 % the type is written by whoever holds the constant
+    ;   T1 = base(_, [union(_, _)]) -> ir_gunion(Items, T1, _, C)
     ;   ir_fail(global_init(T)) ).
 ir_gconst(E, _, _) :- ir_fail(global_init(E)).
+%% a global's constant with its type: a union initialized takes the literal
+%% type of the member given, padded to the union's size
+ir_gconst_typed(init(Items), T, LL, C) :- ccl_resolve_type(T, T1), T1 = base(_, [union(_, _)]), !, ir_gunion(Items, T1, LL, C).
+ir_gconst_typed(Init, T, LL, C) :- ir_type(T, LL), ir_gconst(Init, T, C).
+ir_galign(T, Al) :- ccl_resolve_type(T, T1), ( ( T1 = base(_, [struct(_, _)]) ; T1 = base(_, [union(_, _)]) ), ccl_size_align(T1, _, A) -> atomic_list_concat([', align ', A], Al) ; Al = '' ).
 ir_gitems([], 0, _, _, []) :- !.
 ir_gitems([], K, E, EL, [Z|Zs]) :- ir_type(E, _), ir_zero(EL, Z0), atomic_list_concat([EL, ' ', Z0], Z), K1 is K - 1, ir_gitems([], K1, E, EL, Zs).
 ir_gitems([item(_, V)|Is], K, E, EL, [P|Ps]) :- ir_gconst(V, E, C), atomic_list_concat([EL, ' ', C], P), K1 is K - 1, ir_gitems(Is, K1, E, EL, Ps).
-ir_gmembers([], _, []).
-ir_gmembers([member(MT, _, _)|Ms], Items, [P|Ps]) :-
-    ir_type(MT, LL), ( Items = [item(_, V)|Rest] -> ir_gconst(V, MT, C) ; ir_zero(LL, C), Rest = [] ),
-    atomic_list_concat([LL, ' ', C], P), ir_gmembers(Ms, Rest, Ps).
+%% a struct constant over its shape: a plain member's constant, a run of
+%% bitfields packed into its bytes, padding zero
+ir_gstruct(Items, ST, C) :-
+    ccl_members_of(ST, Ms), ir_gvalues(Items, Ms, 0, Vals),
+    ir_type(ST, SLL), nb_getval('$ir_maps', Maps), memberchk(SLL-shape(Elems, Map), Maps),
+    ir_gelems(Elems, 0, Map, Vals, Parts), ir_join(Parts, ', ', Body), atomic_list_concat(['{ ', Body, ' }'], C).
+ir_gvalues([], _, _, []).
+ir_gvalues([item(Ds, V)|Is], Ms, I, [N-V|Vs]) :-
+    (   Ds = [field(F)|_] -> N = F, ir_member_index_(Ms, F, 0, I0, _), I1 is I0 + 1
+    ;   I1 is I + 1, ccl_nth(I1, Ms, member(_, N, _)) ),
+    ir_gvalues(Is, Ms, I1, Vs).
+ir_gelems([], _, _, _, []).
+ir_gelems([LL|Ls], Idx, Map, Vals, [P|Ps]) :-
+    findall(M, ( member(M, Map), M = m(_, Idx, _, _) ), Here),
+    (   Here == [] -> ir_zero(LL, Z), atomic_list_concat([LL, ' ', Z], P)
+    ;   Here = [m(N, _, MT, none)] -> ( memberchk(N-V, Vals) -> ir_gconst(V, MT, C) ; ir_zero(LL, C) ), atomic_list_concat([LL, ' ', C], P)
+    ;   ir_gpack(Here, Vals, 0, Packed), ir_array_count(LL, K),
+        ir_le_bytes(Packed, K, Bytes), ir_escape(Bytes, Esc), atomic_list_concat([LL, ' c"', Esc, '"'], P) ),
+    Idx1 is Idx + 1, ir_gelems(Ls, Idx1, Map, Vals, Ps).
+%% the K of a `[K x i8]'
+ir_array_count(LL, K) :- atom_codes(LL, [0'[|Cs]), ir_digits(Cs, Ds), number_codes(K, Ds).
+ir_digits([C|Cs], [C|Ds]) :- C >= 0'0, C =< 0'9, !, ir_digits(Cs, Ds).
+ir_digits(_, []).
+ir_gpack([], _, Acc, Acc).
+ir_gpack([m(N, _, _, bf(_, Off, W, _))|Ms], Vals, Acc, Packed) :-
+    ( memberchk(N-V, Vals) -> ir_const_int(V, I) ; I = 0 ), Mask is (1 << W) - 1, Bits is (I mod (1 << W)) /\ Mask,
+    Acc1 is Acc \/ (Bits << Off), ir_gpack(Ms, Vals, Acc1, Packed).
+ir_le_bytes(_, 0, []) :- !.
+ir_le_bytes(V, K, [B|Bs]) :- B is V /\ 255, V1 is V >> 8, K1 is K - 1, ir_le_bytes(V1, K1, Bs).
+%% a union constant: the member given (the first, or the designated one) in its own type, padded
+ir_gunion(Items, UT, LL, C) :-
+    ccl_members_of(UT, Ms), ccl_union_layout(Ms, 0, 1, N, _),
+    (   Items = [item(Ds, V)|_] -> ( Ds = [field(F)|_] -> memberchk(member(MT, F, _), Ms) ; Ms = [member(MT, _, _)|_] ),
+        ir_type(MT, MLL), ir_gconst(V, MT, MC), ccl_resolve_type(MT, MT1), ccl_size_align(MT1, S, _), Pad is N - S,
+        ( Pad =:= 0 -> atomic_list_concat(['{ ', MLL, ' }'], LL), atomic_list_concat(['{ ', MLL, ' ', MC, ' }'], C)
+        ; atomic_list_concat(['{ ', MLL, ', [', Pad, ' x i8] }'], LL), atomic_list_concat(['{ ', MLL, ' ', MC, ', [', Pad, ' x i8] zeroinitializer }'], C) )
+    ;   ir_type(UT, LL), C = zeroinitializer ).
 
 %% ---- the module -----------------------------------------------------------------------------------
 ir_assemble(IR) :-

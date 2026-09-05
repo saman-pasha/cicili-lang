@@ -39,6 +39,14 @@
 %% or a fresh value, never a borrow. Assigning a borrow from something else
 %% unbinds it.
 %%
+%% A PLAIN POINTER PARAMETER is a borrow of the caller's, tagged with its own
+%% name: the callee may read it, pass it on, and return it (the caller still
+%% owns what it points to), but not store it, free it, or move it -- so a
+%% borrow handed to any function is safe, and `own' is the one way memory
+%% comes in. What a borrowed pointer reaches -- a member, an element, what it
+%% points to -- is borrowed from the same. A callee's prototype is read the
+%% same way through a function pointer.
+%%
 %% THE ERRORS, each error(ownership(Kind, Name, Form), where(Function, line(L))),
 %% the line the statement's, Name the owner's path (`a->name'):
 %%   use_after_move      a consumed owner read, passed, freed again (the double free)
@@ -46,14 +54,16 @@
 %%   borrow_after_move   a borrow used after its owner was consumed
 %%   borrow_escapes      a borrow returned from the function
 %%   borrow_stored       a borrow stored into a struct field, an element, a global, through a pointer, or into an own slot
+%%   borrow_consumed     a borrow freed, or passed where an owner is taken (a parameter freed in its callee)
+%%   borrow_incomplete   an own field of a struct a parameter points to, freed or moved out and not replaced by the return
 %%   owner_stored        an owner's pointer stored into a plain slot (its ownership would be lost)
 %%   owner_leaked        an owner live, or partial, at its scope's end, at a return, or a field when its struct is freed
 %%   move_in_loop        an owner from outside a loop consumed inside it (and not re-assigned)
 %%   move_of_non_owner   move(x) of something that is not an owner
 %%   owner_overwritten   assignment to a live owner (what it held would leak)
 %%   goto_with_owners    a goto in a function that has owners (not followed yet)
-%% Not tracked: owners through function pointers, what a plain pointer to a
-%% struct reaches (its fields are C's), a borrow passed to a function.
+%% Not tracked: what a plain pointer reaches is not opened for ownership (a
+%% borrowed struct's own field may be given an owner, that is all).
 
 :- use_module(library(ccl_infer)).
 
@@ -71,19 +81,42 @@ ck_items([_|Is]) :- ck_items(Is).
 ck_function(L, Name, Params, Body) :-
     nb_setval('$ck_fn', Name), nb_setval('$ck_line', L), nb_setval('$ck_loops', []),
     ccl_scope_push, ccl_declare_params(Params),
+    ck_param_names(Params, Names), nb_setval('$ck_params', Names),
+    ck_borrowed_fields(Params, Borrowed), nb_setval('$ck_borrowed', Borrowed),
     ck_param_owners(Params, Owners),
     St0 = st([fr(Owners, [])]),
     ck_stmt(Body, St0, St1),
-    ( St1 == dead -> true ; ck_leaks_all(St1, function_end) ),
+    ( St1 == dead -> true ; St1 = st([fr(Os, _)]), ck_complete_owners(Os, function_end), ck_leaks_all(St1, function_end) ),
     ccl_scope_pop.
+%% the own fields of the structs the plain pointer parameters point to: the
+%% struct's, not the callee's -- one may be freed and replaced, and must be
+%% whole (live or null) again when the callee returns
+ck_borrowed_fields([], []).
+ck_borrowed_fields([param(T, N)|Ps], Fs) :-
+    ck_borrowed_fields(Ps, Fs0),
+    ( N \== anon, \+ ck_own_type(T), ck_pointee_fields(N, T, Fs1) -> append(Fs1, Fs0, Fs) ; Fs = Fs0 ).
+ck_pointee_fields(N, T, Fs) :- ccl_resolve_type(T, ptr(_, PT)), ccl_members_of(PT, Ms), ck_member_fields(Ms, N, '->', Fs), Fs \== [].
+ck_is_borrowed_field(N) :- nb_getval('$ck_borrowed', Bs), memberchk(N, Bs).
+ck_complete_owners([], _).
+ck_complete_owners([N-S|Os], Form) :-
+    ( ck_is_borrowed_field(N), \+ memberchk(S, [live, null]) -> ck_fail(borrow_incomplete, N, Form) ; true ),
+    ck_complete_owners(Os, Form).
+ck_param_names([], []).
+ck_param_names([param(_, N)|Ps], Ns) :- ck_param_names(Ps, Ns0), ( N == anon -> Ns = Ns0 ; Ns = [N|Ns0] ).
+ck_is_param(N) :- nb_getval('$ck_params', Ps), memberchk(N, Ps).
 %% an own parameter is an owner, complete: its own fields are live; a struct
-%% given by value with own fields owns those fields (the struct itself is not freed)
+%% given by value with own fields owns those fields (the struct itself is not
+%% freed); a plain pointer parameter is a BORROW of the caller's, tagged with
+%% its own name: read, passed on and returned, never stored, freed or moved
 ck_param_owners([], []).
 ck_param_owners([param(T, N)|Ps], Os) :-
     ck_param_owners(Ps, Os0),
-    (   N \== anon, ck_own_type(T)
+    (   N == anon -> Os = Os0
+    ;   ck_own_type(T)
     ->  ck_var_fields(N, T, Fs), ck_states(Fs, live, FOs),
         ( ck_is_pointer_type(T) -> append([N-live|FOs], Os0, Os) ; append(FOs, Os0, Os) )
+    ;   ck_is_pointer_type(T) -> ( ck_pointee_fields(N, T, Fs) -> ck_states(Fs, live, FOs) ; FOs = [] ), append([N-borrow(N)|FOs], Os0, Os)
+    ;   ccl_resolve_type(T, arr(_, _)) -> Os = [N-borrow(N)|Os0]
     ;   Os = Os0 ).
 %% `own char *p': C's grammar puts the qualifier with the pointee, so an owner
 %% is a pointer with own on itself or on what it points to
@@ -177,11 +210,21 @@ ck_borrows_from(cast(_, A), St, P) :- !, ck_borrows_from(A, St, P).
 ck_borrows_from(addr(index(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
 ck_borrows_from(addr(member(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
 ck_borrows_from(addr(arrow(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
+%% what a borrowed pointer reaches -- a member, an element, what it points to -- is borrowed from the same
+ck_borrows_from(arrow(E, _), St, P) :- !, ck_borrows_from(E, St, P).
+ck_borrows_from(member(E, _), St, P) :- !, ck_borrows_from(E, St, P).
+ck_borrows_from(index(A, _), St, P) :- !, ck_borrows_from(A, St, P).
+ck_borrows_from(deref(E), St, P) :- !, ck_borrows_from(E, St, P).
 ck_borrows_from(cond(_, A, B), St, P) :- !, ( ck_borrows_from(A, St, P) -> true ; ck_borrows_from(B, St, P) ).
 ck_borrows_from(comma(_, B), St, P) :- !, ck_borrows_from(B, St, P).
 ck_borrow_source(K, S, P) :- ( memberchk(S, [live, moved, partial, null, unset]) -> P = K ; S = borrow(P) -> true ; S = dangling(P) ).
-%% a borrow may not leave the function: its owner is consumed by then
-ck_no_escape(E, St) :- ( E \= id(_), \+ ck_owner_path(St, E, _), ck_borrows_from(E, St, P) -> ck_fail(borrow_escapes, P, E) ; E = id(N), ck_state(St, N, borrow(P)) -> ck_fail(borrow_escapes, N, borrowed_from(P)) ; E = id(N), ck_state(St, N, dangling(P)) -> ck_fail(borrow_after_move, N, borrowed_from(P)) ; true ).
+%% a borrow may not leave the function, its owner being consumed by then --
+%% unless it borrows a parameter, which the caller still owns
+ck_no_escape(E, St) :-
+    (   E \= id(_), \+ ck_owner_path(St, E, _), ccl_type_of(E, T), ck_is_pointer_type(T), ck_borrows_from(E, St, P) -> ( ck_is_param(P) -> true ; ck_fail(borrow_escapes, P, E) )
+    ;   E = id(N), ck_state(St, N, borrow(P)) -> ( ck_is_param(P) -> true ; ck_fail(borrow_escapes, N, borrowed_from(P)) )
+    ;   E = id(N), ck_state(St, N, dangling(P)) -> ck_fail(borrow_after_move, N, borrowed_from(P))
+    ;   true ).
 ck_pop(st([_|Frs]), st(Frs)).
 ck_defer(st([fr(Os, Ds)|Frs]), Body, st([fr(Os, [Body|Ds])|Frs])).
 
@@ -278,7 +321,7 @@ ck_decls([var(N, T, Init)|Vs], St0, St) :-
     ;   Init == none -> St3 = St0
     ;   Init = init(Items) -> ck_init_slots(Items, T, none, St0, St3)
     ;   ck_expr(Init, St0, St1),
-        ( ck_borrows_from(Init, St1, P) -> ck_declare_borrow(St1, N, P, St3) ; St3 = St1 ) ),
+        ( ck_is_pointer_type(T), ck_borrows_from(Init, St1, P) -> ck_declare_borrow(St1, N, P, St3) ; St3 = St1 ) ),
     ck_decls(Vs, St3, St).
 ck_allocation(call(id(F), _)) :- memberchk(F, [malloc, calloc, realloc]).
 
@@ -351,8 +394,8 @@ ck_member_at([_|Ms], F, I0, MT, I) :- I1 is I0 + 1, ck_member_at(Ms, F, I1, MT, 
 ck_init_slot(init(Sub), SlotT, Key, St0, St) :- !, ck_init_slots(Sub, SlotT, Key, St0, St).
 ck_init_slot(V, SlotT, Key, St0, St) :-
     (   SlotT \== unknown, ck_own_type(SlotT) -> ck_into_own(Key, V, init(V), St0, St, _)
-    ;   SlotT == unknown -> ck_expr(V, St0, St)
-    ;   ck_into_plain(V, init(V), St0, St) ).
+    ;   SlotT \== unknown, ck_is_pointer_type(SlotT) -> ck_into_plain(V, init(V), St0, St)
+    ;   ck_expr(V, St0, St) ).
 
 %% ---- loops: a body may not consume an owner from outside, unless it re-owns it ------------
 ck_loop(S, St0, St) :- ck_loop_with_step(S, none, St0, St).
@@ -400,12 +443,14 @@ ck_exit_frames(dead, _) :- !.
 ck_exit_frames(st([]), _) :- !.
 ck_exit_frames(st([fr(Os, Ds)|Frs]), Form) :-
     ck_run_defers(Ds, st([fr(Os, [])|Frs]), St1),
-    ( St1 == dead -> true ; st([fr(Os1, _)|Frs1]) = St1, ck_leaks(Os1, Form), ck_exit_frames(st(Frs1), Form) ).
+    (   St1 == dead -> true
+    ;   st([fr(Os1, _)|Frs1]) = St1, ( Frs1 == [] -> ck_complete_owners(Os1, Form) ; true ),
+        ck_leaks(Os1, Form), ck_exit_frames(st(Frs1), Form) ).
 ck_leaks_all(st(Frs), Form) :- ck_leaks_frames(Frs, Form).
 ck_leaks_frames([], _).
 ck_leaks_frames([fr(Os, _)|Frs], Form) :- ck_leaks(Os, Form), ck_leaks_frames(Frs, Form).
 ck_leaks([], _).
-ck_leaks([N-S|Os], Form) :- ( ( memberchk(S, [moved, unset, null, none]) ; S = borrow(_) ; S = dangling(_) ) -> true ; ck_fail(owner_leaked, N, Form) ), ck_leaks(Os, Form).
+ck_leaks([N-S|Os], Form) :- ( ( memberchk(S, [moved, unset, null, none]) ; S = borrow(_) ; S = dangling(_) ; ck_is_borrowed_field(N) ) -> true ; ck_fail(owner_leaked, N, Form) ), ck_leaks(Os, Form).
 ck_any_owner(st(Frs)) :- member(fr(Os, _), Frs), Os \== [], !.
 ck_merge_all([S], S) :- !.
 ck_merge_all([A, B|T], S) :- ck_merge(A, B, C), ck_merge_all([C|T], S).
@@ -453,8 +498,12 @@ ck_expr(id(N), St, St) :- !, ( ck_state(St, N, S) -> ck_read(N, S) ; true ).
 ck_expr(member(E, F), St0, St) :- ck_path(member(E, F), K), ck_state(St0, K, S), !, ck_expr(E, St0, St), ck_read(K, S).
 ck_expr(arrow(E, F), St0, St) :- ck_path(arrow(E, F), K), ck_state(St0, K, S), !, ck_expr(E, St0, St), ck_read(K, S).
 ck_expr(move(E), St0, St) :- !, ( ck_owner_path(St0, E, K) -> ck_base_use(E, St0, St1), ck_consume(K, move, move(E), St1, St, _) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
-ck_expr(call(id(F), Args), St0, St) :- !, ck_args(Args, F, 1, St0, St).
-ck_expr(call(F, Args), St0, St) :- !, ck_expr(F, St0, St1), ck_exprs(Args, St1, St).
+ck_expr(call(id(F), Args), St0, St) :- !, ck_args(Args, id(F), 1, St0, St).
+ck_expr(call(F, Args), St0, St) :- !,
+    ck_expr(F, St0, St1),
+    ( ccl_type_of(F, FT), ck_fn_params(FT, Ps) -> ck_args(Args, params(Ps), 1, St1, St) ; ck_exprs(Args, St1, St) ).
+%% the parameters of a function type, or of a pointer to one
+ck_fn_params(T, Ps) :- ccl_resolve_type(T, T1), ( T1 = fn(_, Ps, _) -> true ; T1 = ptr(_, FT), ccl_resolve_type(FT, fn(_, Ps, _)) ).
 %% assignment: to an owner or an own field; to a struct by value with own fields;
 %% to a local plain pointer (a borrow, or not); to any other place, by its type
 ck_expr(assign('=', L, R), St0, St) :- ck_owner_path(St0, L, K), !,
@@ -463,12 +512,17 @@ ck_expr(assign('=', L, R), St0, St) :- ck_path(L, K), ck_under(St0, K, [_|_]), !
     ck_base_use(L, St0, St1), ( ccl_type_of(L, T) -> true ; T = unknown ), ck_fill(K, T, R, assign('=', L, R), St1, St).
 ck_expr(assign('=', id(N), R), St0, St) :- ( ck_state(St0, N, _) ; ck_is_local(N) ), !,
     ck_expr(R, St0, St1),
-    (   ck_borrows_from(R, St1, P) -> ck_rebind(St1, N, borrow(P), St)
-    ;   ck_state(St1, N, S), ( S = borrow(_) ; S = dangling(_) ) -> ck_rebind(St1, N, none, St)
-    ;   St = St1 ).
+    (   ck_is_param(N), ck_state(St1, N, borrow(N)) -> ck_rebind(St1, N, none, St2)   % a parameter re-assigned is a plain local from here
+    ;   St2 = St1 ),
+    (   ccl_type_of(id(N), T), ck_is_pointer_type(T), ck_borrows_from(R, St2, P) -> ck_rebind(St2, N, borrow(P), St)
+    ;   ck_state(St2, N, S), ( S = borrow(_) ; S = dangling(_) ) -> ck_rebind(St2, N, none, St)
+    ;   St = St2 ).
 ck_expr(assign('=', L, R), St0, St) :- !,
     ck_lval_use(L, St0, St1),
-    (   ccl_type_of(L, T), T \== unknown -> ( ck_own_type(T) -> ck_into_own(none, R, assign('=', L, R), St1, St, _) ; ck_into_plain(R, assign('=', L, R), St1, St) )
+    (   ccl_type_of(L, T), T \== unknown
+    ->  (   ck_own_type(T) -> ck_into_own(none, R, assign('=', L, R), St1, St, _)
+        ;   ck_is_pointer_type(T) -> ck_into_plain(R, assign('=', L, R), St1, St)
+        ;   ck_expr(R, St1, St) )
     ;   ck_expr(R, St1, St) ).
 ck_expr(assign(_, L, R), St0, St) :- !, ck_expr(R, St0, St1), ck_lval_use(L, St1, St).
 ck_expr(int(_), St, St) :- !.
@@ -491,17 +545,21 @@ ck_lval_use(id(_), St, St) :- !.
 ck_lval_use(E, St0, St) :- ck_expr(E, St0, St).
 
 %% arguments: the i-th is consumed when the callee consumes it -- freed by free
-%% and fclose, moved by an own parameter -- else used
+%% and fclose, moved by an own parameter, the callee named or a function type
+%% (a pointer's) -- else used; a borrow is not the callee's to take
 ck_args([], _, _, St, St).
-ck_args([A|As], F, I, St0, St) :-
-    (   ck_consumes(F, I)
-    ->  ( memberchk(F, [free, fclose]) -> How = free ; How = move ), Form = call(id(F), [A|As]),
+ck_args([A|As], Callee, I, St0, St) :-
+    (   ck_consumes(Callee, I)
+    ->  ( Callee = id(F), memberchk(F, [free, fclose]) -> How = free ; How = move ),
+        ( Callee = id(_) -> Form = call(Callee, [A|As]) ; Form = call(pointer, [A|As]) ),
         (   ck_owner_path(St0, A, K) -> ck_base_use(A, St0, St1a), ck_consume(K, How, Form, St1a, St1, _)
         ;   A = move(_) -> ck_expr(A, St0, St1)
         ;   ck_path(A, K), ck_under(St0, K, Fs), Fs \== [] -> ck_expr(A, St0, St1a), ck_move_out(St1a, Fs, Form, St1)
+        ;   ck_kind(A, St0, borrow(P)) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)
         ;   ck_expr(A, St0, St1) )
     ;   ck_expr(A, St0, St1) ),
-    I1 is I + 1, ck_args(As, F, I1, St1, St).
-ck_consumes(free, 1) :- !.
-ck_consumes(fclose, 1) :- !.
-ck_consumes(F, I) :- ccl_declared(F, fn(_, Ps, _)), ccl_nth(I, Ps, param(T, _)), ck_own_type(T).
+    I1 is I + 1, ck_args(As, Callee, I1, St1, St).
+ck_consumes(id(free), 1) :- !.
+ck_consumes(id(fclose), 1) :- !.
+ck_consumes(id(F), I) :- ccl_declared(F, T), ck_fn_params(T, Ps), ccl_nth(I, Ps, param(PT, _)), ck_own_type(PT).
+ck_consumes(params(Ps), I) :- ccl_nth(I, Ps, param(PT, _)), ck_own_type(PT).

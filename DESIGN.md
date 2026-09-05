@@ -119,8 +119,14 @@ it is done (see below); the checker and the lowering take the AST from here.
   x86-64's eightbytes, byval and sret, proven against clang-built code in
   both directions (`test/c/link/abi_*`); AAPCS64's i64 pairs, HFAs and
   indirect copies are written on the same classification and unproven, no
-  arm64 being at hand. Left for later: owners through function pointers, a
-  borrow handed to a function. **`defer` is decided (owner):** scope-bound, like
+  arm64 being at hand. A plain pointer parameter is a borrow of the
+  caller's: read, passed on, returned, never stored, freed or moved, so a
+  borrow handed to any function is safe; an own field of the struct it
+  points to may be replaced and must be whole again at the return; a
+  callee's prototype is read through a function pointer too. The C core's
+  last gaps -- unions, bitfields, static locals -- lower as C lays them out,
+  the bitfield struct and the union in the ABI check with clang.
+  **`defer` is decided (owner):** scope-bound, like
   Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
   each scope a cleanup block running its defers last-first and branching
   to the enclosing scope's; a `return`, `break`, `continue` or `goto` out

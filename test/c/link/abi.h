@@ -33,3 +33,9 @@ s8 bump_s8(s8 v);   d16 bump_d16(d16 v); di bump_di(di v);   l24 bump_l24(l24 v)
 f12 bump_f12(f12 v); pi bump_pi(pi v);  d24 bump_d24(d24 v); csi bump_csi(csi v);
 double via_s8(s8 v); double via_d16(d16 v); double via_di(di v); double via_l24(l24 v);
 double via_f12(f12 v); double via_pi(pi v); double via_d24(d24 v); double via_csi(csi v);
+/* a struct with bitfields and a union, both by value */
+typedef struct { unsigned a : 3; unsigned b : 5; short s; int c; } bf;
+typedef union { int i; double d; } un;
+bf mk_bf(int a, int b, short s, int c);  double sum_bf(bf v);
+un mk_un(double d);                       double sum_un(un v);
+bf bump_bf(bf v); double via_bf(bf v);   un bump_un(un v); double via_un(un v);

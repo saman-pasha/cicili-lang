@@ -175,10 +175,31 @@ ccl_size_align(base(_, [enum(_, _)]), 4, 4) :- !.
 ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; ccl_count(long, S, 2) -> N = 8
     ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1
     ; memberchk(int, S) -> N = 4 ; memberchk(unsigned, S) -> N = 4 ; memberchk(signed, S) -> N = 4 ; memberchk(void, S) -> N = 1 ; fail ).
-ccl_struct_layout([], Off, Al, N, Al) :- ccl_round_up(Off, Al, N).
-ccl_struct_layout([member(T, _, _)|Ms], Off0, Al0, N, Al) :-
-    ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ccl_round_up(Off0, A, Off1), Off2 is Off1 + S, Al1 is max(Al0, A),
-    ccl_struct_layout(Ms, Off2, Al1, N, Al).
+ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).
+%% ccl_members_layout(+Members, -Lays, -Size, -Align): where every member lies --
+%% lay(Name, T, ByteOff, none) for a plain member, lay(Name, T, UnitByteOff,
+%% bits(BitOffInUnit, Width, UnitBytes)) for a bitfield. The packing is the
+%% SysV one (clang's): a bitfield lands at the next bit unless it would cross
+%% a boundary of its declared type's alignment, then at that boundary; a zero
+%% width closes the unit; a plain member is aligned as usual; the struct's
+%% alignment counts every member's, a bitfield's declared type included.
+ccl_members_layout(Ms, Lays, Size, Align) :- ccl_members_layout_(Ms, 0, 1, Lays, Bits, Align), Bytes is (Bits + 7) // 8, ccl_round_up(Bytes, Align, Size).
+ccl_members_layout_([], Bits, Al, [], Bits, Al).
+ccl_members_layout_([member(T, N, W0)|Ms], Bit0, Al0, Lays, Bits, Al) :-
+    ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ABits is A * 8,
+    (   W0 == none
+    ->  ccl_round_up(Bit0, ABits, B1), Off is B1 // 8, Bit1 is B1 + S * 8, Al1 is max(Al0, A),
+        Lays = [lay(N, T, Off, none)|Lays1]
+    ;   ccl_bit_width(W0, W),
+        (   W =:= 0 -> ccl_round_up(Bit0, ABits, Bit1), Al1 = Al0, Lays = Lays1
+        ;   ( (Bit0 mod ABits) + W > ABits -> ccl_round_up(Bit0, ABits, Start) ; Start = Bit0 ),
+            UnitStart is (Start // ABits) * ABits, Off is UnitStart // 8, BOff is Start - UnitStart,
+            Bit1 is Start + W, Al1 is max(Al0, A),
+            Lays = [lay(N, T, Off, bits(BOff, W, S))|Lays1] ) ),
+    ccl_members_layout_(Ms, Bit1, Al1, Lays1, Bits, Al).
+ccl_bit_width(int(W), W) :- !.
+ccl_bit_width(W, W) :- integer(W), !.
+ccl_bit_width(E, W) :- ccl_const_eval(E, W).
 ccl_union_layout([], S, Al, N, Al) :- ccl_round_up(S, Al, N).
 ccl_union_layout([member(T, _, _)|Ms], S0, Al0, N, Al) :-
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), S1 is max(S0, S), Al1 is max(Al0, A), ccl_union_layout(Ms, S1, Al1, N, Al).

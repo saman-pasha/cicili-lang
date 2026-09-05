@@ -25,15 +25,17 @@ what runs today.
   struct's own fields are owners that go with it, a borrow or an owner
   stored where the check cannot follow it is refused, and use after move,
   the double free, a leak on any path, a move inside a loop, a dangling
-  borrow are compile errors naming the statement's line.
-  GREEN: the owners programs run, twenty-two programs are refused each with
+  borrow are compile errors naming the statement's line; a plain pointer
+  parameter is a borrow of the caller's, never stored, freed or moved.
+  GREEN: the owners programs run, twenty-seven programs are refused each with
   its error.
 * **M2 -- the lowering.** `cicili_ir/2`, `cicili_compile/3`, `cicili_link/3`:
-  C11's core -- every type but bitfields and unions, every statement and
+  C11's core -- every type, bitfields, unions and static locals included,
+  every statement and
   operator, calls and variadic calls, structs by pointer and by value --
   across a call as the platform ABI has it, the same pieces, `byval` and
   `sret` clang uses, proven against clang-built code both ways --
-  `defer` -- lowered to LLVM IR and run. `test/compile.sh`: fourteen
+  `defer` -- lowered to LLVM IR and run. `test/compile.sh`: eighteen
   programs built, run and checked, GREEN.
 * **M1 -- the reader.** `cicili_ast(+File, -AST)` reads a C file whole into an
   AST, through a DCG; each `#include` is found on the toolchain's path and
@@ -330,6 +332,8 @@ named:
 | `borrow_after_move` | a borrow -- a plain pointer that took its value from an owner -- is used after the owner was consumed |
 | `borrow_escapes` | a borrow is returned from the function, whose owner is consumed by then |
 | `borrow_stored` | a borrow is stored where the check cannot follow it: a plain struct field, an element, a global, through a pointer, or into an own slot |
+| `borrow_consumed` | a borrow is freed, or passed where an owner is taken: a parameter freed in its callee |
+| `borrow_incomplete` | an own field of the struct a parameter points to was freed or moved out and not replaced by the return |
 | `owner_stored` | an owner's pointer is stored into a plain slot, where its ownership would be lost |
 | `owner_leaked` | an owner is live, on any path, at its scope's end or at a `return`; or a field, when its struct is freed |
 | `move_in_loop` | an owner from outside a loop is consumed inside it and not re-owned |
@@ -358,12 +362,22 @@ through a pointer it could not be followed, so that is refused; an own slot
 receives an owner (moved in), a null, or a fresh value, never a borrow.
 Every error names the statement's line.
 
+**A plain pointer parameter is a borrow of the caller's.** Inside its
+function it may be read, passed on and returned -- the caller still owns
+what it points to -- but not stored, freed or moved: `own` is the one way
+memory comes in, so a borrow handed to any function is safe. What it
+reaches, a member, an element, what it points to, is borrowed from the
+same. An own field of the struct it points to may be freed and replaced
+(`free(p->name); p->name = dup(s);`), and must be whole again when the
+function returns. A callee's prototype is read the same way through a
+function pointer, so an owner passed through one is consumed.
+
 `test/c/run/owners.c` does all of it and runs, `own_struct.c` with a struct
 on the heap (an `own point *` parameter takes the struct over, a `const
 point *` one only looks), `own_fields.c` with owners inside structs,
-`borrows.c` with borrows; the programs under `test/c/safe/` are each
-refused with the error their `.expect` names. Not tracked: owners through
-function pointers, a borrow passed to a function.
+`borrows.c` with borrows, `params.c` with parameters; the programs under
+`test/c/safe/` are each refused with the error their `.expect` names. Not
+opened for ownership: what a plain pointer reaches beyond its own fields.
 
 ## `format`, `print`, `println`: global macros
 

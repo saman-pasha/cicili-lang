@@ -241,8 +241,26 @@ loop) and at `return` (all). Doubles print as LLVM's hex (`ir_double/2`);
 structs are named types registered once; an anonymous struct is keyed by
 its members. Externals used get `declare` lines from their prototypes.
 An anonymous struct's name lives in `'$ir_anons'`, not in `'$ir_structs'`
-where a name means "defined". Not lowered yet: bitfields, unions' members, static locals, VLAs, `_Complex`,
-`long double` (as double) -- each `error(not_lowered(What), where(F))`.
+where a name means "defined". Not lowered yet: VLAs, `_Complex`, `long double` (as double) -- each
+`error(not_lowered(What), where(F))`.
+**Unions, bitfields, static locals** (M2b's gaps, closed): a struct's LLVM
+shape comes from its C layout (`ccl_members_layout/4` in `ccl_infer`: SysV
+packing, `lay(Name, T, ByteOff, none | bits(BitOff, Width, UnitBytes))`;
+`ccl_layout//2` is the LEXER's whitespace rule, hence the name):
+`ir_struct_shape/3` gives an element per plain member, one `[K x i8]` per
+run of bitfields (the bytes their bits span, runs split where no byte is
+shared), padding where C's offset is past LLVM's natural one and at the
+tail, and a map `m(Name, Index, T, none | bf(RunLL, BitOff, Width,
+Signed))` kept in `'$ir_maps'`. A member is a SLOT (`ir_member_slot/5`): an
+address, or `bf(Addr, RunLL, Off, W, Signed)`; every load and store of an
+lvalue goes through `ir_load_slot/3` and `ir_store_slot/3` (a bitfield:
+the run loaded `align 1`, shifted and masked; `&` of one is
+`address_of_bitfield`). A union is `{ iA, [N-A x i8] }` for its alignment
+A (or `[N x i8]`), every member at its address; a union global initialized
+takes the literal type of the member given. Struct and union allocas and
+globals carry `align`. A static local is `@fn.name.K = internal global`,
+its constant folded as a global's (`ir_gstruct/3` packs bitfield runs
+into `c"…"` bytes). The ABI's leaves come from the same layout.
 **Structs by value cross a call as the platform ABI has it** (M3):
 `ir_abi/2` classifies a struct -- `scalar`, `direct([piece(LL, Off)...])`,
 `memory(LL, Align)` (SysV byval / sret), `indirect(LL, Align)` (AAPCS64's
@@ -302,7 +320,19 @@ from an initializer through `ck_init_slots/5`, all live from a call). The
 checker now declares every local in the symbol table (`ccl_declare/2`,
 scopes pushed per block), so `ccl_type_of/2` types a slot and `ck_is_local/1`
 tells a global from a local. Fixtures: `own_fields.c` runs, seven `safe/`
-programs are refused.
+programs are refused. **Parameters are borrows:** a plain pointer (or
+array) parameter enters as `N-borrow(N)`, its own name the tag
+(`'$ck_params'` lists them); `ck_no_escape/2` lets a borrow of a parameter
+return (and checks only pointer-typed returns); `ck_borrows_from/3` looks
+through `->`, `.`, `[]` and `*`, so a borrow is declared only for a
+pointer-typed variable or slot; `ck_args/5` refuses a borrow where the
+callee consumes (`borrow_consumed`), the callee being `id(F)` or
+`params(Ps)` from a function pointer's type (`ck_fn_params/2`). The own
+fields of a struct a plain pointer parameter points to are live keys of
+the struct's (`'$ck_borrowed'`): freeable and replaceable, exempt from the
+leak check, and `ck_complete_owners/2` demands them live or null at every
+return (`borrow_incomplete`). `params.c` runs, five `safe/` programs are
+refused.
 
 ## How the LLVM module is written (the Cicili module pattern)
 
