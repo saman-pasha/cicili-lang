@@ -78,6 +78,48 @@ the host), so a rebuild that touches one file checks and lowers that one
 and serves the others: `cicili -v` says `served main.c from the store`.
 `test/driver.sh` is its gate.
 
+## `cicili++`: the C++ reader (M5)
+
+`bin/cicili++` is `cicili` for C++, as `clang++` is `clang` for C++: the
+same arguments, every input read as C++, the link through `c++`. M5 is the
+reader: a C++ file is read whole, `-ast-dump` shows it, `-fsyntax-only`
+says nothing when it reads, and a C++ file that is C builds; the check and
+the lowering of the C++ forms are M6, so a file using them is refused at
+the first form the lowering does not have. What is read, each with its AST
+node:
+
+| C++ | AST |
+|---|---|
+| `namespace N { … }`, `inline namespace`, anonymous | `namespace(L, N, Items)` |
+| `using namespace N;`, `using N::x;`, `using T = type;` | `using(L, namespace(Q))`, `using(L, name(Q))`, a `typedef` |
+| `extern "C" { … }`, `extern "C" decl` | `extern_c(L, Items)` |
+| `template <typename T, int N = 4> item` | `template(L, [tparam(type, T, none), tparam(int, N, int(4))], Item)` |
+| `struct S : public B { … }`, `class C { public: … }` | `class(Kind, N, [base(Access, B)], Members)`; a struct of fields alone stays `struct(N, Ms)` |
+| a method, a constructor with its initializers, a destructor | `method(L, Quals, Ret, Name, Ps, Var, Body)`, `ctor(L, Quals, Ps, [init(N, Args)], Body)`, `dtor(L, Quals, Body)`; Quals from virtual, static, explicit, const, override, final, noexcept; Body a block, `none`, `pure`, `default`, `delete` |
+| `public:`, `int limit = 100;`, `friend`, `using` in a class | `access(A)`, `default_init(N, E)`, `friend(L)`, `using(L)` |
+| `Shape::scale(…) { }`, `Counter::~Counter() { }`, `int Counter::made = 0;` | a `function` or `var` named `scoped([Shape], scale)`, `dtor_def(L, C, Quals, Body)`, `ctor_def(…)` |
+| `operator+`, `operator[]`, `operator+=` | the name `operator('+')` |
+| `T &x`, `T &&x`, `int f(int k = 1)` | `ref(Q, T)`, `rref(Q, T)`, `param(T, k, int(1))` |
+| `A::b`, `::g`, `std::vector<int>`, `Buf<int, 4>`, `max2<int>(1, 2)` | `scoped([A], b)`, `scoped([global], g)`, `scoped([std], tmpl(vector, [int]))`, `tmpl('Buf', [int, int(4)])`, `call(tmpl(max2, [int]), …)` |
+| `Shape s(2, 3)`, `Square q{4}`, `new T(args)`, `new T[n]`, `delete p`, `delete[] p` | `var(s, T, ctor(Args))`, `init(…)`, `new(T, Args)`, `new_array(T, N)`, `delete(E)`, `delete_array(E)` |
+| `this`, `true`, `nullptr`, `static_cast<T>(e)`, `unsigned(k)` | `this`, `bool(true)`, `nullptr`, `ccast(static, T, E)`, `ccast(functional, T, E)` |
+| `auto x = e;` | inferred as `:=` infers, else `var(x, base([], [auto]), E)` |
+| `for (auto &x : xs) S` | `for_each(L, var(x, ref([], auto), none), Range, S)` |
+| `try { } catch (Err e) { } catch (...) { }`, `throw e` | `try(L, Body, [catch(param(T, e), B), catch(any, B)])`, `throw(E)` |
+| `[k, &t](int a) mutable -> int { }` | `lambda([cap(val, k), cap(ref, t)], Params, Ret, Body)` |
+| `enum class Color : int { … }` | `enum_class('Color', Enumerators)` |
+
+A C++ library header, `<cstdio>` and kin, is flattened by one `clang++ -E`
+run and read once, as far as it reads, never raw: a `<sstream>` attempted
+raw, header by header, took ten minutes. And `cicili++` keeps everything in
+memory: the flattened headers are thousands of items each, and cocolog's
+store takes a writing process's rows at a cost that follows their count,
+never reclaiming a dead one -- a summary cache is the way there, so a run
+reads its headers again, about two seconds a header. `test/cpp.sh` is the
+gate: `test/cpp.pl`'s 21 checks over `test/cpp/*.cpp`, Cicili's own
+emitted C++ (`objects.cpp`, `emit_report.cpp` with `<sstream>`) read
+whole, `hello.cpp` built and run.
+
 ## The compiler, in four predicates
 
 ```prolog

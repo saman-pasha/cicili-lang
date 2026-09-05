@@ -112,6 +112,8 @@ ccl_size_type(T) :- ( ccl_typedef_of(size_t, _) -> T = base([], [typedef(size_t)
 
 %% ---- the type of an expression ----------------------------------------------------
 ccl_type_of(int(_), base([], [int])) :- !.
+ccl_type_of(bool(_), base([], [bool])) :- !.                          % C++
+ccl_type_of(nullptr, ptr([], base([], [void]))) :- !.
 ccl_type_of(float(_), base([], [double])) :- !.
 ccl_type_of(chr(_), base([], [int])) :- !.
 ccl_type_of(str(_), ptr([], base([], [char]))) :- !.

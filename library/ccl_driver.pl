@@ -20,6 +20,7 @@
 ccl_drive(Inputs, Options) :- once(dr_drive(Inputs, Options)).          % one answer: the query loop would re-run a second
 dr_drive(Inputs, Options) :-
     ccl_ensure_globals, nb_setval('$dr_errors', 0),
+    ( memberchk(lang(cpp), Options) -> nb_setval('$ccl_lang_forced', cpp), nb_setval('$ccl_lang', cpp) ; nb_setval('$ccl_lang_forced', none) ),   % cicili++: everything C++
     forall(member(include(D), Options), assertz(ccl_include_dir(D))),
     ( memberchk(opt(O), Options) -> Flags = [O] ; Flags = ['-O0'] ),
     ( memberchk(verbose, Options) -> nb_setval('$dr_verbose', yes) ; nb_setval('$dr_verbose', no) ),
@@ -40,11 +41,12 @@ dr_inputs([F|Fs], Options, Flags, Objects) :-
     dr_input(F, Options, Flags, Objects, Objects1),
     dr_inputs(Fs, Options, Flags, Objects1).
 dr_input(F, Options, Flags, Objs, Objs1) :-
-    (   dr_ext(F, c) -> dr_c(F, Options, Flags, Objs, Objs1)
+    (   ( dr_ext(F, c) ; dr_cpp_ext(F) ) -> dr_c(F, Options, Flags, Objs, Objs1)
     ;   dr_ext(F, ll) -> dr_ll(F, Options, Flags, Objs, Objs1)
     ;   ( dr_ext(F, o) ; dr_ext(F, a) ; dr_ext(F, so) ; dr_ext(F, dylib) ) -> Objs = [F|Objs1]
     ;   dr_error(F, 0, ['unknown kind of file']), Objs = Objs1 ).
 dr_ext(F, E) :- atom_concat('.', E, Dot), sub_atom(F, _, _, 0, Dot).
+dr_cpp_ext(F) :- member(E, [cpp, cc, cxx, 'C']), dr_ext(F, E), !.
 
 %% a .c: read (headers, macros, := ...), the safe part, the IR, then what the options ask
 dr_c(F, Options, Flags, Objs, Objs1) :-
@@ -52,6 +54,7 @@ dr_c(F, Options, Flags, Objs, Objs1) :-
     (   catch(cicili_ast(F, AST), E1, (dr_report(F, E1), fail))
     ->  dr_remember_expansions(AST),
         (   memberchk(ast, Options) -> writeq(AST), nl, Objs = Objs1
+        ;   memberchk(syntax_only, Options), ccl_lang(cpp) -> Objs = Objs1      % M5 is the reader; C++'s check and lowering are M6
         ;   (   catch(dr_ir(F, AST, IR), E2, (dr_report(F, E2), fail))
             ->  dr_emit(F, IR, Options, Flags, Objs, Objs1)
             ;   Objs = Objs1 ) )

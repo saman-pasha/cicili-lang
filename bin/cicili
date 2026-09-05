@@ -20,6 +20,7 @@ COCOLOG=${COCOLOG:-$HOME/Projects/GitHub/cocolog}
 if [ -x "$COCOLOG/cocolog" ]; then C="$COCOLOG/cocolog"; elif command -v cocolog >/dev/null 2>&1; then C=$(command -v cocolog); else echo "cicili: no cocolog (set COCOLOG)" >&2; exit 1; fi
 export COCOLOG_LIBRARY="$ROOT/library${COCOLOG_LIBRARY:+:$COCOLOG_LIBRARY}"
 KB=${CICILI_KB:-$HOME/.cicili/KB}
+me=${CICILI_ME:-cicili}                # cicili++ runs this script with CICILI_LANG=cpp, its own name, its own store
 store="--embed $KB"
 # The store is stamped with the reader's grammar version (KB.version beside
 # it): a new version makes every row dead, and cocolog's store never reclaims
@@ -32,7 +33,8 @@ kb_prepare() {
   mkdir -p "$1"; [ "$(cat "$stamp" 2>/dev/null)" = "$v" ] || echo "$v" > "$stamp"
 }
 inputs=""; opts=""; out=""; opt=""; verbose=""
-need() { [ $# -ge 2 ] || { echo "cicili: error: argument to '$1' is missing" >&2; exit 1; }; }
+[ "${CICILI_LANG:-c}" = cpp ] && opts="$opts lang(cpp),"
+need() { [ $# -ge 2 ] || { echo "$me: error: argument to '$1' is missing" >&2; exit 1; }; }
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/\\\\'/g")"; }
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -52,12 +54,12 @@ while [ $# -gt 0 ]; do
     -I*) opts="$opts include($(q "${1#-I}"))," ;;
     -l*|-L*|-shared|-Wl,*|-framework|-static|-rdynamic|-fPIC|-pthread|-m*) case "$1" in -framework) need "$@"; opts="$opts link('-framework'),"; shift ;; esac; opts="$opts link($(q "$1"))," ;;
     -g|-D*|-U*|-W*|-f*|-std=*|-pedantic) ;;   # accepted for clang's sake; no preprocessor, no debug info yet
-    -*) echo "cicili: error: unknown argument: '$1'" >&2; exit 1 ;;
+    -*) echo "$me: error: unknown argument: '$1'" >&2; exit 1 ;;
     *) inputs="$inputs $(q "$1"),";;
   esac
   shift
 done
-[ -n "$inputs" ] || { echo "cicili: error: no input files" >&2; exit 1; }
+[ -n "$inputs" ] || { echo "$me: error: no input files" >&2; exit 1; }
 [ -n "$out" ] && opts="$opts out($(q "$out")),"
 [ -n "$opt" ] && opts="$opts opt('$opt'),"
 inputs="[${inputs%,}]"; opts="[${opts%,}]"

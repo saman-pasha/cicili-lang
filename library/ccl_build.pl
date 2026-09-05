@@ -29,7 +29,8 @@ ccl_compile_clang(IR, File, Flags) :-
 
 ccl_link(Objects, Flags, Out) :-
     ccl_words(Objects, Os), ccl_words(Flags, F),
-    atomic_list_concat(['cc ', Os, ' ', F, ' -o \'', Out, '\' 2>&1'], Cmd),
+    ( ccl_lang(cpp) -> Ld = 'c++' ; Ld = cc ),                                % cicili++ links through c++
+    atomic_list_concat([Ld, ' ', Os, ' ', F, ' -o \'', Out, '\' 2>&1'], Cmd),
     ccl_sh(Cmd, O, Exit),
     ( Exit =:= 0 -> true ; atom_codes(Msg, O), throw(error(link_failed(Msg), cicili_link(Out))) ).
 

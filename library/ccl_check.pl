@@ -229,6 +229,7 @@ ck_var_fields(N, T, Fs) :-
     ;   T1 = base(_, [struct(_, _)]), ccl_members_of(T1, Ms) -> ck_member_fields(Ms, N, '.', Fs)
     ;   Fs = [] ).
 ck_member_fields([], _, _, []).
+ck_member_fields([M|Ms], Base, Sep, Fs) :- M \= member(_, _, _), !, ck_member_fields(Ms, Base, Sep, Fs).   % a C++ class's methods, labels
 ck_member_fields([member(MT, F, _)|Ms], Base, Sep, Fs) :-
     (   F == anon -> Fs = Fs1
     ;   atomic_list_concat([Base, Sep, F], K),

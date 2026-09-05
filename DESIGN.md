@@ -178,8 +178,19 @@ it is done (see below); the checker and the lowering take the AST from here.
   predicate still grows the store by that predicate's whole row count,
   never reclaimed -- hence one item predicate per file here, and
   compaction raised with cocolog.
-* **M5 — the C++ reader.** After the C part is finished (M2 to M4), the
-  reader grows the C++ forms, because the libraries are in C++: classes
+* **M5 — the C++ reader. IN PROGRESS: the first slice DONE**, as
+  `bin/cicili++`, a separate command: the reader in a C++ mode reads
+  namespaces, using, `extern "C"`, templates (declarations, template-id
+  types, explicit arguments), classes with access labels, methods,
+  constructors and their initializers, destructors, inheritance, operators,
+  default arguments, references, `new`/`delete`, `this`, the casts,
+  lambdas, range-for, try/catch/throw, `auto` by inference, enum class;
+  gated by `test/cpp.sh` (21 constructs, Cicili's emitted C++ read whole, a
+  C++ file that is C built through `c++`). A library header is flattened by
+  `clang++ -E` and read once, in memory: cocolog's store cannot hold units
+  that size (the finding in `CLAUDE.md`), so the cache the plan below
+  counted on is a summary cache still to design. The plan: the reader
+  grows the C++ forms, because the libraries are in C++: classes
   with member functions, constructors and destructors and access labels;
   `namespace` and `::`; references; `new`/`delete`; templates, on
   declarations and in type names (which needs the symbol table to tell

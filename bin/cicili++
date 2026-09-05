@@ -1,0 +1,13 @@
+#!/bin/sh
+# cicili++ -- cicili for C++, as clang++ is clang for C++: the same arguments,
+# every input read as C++, the link through c++. It keeps everything in memory
+# (--no-kb): the C++ headers are too big for the AST cache as cocolog's store
+# stands -- <cstdio> alone is 2700 items, and a store of them takes minutes to
+# write and to probe -- so a run reads its headers again, about 30 s for
+# <cstdio>, until a summary cache replaces the AST cache for them.
+# M5 is the reader: a C++ file is read whole, -ast-dump shows it, -fsyntax-only
+# says nothing when it reads; the check and the lowering of the C++ forms are
+# M6, so a C++ file that is C builds, and one that is not is refused at the
+# first form the lowering does not have.
+HERE=$(cd "$(dirname "$0")" && pwd)
+CICILI_LANG=cpp CICILI_ME='cicili++' exec "$HERE/cicili" --no-kb "$@"

@@ -37,6 +37,9 @@ library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, else clang -c -x i
 library/ccl_check.pl     the safe part: owners (own), move, the flow walk; run first by cicili_ir
 test/c/safe/             programs the check must REFUSE, each with the error its .expect names
 bin/cicili               the command: clang's arguments, one cocolog run over ./KB (ccl_drive/2)
+bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
+test/cpp.pl, cpp.sh      the C++ reader's gate: 21 checks over test/cpp/*.cpp, Cicili's emitted C++ read whole,
+                         hello.cpp built through cicili++
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
                          and the IR cache (dr_ir/3: a file's IR beside its unit in the store)
 test/driver.sh           the command's gate; test/c/link and test/c/inc its fixtures
@@ -224,6 +227,43 @@ the OUTERMOST qualifier list of the type, through an array to its element
 and through a function to its result, and `ccl_tie_of/2` reads it back.
 Nothing in the lowering or the layout reads a qualifier, so a tie costs
 them nothing.
+
+**The C++ mode (M5, `bin/cicili++`):** `'$ccl_lang'` is c or cpp, set
+from the file's extension by `ccl_read_file` (`.cpp .cc .cxx .C .hpp .hh
+.hxx`) or forced by the driver's `lang(cpp)` (`'$ccl_lang_forced'`, which
+`cicili++` sets through `CICILI_LANG=cpp`). Every C++ rule in
+`ccl_syntax.pl` is guarded by `ccl_cpp` (`{ ccl_lang(cpp) }`) and placed
+BEFORE the C clause it extends, so a .c reads as it did; the keywords are
+mode-dependent (`ccl_keyword/1`: C's, plus `ccl_cpp_keyword/1` in cpp;
+`override` and `final` stay identifiers), and `::` lexes only in cpp. The
+vocabulary is README's table. Names: `ccl_qname//3` reads `::a::b<args>::c`
+into an atom, `tmpl(N, Args)` or `scoped(Path, Last)` (`global` first for
+a leading `::`), taking `N <` as a template-id when N is a known template
+(`'$ccl_templates'`, seeded with the STL's, grown by every `template`
+item) or, in a type context, when the arguments read as such and end
+before a declarator (`ccl_targs_ahead/2`, a scan to the matching `>`,
+`>>` closing two: `ccl_tclose/2` leaves one). In `ccl_specs` a compound
+qualified name is a type (`ccl_cpp_type//3`), a plain one is left to the
+C heuristics; in a block it must be followed by what a declarator starts
+with (`std::cout << x` is an expression). A class's name joins the global
+env at its declaration (`ccl_add_env/1`), its body parses under
+`'$ccl_class'` so a constructor is known by the class's own name. A LESSON
+that cost an evening: `( A, ! ; B )` inside a DCG body cuts the WHOLE
+CLAUSE, so it is only for a choice that decides the clause -- `( inline,
+! ; [] )` before `namespace` killed every inline function, and a
+qualifier hook ending in `!` in the function-definition rule killed every
+prototype at file scope. An optional word is `( ccl_kw(inline) ; [] )`,
+no cut. The C++ items reach the bulk noter (`ccl_collect_item`: extern_c,
+namespace by its bare name, template; `class` as a tag; `param/3`; refs)
+and `ccl_note_item`. A C++ library header (`system(_)` or `next(_)` spec,
+kind kept in `'$ccl_inc_kind'`) is flattened by `clang++ -E -dD -x c++`
+and read once (`ccl_read_unit`), never raw -- raw, `<sstream>`'s
+hundreds of headers each failed and got preprocessed in turn: ten
+minutes -- and `#include_next` looks past the including file's directory
+(`ccl_resolve_include(next(_), …)`). The driver reads `.cpp .cc .cxx .C`
+through `dr_c`, skips the check and the lowering under `-fsyntax-only` in
+cpp mode (M6's), and `ccl_link` uses `c++`. `cicili++` runs `--no-kb`:
+see the findings.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
@@ -584,6 +624,20 @@ module (a segfault that looked like the error path's). The build mirrors `module
   source's small one and the 158-row index. Still so under cocolog 1.2.2
   (a 20,000-row predicate: +7.8 MB per writing process). To raise with
   cocolog's owner, with compaction.
+* **cocolog's store cannot hold C++ headers as the AST cache holds C's.**
+  A flattened `<cstdio>` is 2700 items, `<sstream>` tens of thousands, and
+  a writing process pays by the written predicate's row count, dead rows
+  never reclaimed: one `objects.cpp` read over a fresh `KB++` ran past five
+  minutes and left a 187 MB store, and even without the writes the probes
+  of hundreds of new per-file predicates were minutes. So `cicili++` and
+  `test/cpp.sh` run `--local`, a run reads its headers again (about two
+  seconds each, flattened), and the C++ cache is a summary cache still to
+  design. To raise with cocolog's owner beside compaction.
+* **cocolog's reader refuses a clause with `is` as a plain atom argument**
+  (`var(is, …)`: an operator where an atom is meant), and a check name with
+  `"` inside a quoted atom did not read either; `ensure_loaded/1` then says
+  only `its clauses would not consult`, no line. Bisect by splitting the
+  file into clauses (`test/cpp.pl` needed that twice).
 * **An unset global throws** (`nb_getval/2`: existence_error), so a global
   is read through `ccl_global/3` or a `once(catch(...))`.
 * cocolog has `abolish/1`, `clause/2` on consulted clauses and `retract/1`

@@ -97,9 +97,17 @@ ccl_kb_items_goal(Path, K, I, It, T) :- ccl_kb_items(Path, F), T =.. [F, K, I, I
 ccl_kb_forget_items(Path) :- ccl_kb_items_goal(Path, _, _, _, T), retractall(T).
 ccl_kb_forget_file(Path) :- ccl_kb_ready, retractall('$ccl_ast'(Path, _, _)), ccl_kb_forget_items(Path).
 
-ccl_read_file(File, AST, Rest) :-
-    ccl_ensure_globals, ccl_kb_cached(File, top, AST0), !, AST = AST0, Rest = [], nb_setval('$ccl_far', 0).
-ccl_read_file(File, AST, Rest) :-
+ccl_read_file(File, AST, Rest) :- ccl_ensure_globals, ccl_set_lang(File), ccl_read_file_(File, AST, Rest).
+%% the language of the file read: C++ by its extension (or forced, cicili++), C by .c
+ccl_set_lang(File) :-
+    (   nb_getval('$ccl_lang_forced', F), F \== none -> nb_setval('$ccl_lang', F)
+    ;   ccl_lang_of_file(File, L) -> nb_setval('$ccl_lang', L)
+    ;   true ).
+ccl_lang_of_file(F, cpp) :- member(E, ['.cpp', '.cc', '.cxx', '.C', '.hpp', '.hh', '.hxx']), sub_atom(F, _, _, 0, E), !.
+ccl_lang_of_file(F, c) :- sub_atom(F, _, _, 0, '.c'), !.
+ccl_read_file_(File, AST, Rest) :-
+    ccl_kb_cached(File, top, AST0), !, AST = AST0, Rest = [], nb_setval('$ccl_far', 0).
+ccl_read_file_(File, AST, Rest) :-
     read_file_to_codes(File, Codes),
     ccl_tokens(Codes, Tokens, RestCodes),
     ( RestCodes == [] -> true
@@ -108,7 +116,7 @@ ccl_read_file(File, AST, Rest) :-
     nb_setval('$ccl_far', F),
     ( Rest == [] -> ccl_kb_remember(File, top, AST) ; true ).
 
-ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V).
+ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V0), ( ccl_lang(cpp) -> V = cpp(V0) ; V = V0 ).   % a C++ read is not the C read
 ccl_kb_forget :- ccl_kb_ready, findall(P, '$ccl_ast'(P, _, _), Ps), ccl_kb_forget_each(Ps), retractall('$ccl_ast'(_, _, _)).
 ccl_kb_forget_each([]).
 ccl_kb_forget_each([P|Ps]) :- ccl_kb_forget_items(P), ccl_kb_forget_each(Ps).
@@ -191,10 +199,15 @@ ccl_ensure_globals :-
       nb_setval('$ccl_scope', [[]]), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []), nb_setval('$ccl_enums', []),
       nb_setval('$ccl_expansions', []), nb_setval('$ccl_incpath', none), nb_setval('$ccl_kb_ready', no), nb_setval('$ccl_reading', []),
       nb_setval('$ccl_macro_files', []), nb_setval('$ccl_std_macros', none), nb_setval('$ccl_gensym', 0), nb_setval('$ccl_unit_paths', []),
+      nb_setval('$ccl_lang', c), nb_setval('$ccl_lang_forced', none), nb_setval('$ccl_class', []), nb_setval('$ccl_inc_kind', local),
+      nb_setval('$ccl_templates', [vector, map, set, unordered_map, unordered_set, list, deque, array, pair, tuple, optional, variant,
+                                   unique_ptr, shared_ptr, weak_ptr, function, basic_string, initializer_list, allocator, less, greater, hash,
+                                   numeric_limits, is_same, enable_if, remove_reference, decay, queue, stack, priority_queue, span]),
       nb_setval('$ccl_inited', yes) ).
 
 %% ---- the directive's text -----------------------------------------------------
 ccl_include_spec(Text, Spec) :- atom_codes(Text, Cs), phrase(ccl_inc_spec(Spec), Cs).
+ccl_inc_spec(next(Spec)) --> [35], ccl_sp, "include_next", ccl_sp, ccl_inc_name(Spec), ccl_rest_any.   % the path after the including file's directory
 ccl_inc_spec(Spec) --> [35], ccl_sp, "include", ccl_sp, ccl_inc_name(Spec), ccl_rest_any.
 ccl_inc_name(system(N)) --> "<", ccl_upto(0'>, Cs), { atom_codes(N, Cs) }.
 ccl_inc_name(local(N)) --> [34], ccl_upto(34, Cs), { atom_codes(N, Cs) }.
@@ -209,8 +222,11 @@ ccl_rest_any --> [].
 ccl_include(Spec, R) :-
     ccl_global('$ccl_file', From, none),
     (   ccl_resolve_include(Spec, From, Path)
-    ->  ( sub_atom(Path, _, 3, 0, '.pl') -> ccl_load_macros(Path, Preds), R = macros(Path, Preds) ; ccl_include_read(Path, R) )
+    ->  ( sub_atom(Path, _, 3, 0, '.pl') -> ccl_load_macros(Path, Preds), R = macros(Path, Preds) ; ccl_inc_kind(Spec, Kind), nb_setval('$ccl_inc_kind', Kind), ccl_include_read(Path, R) )
     ;   R = missing ).
+ccl_inc_kind(system(_), system) :- !.
+ccl_inc_kind(next(_), system) :- !.
+ccl_inc_kind(_, local).
 
 %% ---- a .pl included: its predicates are macros ---------------------------------
 %% `#include "m.pl"' loads the Prolog file (ensure_loaded/1: a second load
@@ -324,9 +340,22 @@ ccl_include_read(Path, file(Path, How, Unit)) :-
     ( catch(ccl_read_unit(Path, How0, Unit0), _, fail) -> How = How0, Unit = Unit0 ; How = unreadable, Unit = none ),
     ccl_reading_pop(Path),
     ccl_unit_cache(Path, How, Unit),
-    ( How == unreadable -> true ; ccl_kb_remember(Path, included(How), Unit) ).
+    ( How == unreadable -> true ; ccl_lang(cpp), How == preprocessed -> true ; ccl_kb_remember(Path, included(How), Unit) ).
+%% a preprocessed C++ header stays in the process: <cstdio> alone is 2700
+%% items, and cocolog's store takes a writing process's rows at a cost that
+%% follows their count, never reclaiming a dead one -- five minutes and 187 MB
+%% for one include chain -- so the C++ system headers are read per run (a
+%% bounded 30 s) until a summary cache replaces the AST cache for them
 
-%% raw first; preprocessed only when raw does not read whole
+%% raw first; preprocessed only when raw does not read whole -- except a C++
+%% library header, <cstdio> and kin: flattened by one `clang++ -E' run, its
+%% hundreds of includes resolved by the preprocessor, and read once, as far as
+%% it reads; raw, each of those would be attempted, failed and preprocessed in
+%% turn, ten minutes for <sstream>
+ccl_read_unit(Path, How, Unit) :-
+    ccl_lang(cpp), nb_getval('$ccl_inc_kind', system), !,
+    nb_setval('$ccl_inc_kind', local),
+    ccl_preprocess(Path, PP), ccl_parse_file(PP, U1, Info1), How = preprocessed, ccl_partial(U1, Info1, Unit).
 ccl_read_unit(Path, How, Unit) :-
     ccl_parse_file(Path, U0, Info0),
     (   Info0 == whole -> How = raw, Unit = U0
@@ -344,7 +373,8 @@ ccl_rest_info([tok(_, _, L)|_], stopped(L, near(F))) :- ccl_farthest(F).
 
 ccl_preprocess(Path, Out) :-
     tmp_file(ccl_pp, Out0), atom_concat(Out0, '.i', Out),
-    atomic_list_concat(['clang -E -dD -x c \'', Path, '\' -o \'', Out, '\' 2>/dev/null'], Cmd),
+    ( ccl_lang(cpp) -> Tool = 'clang++ -E -dD -x c++' ; Tool = 'clang -E -dD -x c' ),
+    atomic_list_concat([Tool, ' \'', Path, '\' -o \'', Out, '\' 2>/dev/null'], Cmd),
     once(catch(proc_run(Cmd, 60000, _, Exit), _, fail)), Exit == 0, exists_file(Out).
 
 %% ---- the path ----------------------------------------------------------------
@@ -353,6 +383,12 @@ ccl_resolve_include(local(N), From, Path) :-
 ccl_resolve_include(Spec, _, Path) :-
     ( Spec = local(N) ; Spec = system(N) ),
     ccl_include_path(Dirs), member(D, Dirs), atomic_list_concat([D, '/', N], P), exists_file(P), !, Path = P.
+ccl_resolve_include(next(Spec), From, Path) :-
+    ( Spec = local(N) ; Spec = system(N) ),
+    ccl_include_path(Dirs), ( ccl_dirs_after(Dirs, From, Rest) -> true ; Rest = Dirs ),
+    member(D, Rest), atomic_list_concat([D, '/', N], P), exists_file(P), !, Path = P.
+ccl_dirs_after([D|Ds], From, Ds) :- atom_concat(D, '/', DP), atom_concat(DP, Base, From), \+ sub_atom(Base, _, _, _, '/'), !.
+ccl_dirs_after([_|Ds], From, Rest) :- ccl_dirs_after(Ds, From, Rest).
 
 ccl_include_path(Dirs) :-
     (   ccl_global('$ccl_incpath', D0, none), D0 \== none -> Dirs = D0
@@ -366,7 +402,8 @@ ccl_user_dirs(Ds) :-
     findall(D, ccl_include_dir(D), Ds0),
     ( catch(os_env('CICILI_INCLUDE', V), _, fail), V \== '' -> atom_codes(V, Cs), ccl_split(Cs, 0':, Parts), ccl_atoms(Parts, Es), append(Ds0, Es, Ds) ; Ds = Ds0 ).
 ccl_toolchain_dirs(Ds) :-
-    ( catch(proc_run('clang -E -x c -v /dev/null 2>&1', 30000, Out, _), _, fail) -> ccl_search_list(Out, Ds) ; Ds = [] ).
+    ( ccl_lang(cpp) -> Cmd = 'clang++ -E -x c++ -v /dev/null 2>&1' ; Cmd = 'clang -E -x c -v /dev/null 2>&1' ),
+    ( catch(proc_run(Cmd, 30000, Out, _), _, fail) -> ccl_search_list(Out, Ds) ; Ds = [] ).
 ccl_search_list(Codes, Dirs) :- ccl_split(Codes, 10, Lines), ccl_after_marker(Lines, Rest), ccl_until_end(Rest, Dirs).
 ccl_after_marker([], []).
 ccl_after_marker([L|Ls], R) :- ( atom_codes(A, L), sub_atom(A, _, _, _, 'search starts here') -> R = Ls ; ccl_after_marker(Ls, R) ).
