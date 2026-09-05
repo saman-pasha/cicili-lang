@@ -273,7 +273,10 @@ int main(void) { printf("%d %d\n", twice(21), sum(1, 2, 3, 4)); return 0; }   /*
 ```
 
 A block that reaches the end of the file without `#end` ends there.
-`test/c/run/cocolog.c` runs it.
+`test/c/run/cocolog.c` runs it, and `infer.c` shows the macros asking
+`ccl_type_of/2` for their argument's type: `show(e)` picks printf's
+conversion by it, `swap(a, b)` declares its temporary with it, `bytes(e)`
+folds `ccl_size_of/2` of it to a literal.
 
 ## `:=` declares by inference
 
