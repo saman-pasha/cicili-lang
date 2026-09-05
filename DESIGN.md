@@ -133,8 +133,12 @@ it is done (see below); the checker and the lowering take the AST from here.
   must go before y and may move only within y, a tied member a slot where a
   borrow is stored, and a prototype's ties a contract checked on both
   sides: the caller's arguments and the callee's returns. `clone(p)` copies
-  what an owner points to, for an own parameter; a pointer with no owner
-  behind it is a warning.
+  what an owner points to, for an own parameter. Every pointer has an
+  ownership path or the program is refused: a plain pointer holding fresh
+  memory is followed to its consume point, and a slot the check cannot
+  follow takes no such value; a result may be tied to static storage; a
+  null test refines an owner. `test/c/run/btree.c`, a B-tree, is the
+  ownership test case.
   **`defer` is decided (owner):** scope-bound, like
   Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
   each scope a cleanup block running its defers last-first and branching

@@ -77,11 +77,8 @@ process over `~/.cicili/KB` (`$CICILI_KB`, or `--no-kb` for `--local`); the run 
 `cicili: ok` or `cicili: N error(s)`, which the shell turns into the exit
 status. A diagnostic is `file:line: error: what` (`dr_diag/3`, one clause per
 error term; `once/1` around the report, since the callers' recovery fails
-after it). A warning is `file:line: warning: what` (`dr_warnings/2`: the
-check's `'$ck_warnings'`, read through `ccl_check_warnings/1` and kept with
-the IR in `'$ccl_irmeta'/4`, so a served file prints them again). The
-command puts every diagnostic on stderr, as clang; `cicili: ...` and
-`unit(...)` lines on stdout.
+after it). The command puts every diagnostic on stderr, as clang;
+`cicili: ...` and `unit(...)` lines on stdout.
 
 **The surface is four predicates** (owner's rule): `cicili_ast(+File, -AST)`
 (and `/3`), `cicili_ir(+Units, -IR)`, `cicili_compile(+IR, +ObjFile, +Flags)`,
@@ -392,28 +389,41 @@ C always had it; a static local is never anchored (`'$ck_statics'`).
 Borrows are declared for any type that carries a pointer
 (`ck_carries_type/1`), not only pointers. A statement expression's last
 value is consumed when it is an owner, which is how `clone`'s copy leaves
-its block. **Loose pointers (owner's rule: an owner's error is a plain pointer's
-warning):** a plain pointer local given a fresh value (`ck_fresh_value/1`:
-not none, not an initializer, not null, not static) is `N-loose`, a root
-for borrows (`ck_borrow_source`) that nothing tied to it can outlive
-(`ck_within`); `free`, `fclose`, `realloc` (now in `ck_consumes`) and an
-own parameter consume it (`ck_consume_loose/3`: none, its borrows dangle),
-a `return` or a store into a slot takes it (`ck_loose_taken/3`,
-`ck_into_plain`), an own slot takes it over (`ck_into_own`: none, its
-borrows retargeted to the owner by `ck_retarget/4`); `ck_leaks` WARNS
-`unconsumed` for a loose key where an owner would be `owner_leaked`, and so
-does the id-assignment when it overwrites one. A rebind or a loose lands in
-the frame of the variable's symbol scope (`ck_declare_at/4`, which
-`ck_anchor/3` also uses). The `untied` warning ("no owner behind") stays
-for what the check cannot follow: `ck_untied_warn/4` for a struct by value
-and `ck_into_plain/5` for a field, an element, `*p`, a global, an
-initializer item (named by `ck_slot_label/4`). Both go into
-`'$ck_warnings'` (`warning(Kind, N, Form, where(F, line(L)))`, a macro's
-expansion squashed to `({ ... })`); no flag turns them off (owner's rule),
-only `own`, a tie, a consume point or a followed source. The ties'
-direction: a slot tied to y takes a value whose ROOT OUTLIVES y
-(`ck_within(Y, Root)`), an owner tied to y moves only into a slot WITHIN
-y (`ck_within(Slot, Y)`); `tie.c` and `clone.c` run, eight `safe/tie_*.c`
+its block. **Loose pointers (owner's rule: every pointer has an ownership path, or
+the program is refused):** a plain pointer local given a fresh value
+(`ck_fresh_value/1`: not none, not an initializer, not null, not static)
+is `N-loose`, a root for borrows (`ck_borrow_source`) that nothing tied to
+it can outlive (`ck_within`); `free`, `fclose`, `realloc` (in
+`ck_consumes`) and an own parameter consume it (`ck_consume_loose/3`:
+none, its borrows dangle), a `return` takes it (`ck_loose_taken/3`), an
+own slot takes it over (`ck_into_own`: none, its borrows retargeted to the
+owner by `ck_retarget/4`); `ck_leaks` refuses a loose key as `unconsumed`
+where an owner would be `owner_leaked`, and so does the id-assignment when
+it overwrites one. A rebind or a loose lands in the frame of the variable's
+symbol scope (`ck_declare_at/4`, which `ck_anchor/3` also uses). `untied`
+("no owner behind") is for what the check cannot follow:
+`ck_no_owner_behind/4` for a struct by value and `ck_into_plain/5` for a
+field, an element, `*p`, a global, an initializer item (named by
+`ck_slot_label/4`), given a fresh value or a loose pointer. There is no
+warning channel: both were warnings for one commit (0.14) and are errors
+by the owner's decision; `ck_squash/2` keeps a macro's expansion out of a
+diagnostic's form. The ties' direction: a slot tied to y takes a value
+whose ROOT OUTLIVES y (`ck_within(Y, Root)`), an owner tied to y moves
+only into a slot WITHIN y (`ck_within(Slot, Y)`); a value rooted at a
+field counts as rooted at the field's holder (a child of x returned as
+x's). A result tie may name a static local of the function's
+(`ck_body_static/2`) or a global: the root is `static(Name)`, which
+nothing ends, freeing it is `borrow_consumed`, and `ck_call_tie/3` gives
+it to the caller. `ck_refine/4` under `if`: `!p`, `p == NULL` make an
+owner null on the then path, `p`, `p != NULL` on the else path, its own
+fields with it (`ck_set_null/3`). An owner moved in from an own FIELD
+(whose pointee is not opened) has complete fields (`ck_complete_rest/4`),
+and a struct's fields move out, or fill, only for a struct held BY VALUE
+(`ck_by_value/1`), never for a pointer parameter whose pointee's fields
+are keys. `btree.c` is the ownership test case: a B-tree with linked
+children (an array of own pointers has no rule yet: which element is
+consumed cannot be told statically), `statics.c` ties its static results,
+`untied.c` and `unconsumed.c` are refused; `tie.c` and `clone.c` run, eight `safe/tie_*.c`
 are refused.
 
 ## How the LLVM module is written (the Cicili module pattern)

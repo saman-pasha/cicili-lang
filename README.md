@@ -357,6 +357,8 @@ named:
 | `tie_outlived` | an owner tied to `y` is still live when `y` is consumed |
 | `tie_escapes` | a tied owner moved beyond its tie: into an untied slot, to an untied own parameter, returned with no result tie |
 | `tie_mismatch` | a value not within the tie of the slot, the parameter or the result it is given to |
+| `unconsumed` | a plain pointer holding fresh memory, never consumed: at its scope's end, a `return`, or overwritten |
+| `untied` | a slot the check cannot follow -- a global, a field, an element, `*p`, an initializer item, a struct by value -- given a value with no owner behind it |
 
 **A struct's own fields are owners too**, named by their path: `p->name`
 under an own pointer, `c.name` in a struct held by value, `c.inner.name`
@@ -439,21 +441,41 @@ keeps one. It is a global macro (`library/ccl_format.pl`); `malloc` must be
 declared. A struct with an own member cannot be cloned, its copy would own
 the same memory twice. `test/c/run/clone.c` runs it.
 
-**A plain pointer is followed softly: an error for an owner is a warning
-for it.** A plain pointer local given fresh memory -- `char *p =
-malloc(8)`, `FILE *f = fopen(...)`, the result of an untied function --
-is *loose*: memory with no owner behind it. `free(p)`, an own parameter,
-`return p`, storing it into a slot, or an own pointer taking it over
-(`own char *q = p`) consumes it, and a borrow of it dangles when it is
-freed, as an owner's would. Where it is still unconsumed -- its scope's
-end, a `return`, an overwrite -- the check says `file:line: warning: plain
-pointer not consumed: 'p' in ...` where `own` would have made it
-`owner_leaked`. A slot the check cannot follow -- a global, a field, an
-element, `*p`, an item of an initializer, a struct by value -- given such
-a value warns at the binding instead: `warning: no owner behind: 's.buf'
-in ...`. The build goes on. There is no flag against either; what silences
-them is a statement the check can follow: `own`, a tie, a consume point,
-a value taken from an owner, a borrow or a parameter. Diagnostics, errors and warnings alike, are on stderr, as clang's;
+**Every pointer has an ownership path, or the program is refused** (owner's
+rule). A plain pointer local given fresh memory -- `char *p = malloc(8)`,
+`FILE *f = fopen(...)`, the result of an untied function -- is *loose*:
+memory with no owner behind it, followed as an owner without the word.
+`free(p)`, `realloc`, an own parameter, `return p`, storing it into a slot,
+or an own pointer taking it over (`own char *q = p`) consumes it, and a
+borrow of it dangles when it is freed, as an owner's would. Where it is
+still unconsumed -- its scope's end, a `return`, an overwrite -- it is
+refused as `unconsumed`, where `own` would have said `owner_leaked`. A slot
+the check cannot follow -- a global, a field, an element, `*p`, an item of
+an initializer, a struct by value -- given such a value is refused at the
+binding as `untied`. There is no flag against either; what the check
+accepts is a statement it can follow: `own`, a tie, a consume point, a
+value taken from an owner, a borrow, a parameter, or static storage.
+
+A function returning a pointer to static storage says so with a tie to
+that storage, a static local of its own or a global: `static struct pt
+*origin(void) <*> o { static struct pt o; ...; return &o; }`. The caller's
+variable is then a borrow of static storage, which nothing ends and
+nothing may free. And a null test refines an owner: after `if (!p)
+return;` or `if (p == NULL)`, `p` is null on that path, its own fields
+with it, so `drop(own node *x) { if (!x) return; ... free(x); }` is
+accepted as written.
+
+`test/c/run/btree.c` is the ownership test case: a B-tree whose every
+node is owned by its parent -- the first child through `child`, the
+siblings through `next` -- and the root by the tree; walks and searches
+borrow, a search's result is tied to the tree it came from, a full node is
+split by moving its upper half into a new owner, and the tree is dropped
+node by node with every owner consumed exactly once. Two shapes it taught:
+surgery on a struct's own fields is done in a function that takes the
+struct as a parameter (its fields are keys there, a local borrow's are
+not), and a node the check must see assigned field by field is built with
+`malloc` in place, since an own pointer from any other call is taken as
+complete. Diagnostics, errors and warnings alike, are on stderr, as clang's;
 `cicili -v`'s lines and `cicili: ok` on stdout.
 
 ## `format`, `print`, `println`: global macros

@@ -89,24 +89,26 @@
 %%   tie_mismatch        a value not within the tie of the slot, the parameter or the result it is given to
 %% A plain pointer LOCAL given fresh memory -- malloc's result, an untied
 %% function's, anything not null, not static, not a borrow -- is LOOSE: memory
-%% with no owner behind it, that the check follows softly. free (fclose, an own
-%% parameter), a return, a store into a slot, or an own slot taking it over
-%% consumes it; a borrow of it dangles when it is freed, as an owner's would;
-%% and where it is still unconsumed -- its scope's end, a return, an
-%% overwrite -- the check WARNS where an owner would be an error.
-%%
-%% THE WARNINGS, collected as warning(Kind, Name, Form, where(Function, line(L)))
-%% and answered by ccl_check_warnings/1 (the driver prints them):
+%% with no owner behind it, that the check follows as an owner without the
+%% word. free (fclose, realloc, an own parameter), a return, a store into a
+%% slot, or an own slot taking it over consumes it; a borrow of it dangles
+%% when it is freed, as an owner's would; and where it is still unconsumed --
+%% its scope's end, a return, an overwrite -- it is refused (owner's rule:
+%% every pointer has an ownership path, or the program is not accepted):
 %%   unconsumed          a loose pointer (a plain local holding fresh memory) at its scope's end, a return, or overwritten
 %%   untied              a slot the check cannot follow -- a field, an element, a global, *p, a struct by value -- given a value with no owner behind it
+%% A function's result may be tied to a static local of its own or to a global
+%% (`<*> table'): the caller's variable is then a borrow of static storage,
+%% static(Name), which nothing ends and nothing may free. `if (!p)' and
+%% `if (p == NULL)' make an owner null on the then path, `if (p)' and
+%% `if (p != NULL)' on the else path, its own fields with it.
 %% Not tracked: what a plain pointer reaches is not opened for ownership (a
 %% borrowed struct's own field may be given an owner, that is all).
 
 :- use_module(library(ccl_infer)).
 
-ccl_check_units(Units) :- ccl_ensure_globals, ccl_scope_init, nb_setval('$ck_warnings', []), ck_note_units(Units), ck_units(Units).
-ccl_check_noted(Units) :- nb_setval('$ck_warnings', []), ck_units(Units).             % on the table the caller built
-ccl_check_warnings(Ws) :- ( once(catch(nb_getval('$ck_warnings', Ws0), _, fail)) -> reverse(Ws0, Ws) ; Ws = [] ).
+ccl_check_units(Units) :- ccl_ensure_globals, ccl_scope_init, ck_note_units(Units), ck_units(Units).
+ccl_check_noted(Units) :- ck_units(Units).                            % on the table the caller built
 ck_note_units([]).
 ck_note_units([unit(Is)|Us]) :- ccl_items_note(Is), ck_note_units(Us).
 ck_units([]).
@@ -120,7 +122,12 @@ ck_function(L, Ret, Name, Params, Body) :-
     nb_setval('$ck_fn', Name), nb_setval('$ck_line', L), nb_setval('$ck_loops', []), nb_setval('$ck_ties', []), nb_setval('$ck_statics', []),
     ccl_scope_push, ccl_declare_params(Params),
     ck_param_names(Params, Names), nb_setval('$ck_params', Names),
-    (   ccl_tie_of(Ret, RY) -> ( memberchk(RY, Names) -> true ; ck_fail(tie_unknown, RY, result(Name)) ), nb_setval('$ck_ret_tie', RY)
+    (   ccl_tie_of(Ret, RY)
+    ->  (   memberchk(RY, Names) -> RT = RY
+        ;   ck_body_static(Body, RY) -> RT = static(RY)                   % a static local of the function's, or a global: storage nothing ends
+        ;   ck_is_global(RY) -> RT = static(RY)
+        ;   ck_fail(tie_unknown, RY, result(Name)) ),
+        nb_setval('$ck_ret_tie', RT)
     ;   nb_setval('$ck_ret_tie', none) ),
     ck_borrowed_fields(Params, Borrowed), nb_setval('$ck_borrowed', Borrowed),
     ck_param_owners(Params, Owners),
@@ -141,6 +148,8 @@ ck_complete_owners([], _).
 ck_complete_owners([N-S|Os], Form) :-
     ( ck_is_borrowed_field(N), \+ memberchk(S, [live, null]) -> ck_fail(borrow_incomplete, N, Form) ; true ),
     ck_complete_owners(Os, Form).
+ck_body_static(declaration(_, static, _, Vs), N) :- member(var(N, _, _), Vs), !.
+ck_body_static(T, N) :- compound(T), T =.. [_|As], member(A, As), ck_body_static(A, N), !.
 ck_param_names([], []).
 ck_param_names([param(_, N)|Ps], Ns) :- ck_param_names(Ps, Ns0), ( N == anon -> Ns = Ns0 ; Ns = [N|Ns0] ).
 ck_is_param(N) :- nb_getval('$ck_params', Ps), memberchk(N, Ps).
@@ -267,11 +276,8 @@ ck_static_value(cond(_, A, B)) :- !, ck_static_value(A), ck_static_value(B).
 ck_static_value(comma(_, B)) :- !, ck_static_value(B).
 
 ck_line(L) :- ( integer(L), L > 0 -> nb_setval('$ck_line', L) ; true ).
-ck_fail(Kind, Name, Form) :- nb_getval('$ck_fn', F), nb_getval('$ck_line', L), ck_short(Form, Short), throw(error(ownership(Kind, Name, Short), where(F, line(L)))).
-ck_warn(Kind, Name, Form) :-
-    nb_getval('$ck_fn', F), nb_getval('$ck_line', L), ck_short(Form, Short0), ck_squash(Short0, Short),
-    nb_getval('$ck_warnings', Ws), nb_setval('$ck_warnings', [warning(Kind, Name, Short, where(F, line(L)))|Ws]).
-%% a warning's form without a macro's whole expansion in it
+ck_fail(Kind, Name, Form) :- nb_getval('$ck_fn', F), nb_getval('$ck_line', L), ck_short(Form, Short0), ck_squash(Short0, Short), throw(error(ownership(Kind, Name, Short), where(F, line(L)))).
+%% a form without a macro's whole expansion in it
 ck_squash(stmt_expr(_), '({ ... })') :- !.
 ck_squash(T, S) :- compound(T), !, T =.. [F|As], ck_squash_list(As, Bs), S =.. [F|Bs].
 ck_squash(T, T).
@@ -332,9 +338,11 @@ ck_tied_to(K, R) :- ck_base_path(K, B), ck_tied_to(B, R).
 %% something within Y; P a field of something within Y
 ck_within(_, P, P) :- !.
 ck_within(St, _, P) :- ck_state(St, P, loose), !.                      % nobody ends a loose pointer's memory
+ck_within(_, _, static(_)) :- !.                                        % nor static storage
 ck_within(St, P, Y) :- ck_declared_tie(P, T), !, ck_within(St, T, Y).
 ck_within(St, P, Y) :- ck_state(St, P, S), ( S = borrow(R) ; S = dangling(R) ), R \== P, !, ck_within(St, R, Y).
-ck_within(St, P, Y) :- ck_base_path(P, B), ck_within(St, B, Y).
+ck_within(St, P, Y) :- ck_base_path(P, B), ck_within(St, B, Y), !.
+ck_within(St, Y, P) :- ck_base_path(P, B), ck_within(St, Y, B).        % a value rooted at a field: its holder stands for it (a child of x, returned as x's)
 %% what `<*> y' refers to, for a local or a parameter: a key's root (its state
 %% borrow or dangling when y is a borrow); a plain local, anchored now; a
 %% global, which never ends; else nothing declared before, tie_unknown
@@ -403,8 +411,8 @@ ck_tied_consumed_([X-R|Ts], St, K, Form) :-
 ck_tie_kept(St, P, Key, Form) :- ( ck_tied_to(P, T) -> ( Key \== none, ck_within(St, Key, T) -> true ; ck_fail(tie_escapes, P, Form) ) ; true ).
 %% a value with no owner behind it, given to a variable that carries a pointer
 %% without being one (a struct by value: the check cannot follow it)
-ck_untied_warn(N, T, V, Form) :-
-    (   ck_carries_type(T), \+ ck_is_pointer_type(T), \+ ck_declared_tie(N, _), ck_fresh_value(V) -> ck_warn(untied, N, Form)
+ck_no_owner_behind(N, T, V, Form) :-
+    (   ck_carries_type(T), \+ ck_is_pointer_type(T), \+ ck_declared_tie(N, _), ck_fresh_value(V) -> ck_fail(untied, N, Form)
     ;   true ).
 ck_fresh_value(V) :- V \== none, V \= init(_), \+ ck_null(V), \+ ck_static_value(V).
 %% a loose pointer's memory taken: by free, a return, a slot, an owner
@@ -449,7 +457,9 @@ ck_borrows_from(stmt_expr(block(Is)), St, P) :- append(_, [expr(_, E)], Is), !, 
 %% a call whose result is tied to a parameter borrows from that argument (an
 %% own result is an owner instead: fresh, checked against the tie where it lands)
 ck_borrows_from(call(F, Args), St, P) :- ck_callee_sig(F, fn(R, _, _)), \+ ck_own_type(R), ck_call_tie(call(F, Args), St, P0), !, P = P0.
-ck_call_tie(call(F, Args), St, P) :- ck_callee_sig(F, fn(R, Ps, _)), ccl_tie_of(R, Y), ck_param_index(Ps, Y, 1, I), ccl_nth(I, Args, A), ck_borrows_from(A, St, P).
+ck_call_tie(call(F, Args), St, P) :-
+    ck_callee_sig(F, fn(R, Ps, _)), ccl_tie_of(R, Y),
+    ( ck_param_index(Ps, Y, 1, I) -> ccl_nth(I, Args, A), ck_borrows_from(A, St, P) ; P = static(Y) ).
 ck_param_index([param(_, Y)|_], Y, I, I) :- !.
 ck_param_index([_|Ps], Y, I0, I) :- I1 is I0 + 1, ck_param_index(Ps, Y, I1, I).
 ck_callee_sig(id(F), Sig) :- ccl_declared(F, T), !, ck_fn_sig(T, Sig).
@@ -467,6 +477,7 @@ ck_no_escape(E, St) :-
     ;   true ).
 ck_ret_borrow(St, P, RT, N, Form) :-
     (   ck_state(St, P, loose) -> true                                  % the caller takes the memory over
+    ;   P = static(_) -> true
     ;   RT \== none -> ( ck_within(St, RT, P) -> true ; ck_fail(tie_mismatch, N, Form) )
     ;   ( ck_is_param(P) ; ck_is_global(P) ) -> true
     ;   ck_fail(borrow_escapes, N, Form) ).
@@ -516,7 +527,23 @@ ck_stmt(empty, St, St) :- !.
 ck_stmt(expr(L, E), St0, St) :- !, ck_line(L), ck_anchor_addrs(E, St0, St1), ck_expr(E, St1, St).
 ck_stmt(defer(L, _, Body), St0, St) :- !, ck_line(L), ck_defer(St0, Body, St).
 ck_stmt(if(L, C, T, E), St0, St) :- !, ck_line(L),
-    ck_expr(C, St0, St1), ck_stmt(T, St1, StT), ( E == none -> StE = St1 ; ck_stmt(E, St1, StE) ), ck_merge(StT, StE, St).
+    ck_expr(C, St0, St1), ck_refine(C, St1, StThen, StElse),
+    ck_stmt(T, StThen, StT), ( E == none -> StE = StElse ; ck_stmt(E, StElse, StE) ), ck_merge(StT, StE, St).
+%% a null test on an owner refines it: `if (!p)', `if (p == NULL)' make p null
+%% on the then path, `if (p)', `if (p != NULL)' on the else path -- and its
+%% own fields with it, there being nothing behind a null
+ck_refine(C, St, StThen, StElse) :-
+    (   ck_null_test(C, E, Sense) -> ( Sense == null -> ck_set_null(E, St, StThen), StElse = St ; StThen = St, ck_set_null(E, St, StElse) )
+    ;   StThen = St, StElse = St ).
+ck_null_test(not(E), E, null) :- !.
+ck_null_test(bin('==', E, N), E, null) :- ck_null(N), !.
+ck_null_test(bin('==', N, E), E, null) :- ck_null(N), !.
+ck_null_test(bin('!=', E, N), E, live) :- ck_null(N), !.
+ck_null_test(bin('!=', N, E), E, live) :- ck_null(N), !.
+ck_null_test(E, E, live) :- ( E = id(_) ; E = member(_, _) ; E = arrow(_, _) ), !.
+ck_set_null(E, St0, St) :-
+    (   ck_path(E, K), ck_state(St0, K, S), memberchk(S, [live, partial]) -> ck_own_under(St0, K, Ks), ck_set_all(St0, [K|Ks], null, St)
+    ;   St = St0 ).
 ck_stmt(while(L, C, S), St0, St) :- !, ck_line(L), ck_expr(C, St0, St1), ck_loop(S, St1, St2), ck_expr(C, St2, St).
 ck_stmt(do(L, S, C), St0, St) :- !, ck_line(L), ck_loop(S, St0, St1), ck_expr(C, St1, St).
 ck_stmt(for(L, Init, C, Step, S), St0, St) :- !, ck_line(L),
@@ -574,7 +601,7 @@ ck_decls([var(N, T, Init)|Vs], St0, St) :-
         ;   ck_expr(Init, St5, St5a),
             (   ck_carries_type(T), ck_borrows_from(Init, St5a, P) -> ck_bind_var(N, P, var(N, Init), St5a, St6)
             ;   ck_is_pointer_type(T), \+ ck_declared_tie(N, _), ck_fresh_value(Init) -> ck_declare(St5a, N, loose, St6)
-            ;   ck_untied_warn(N, T, Init, var(N, Init)), St6 = St5a ) ) ),
+            ;   ck_no_owner_behind(N, T, Init, var(N, Init)), St6 = St5a ) ) ),
     ck_decls(Vs, St6, St).
 ck_allocation(call(id(F), _)) :- memberchk(F, [malloc, calloc, realloc]).
 
@@ -593,7 +620,7 @@ ck_kind(_, _, fresh).
 %% rule), a borrow is refused
 ck_into_own(Key, R, Form, St0, St, Kind) :-
     ck_kind(R, St0, Kind),
-    (   Kind = owner(P) -> ck_strip_move(R, E), ck_base_use(E, St0, St1), ck_tie_kept(St1, P, Key, Form), ck_under_states(St1, P, Src), ck_consume(P, move, Form, St1, St2, Prior), New = Prior, ck_transfer(St2, Src, P, Key, St3)
+    (   Kind = owner(P) -> ck_strip_move(R, E), ck_base_use(E, St0, St1), ck_tie_kept(St1, P, Key, Form), ck_under_states(St1, P, Src), ck_consume(P, move, Form, St1, St2, Prior), New = Prior, ck_transfer(St2, Src, P, Key, St3a), ck_complete_rest(St3a, Key, Prior, St3)
     ;   Kind = null -> ck_expr(R, St0, St3), New = null
     ;   Kind = borrow(P) -> ( ck_state(St0, P, loose) -> ck_expr(R, St0, St3a), ck_set(St3a, P, none, St3b), ( Key == none -> St3 = St3b ; ck_retarget(St3b, P, Key, St3) ), New = live   % the owner takes loose memory over
                               ; ck_fail(borrow_stored, P, Form) )
@@ -610,10 +637,11 @@ ck_into_plain(Name, R, Form, St0, St) :-
     ck_kind(R, St0, Kind),
     (   Kind = owner(P) -> ck_fail(owner_stored, P, Form)
     ;   Kind = borrow(P) -> (   ck_state(St0, P, anchor) -> ck_expr(R, St0, St)
-                            ;   ck_state(St0, P, loose) -> ck_warn(untied, Name, Form), ck_expr(R, St0, St1), ck_set(St1, P, none, St)   % stored: its consume point, still nobody's
+                            ;   P = static(_) -> ck_expr(R, St0, St)
+                            ;   ck_state(St0, P, loose) -> ck_fail(untied, Name, Form)             % stored, still nobody's
                             ;   ck_fail(borrow_stored, P, Form) )
     ;   Kind == null -> ck_expr(R, St0, St)
-    ;   ( ck_static_value(R) -> true ; ck_warn(untied, Name, Form) ), ck_expr(R, St0, St) ).
+    ;   ( ck_static_value(R) -> true ; ck_fail(untied, Name, Form) ), ck_expr(R, St0, St) ).
 %% a slot's name for a diagnostic: a path, `*p', `a[]', else the expression
 ck_slot_name(E, N) :- ck_path(E, N), !.
 ck_slot_name(deref(E), N) :- ck_slot_name(E, N0), atom(N0), !, atom_concat('*', N0, N).
@@ -627,6 +655,12 @@ ck_into_tied(Key, Root, R, Form, St0, St) :-
     ;   ck_borrows_from(R, St0, P) -> ( ck_within(St0, Root, P) -> true ; ck_fail(tie_mismatch, Key, Form) )
     ;   true ),
     ck_expr(R, St0, St1), ck_loose_taken(R, St1, St2), ck_tied_state(St2, Root, S), ck_set_if(St2, Key, S, St).
+%% the fields the source did not cover -- an own FIELD's pointee is not opened,
+%% so it has none -- are complete, as the source was when it moved
+ck_complete_rest(St, none, _, St) :- !.
+ck_complete_rest(St0, Key, Prior, St) :- ck_under_states(St0, Key, Ps), ( Prior == null -> S = null ; S = live ), ck_complete_unset(Ps, S, St0, St).
+ck_complete_unset([], _, St, St).
+ck_complete_unset([K-KS|Ps], S, St0, St) :- ( KS == unset -> ck_set(St0, K, S, St1) ; St1 = St0 ), ck_complete_unset(Ps, S, St1, St).
 %% the fields of an owner moved into another owner: the same states, under the
 %% new base; a field's borrow of a sibling is re-rooted to the sibling's copy
 ck_transfer(St, _, _, none, St) :- !.
@@ -742,7 +776,7 @@ ck_leaks_frames([], _).
 ck_leaks_frames([fr(Os, _)|Frs], Form) :- ck_leaks(Os, Form), ck_leaks_frames(Frs, Form).
 ck_leaks([], _).
 ck_leaks([N-S|Os], Form) :-
-    (   S == loose -> ck_warn(unconsumed, N, Form)
+    (   S == loose -> ck_fail(unconsumed, N, Form)
     ;   ( memberchk(S, [moved, unset, null, none, anchor]) ; S = borrow(_) ; S = dangling(_) ; ck_is_borrowed_field(N) ) -> true
     ;   ck_fail(owner_leaked, N, Form) ),
     ck_leaks(Os, Form).
@@ -754,7 +788,9 @@ ck_merge_all([A, B|T], S) :- ck_merge(A, B, C), ck_merge_all([C|T], S).
 %% a value that is consumed if it is an owner or a struct with own fields (a return), else used
 ck_consume_or_use(E, St0, St) :- ck_owner_path(St0, E, K), !, ck_base_use(E, St0, St1), ck_consume(K, move, E, St1, St, _).
 ck_consume_or_use(move(E), St0, St) :- !, ck_expr(move(E), St0, St).
-ck_consume_or_use(E, St0, St) :- ck_path(E, K), ck_own_under(St0, K, Fs), Fs \== [], !, ck_expr(E, St0, St1), ck_move_out(St1, Fs, E, St).
+ck_consume_or_use(E, St0, St) :- ck_path(E, K), ck_by_value(E), ck_own_under(St0, K, Fs), Fs \== [], !, ck_expr(E, St0, St1), ck_move_out(St1, Fs, E, St).
+%% a struct held by value, not a pointer to one (whose own fields are the struct's, not the pointer's to move)
+ck_by_value(E) :- ccl_type_of(E, T), T \== unknown, \+ ck_is_pointer_type(T).
 ck_consume_or_use(E, St0, St) :- ck_expr(E, St0, St1), ck_loose_taken(E, St1, St).
 %% consuming an owner, by free (fclose) or by move: it must be live or null; its
 %% own fields must be consumed already when it is freed, complete when it is
@@ -806,7 +842,7 @@ ck_fn_params(T, Ps) :- ccl_resolve_type(T, T1), ( T1 = fn(_, Ps, _) -> true ; T1
 %% place, by its type
 ck_expr(assign('=', L, R), St0, St) :- ck_owner_path(St0, L, K), !,
     ck_base_use(L, St0, St1), ck_into_own(K, R, assign('=', L, R), St1, St, _).
-ck_expr(assign('=', L, R), St0, St) :- ck_path(L, K), ck_own_under(St0, K, [_|_]), !,
+ck_expr(assign('=', L, R), St0, St) :- ck_path(L, K), ck_by_value(L), ck_own_under(St0, K, [_|_]), !,
     ck_base_use(L, St0, St1), ( ccl_type_of(L, T) -> true ; T = unknown ), ck_fill(K, T, R, assign('=', L, R), St1, St).
 ck_expr(assign('=', L, R), St0, St) :- ck_path(L, K), ck_tied_to(K, Root), !,
     ck_base_use(L, St0, St1), ck_into_tied(K, Root, R, assign('=', L, R), St1, St).
@@ -815,11 +851,11 @@ ck_expr(assign('=', id(N), R), St0, St) :- ( ck_state(St0, N, _) ; ck_is_local(N
     (   ck_is_param(N), ck_state(St1, N, borrow(N)) -> ck_rebind(St1, N, none, St2)   % a parameter re-assigned is a plain local from here
     ;   St2 = St1 ),
     ( ck_local_type(N, T) -> true ; T = unknown ),
-    ( ck_state(St2, N, loose) -> ck_warn(unconsumed, N, assign('=', id(N), R)) ; true ),      % overwritten, its memory still nobody's
-    (   T \== unknown, ck_carries_type(T), ck_borrows_from(R, St2, P) -> ck_rebind(St2, N, borrow(P), St)
+    ( ck_state(St2, N, loose) -> ck_fail(unconsumed, N, assign('=', id(N), R)) ; true ),      % overwritten, its memory still nobody's
+    (   T \== unknown, ck_carries_type(T), ck_borrows_from(R, St1, P) -> ck_rebind(St2, N, borrow(P), St)   % read before the parameter was unbound
     ;   T \== unknown, ck_is_pointer_type(T), ck_fresh_value(R) -> ck_rebind(St2, N, loose, St)
-    ;   ck_state(St2, N, S), ( S = borrow(_) ; S = dangling(_) ; S == loose ) -> ck_rebind(St2, N, none, St), ( T \== unknown -> ck_untied_warn(N, T, R, assign('=', id(N), R)) ; true )
-    ;   T \== unknown, \+ ck_state(St2, N, _) -> ck_untied_warn(N, T, R, assign('=', id(N), R)), St = St2
+    ;   ck_state(St2, N, S), ( S = borrow(_) ; S = dangling(_) ; S == loose ) -> ck_rebind(St2, N, none, St), ( T \== unknown -> ck_no_owner_behind(N, T, R, assign('=', id(N), R)) ; true )
+    ;   T \== unknown, \+ ck_state(St2, N, _) -> ck_no_owner_behind(N, T, R, assign('=', id(N), R)), St = St2
     ;   St = St2 ).
 ck_expr(assign('=', L, R), St0, St) :- !,
     ck_lval_use(L, St0, St1),
@@ -882,7 +918,7 @@ ck_args_([A|As], Callee, I, St0, St) :-
         ->  ( How == move, ck_tied_to(K, _), \+ ck_param_tied(Callee, I) -> ck_fail(tie_escapes, K, Form) ; true ),
             ck_base_use(A1, St0, St1a), ck_consume(K, How, Form, St1a, St1, _)
         ;   A = move(_) -> ck_expr(A, St0, St1)
-        ;   ck_path(A, K), ck_own_under(St0, K, Fs), Fs \== [] -> ck_expr(A, St0, St1a), ck_move_out(St1a, Fs, Form, St1)
+        ;   ck_path(A, K), ck_by_value(A), ck_own_under(St0, K, Fs), Fs \== [] -> ck_expr(A, St0, St1a), ck_move_out(St1a, Fs, Form, St1)
         ;   ck_borrows_from(A, St0, P), ck_state(St0, P, loose) -> ck_expr(A, St0, St1a), ck_consume_loose(St1a, P, St1)   % loose memory freed, or taken by an own parameter
         ;   ck_kind(A, St0, borrow(P)) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)
         ;   ck_expr(A, St0, St1) )

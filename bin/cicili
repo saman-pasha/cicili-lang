@@ -63,7 +63,7 @@ done
 inputs="[${inputs%,}]"; opts="[${opts%,}]"
 case "$store" in --embed*) kb_prepare "$KB" ;; esac
 res=$("$C" $store query "use_module(library(cicili)), ccl_drive($inputs, $opts)" 2>&1)
-printf '%s\n' "$res" | grep -a ": error: \|: warning: \|: note: " >&2      # diagnostics on stderr, as clang
+printf '%s\n' "$res" | grep -a ": error: \|: note: " >&2      # diagnostics on stderr, as clang
 printf '%s\n' "$res" | grep -a "^cicili: \|^unit(" | grep -av "^cicili: ok$"
 printf '%s\n' "$res" | grep -aq "^cicili: ok$" && exit 0
 printf '%s\n' "$res" | grep -aq "^cicili: [0-9]* error" || { printf '%s\n' "$res" | grep -a "ERROR\|error" | head -3 | sed 's/^/cicili: /'; }
