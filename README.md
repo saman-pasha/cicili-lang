@@ -616,6 +616,35 @@ every address is `inbounds` and every signed add `nsw`; deletion takes the
 key out of its leaf and fixes only a node left short on the way back up,
 as BTreeSet does. Insert and search are won, deletion is a tie.
 
+**Compile time.** `bench/compile/run.sh` times `cicili++`, `clang++` and
+`rustc` building the same two programs -- a hello with one `printf`, and
+the B-tree of `bench/btree` (cicili's own for `cicili++`, the C mirror with
+its two `calloc`s cast for `clang++`, `BTreeSet` for `rustc`) -- at `-O0`
+and `-O3`, five runs each with the caches in place, the minimum and the
+median of the wall clock; `cicili++`'s first run comes first, the init
+phase, when the C++ headers are preprocessed and summarized into a fresh
+`HOME`; then the front ends alone, to an object and to nothing. On the
+same i9-9880H, the minimum of five, in seconds:
+
+| | hello `-O0` | hello `-O3` | B-tree `-O0` | B-tree `-O3` | B-tree `-c` | B-tree, read only |
+|---|---|---|---|---|---|---|
+| `cicili++`, the first run (init phase) | 5.1 | | 14.4 | | | |
+| `cicili++`, after it | 1.58 | 1.57 | 3.64 | 3.71 | 3.30 | 1.99 |
+| `clang++` | 1.19 | 1.20 | 1.12 | 1.23 | 0.40 | 0.38 |
+| `rustc` | 0.55 | 0.55 | 0.60 | 0.78 | 0.32 | |
+
+`rustc` is the fastest on both programs and `clang++` next; `cicili++`
+after its init phase takes 1.3 times `clang++` on the hello and 3 times on
+the B-tree. Where its time goes: 0.65 s is the process floor (cocolog and
+the library loaded), a header's summary about 0.3 s (parsed once per
+process), the reader 0.15 ms a token, the check and the lowering of the
+170 lines about 1.4 s, the embedded LLVM and the link the rest -- `c++`
+links in 0.3 s, and `clang++`'s own link is 0.8 of its 1.2 s. The init
+phase is paid once per header, 5 s for `<stdio.h>`'s closure of 38 files
+and 14 s for the three headers the B-tree includes. A cocolog interpreter
+against two C++ compilers: the lexer's speed is the floor of every read,
+and the check and the lowering are the next places to look.
+
 `test/c/run/btree.c` and `btree_del.c` are the ownership test case: a
 B-tree whose every node owns its children through an own array, fixed in
 the first, bounded by the node's count in the second, and the root belongs

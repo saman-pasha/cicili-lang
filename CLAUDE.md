@@ -64,6 +64,8 @@ test/c/                  the gate's fixtures: hello.c, rich.c, the macro, :=, pa
                          format and shorthand samples, the bad ones
 test/objects.sh          the objects layer's gate
 bench/btree/run.sh       the B-tree benchmark: cicili -O3, clang -O3 on the same algorithm, Rust's BTreeSet
+bench/compile/run.sh     the compile-time benchmark: cicili++, clang++, rustc on a hello and the B-tree, at -O0
+                         and -O3; cicili++'s first run (the init phase, summaries into a fresh HOME) apart
 tutorials/NN-*.pl        the objects layer's lessons; goal `main', last line `done'
 DESIGN.md                the architecture, the neighbours' roles, M0..M4
 ```
@@ -720,6 +722,13 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `"` inside a quoted atom did not read either; `ensure_loaded/1` then says
   only `its clauses would not consult`, no line. Bisect by splitting the
   file into clauses (`test/cpp.pl` needed that twice).
+* **A summary's terms are parsed once per process** (`ccl_sum_terms/2`
+  caches them in `'$ccl_sum:<File>'`, `ccl_sum_write/4` forgets its own):
+  every consumer of an include asked for them again -- the validity check,
+  the Env, the symbol table, the bulk rebuild, the driver's deps -- and a
+  600-line summary costs 0.15 s to parse, 0.26 s more when `ccl_split/3`
+  cut the lines (now `atomic_list_concat/3`); the B-tree's read went from
+  3.0 s to 2.0 s, its build from 5.2 s to 3.6 s (`bench/compile/run.sh`).
 * **`sub_atom/5` with a free position costs about 150 µs a call** (it
   enumerates), and a plain walk over a code list about a microsecond a
   code: the preprocessor tests a line with `atom_codes/2` + `memberchk/2`

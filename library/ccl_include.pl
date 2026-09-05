@@ -399,7 +399,7 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
     ccl_sum_terms_out([sum(Path, key(V, cpp))], Out0), ccl_sum_deps(Deps, Out0b), append(Out0, Out0b, Out1),   % a term per dep: a line stays short
     ccl_sum_decls(Ds, Out2), ccl_sum_typedefs(Ts, Out3), ccl_sum_tags(Gs, Out4), ccl_sum_enums(Es, Out5),
     ccl_sum_names(Names, Out6), ccl_sum_tmpls(Tmpls, Out7),
-    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes).
+    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F).
 ccl_sum_deps([], []).
 ccl_sum_deps([P-T|Ds], Out) :- ccl_sum_terms_out([dep(P, T)], O1), ccl_sum_deps(Ds, O2), append(O1, O2, Out).
 ccl_sum_decls([], []).
@@ -436,10 +436,19 @@ ccl_items_templates([_|Is], Ns) :- ccl_items_templates(Is, Ns).
 %% the files the preprocessor pulled, each with its time
 ccl_dep_times([], []).
 ccl_dep_times([F|Fs], Ds) :- ccl_dep_times(Fs, Ds1), ( once(catch(time_file(F, T), _, fail)) -> Ds = [F-T|Ds1] ; Ds = Ds1 ).
-%% reading a summary: its terms, one per line; the four tables' lists
-ccl_sum_terms(F, Terms) :- read_file_to_codes(F, Codes), ccl_split(Codes, 10, Lines), ccl_sum_lines(Lines, Terms).
+%% reading a summary: its terms, one per line; the four tables' lists. Parsed
+%% ONCE per process (`'$ccl_sum:<F>'`): every consumer of an include --
+%% the validity check, the Env, the symbol table, the bulk rebuild, the
+%% driver's deps -- asks for the same terms, and a 600-line summary costs
+%% 0.15 s to parse (the lines split by atomic_list_concat/3: ccl_split/3 on
+%% the codes took 0.26 s by itself)
+ccl_sum_terms(F, Terms) :-
+    atom_concat('$ccl_sum:', F, K),
+    (   catch(nb_getval(K, T0), _, fail), T0 \== none -> Terms = T0
+    ;   read_file_to_codes(F, Codes), atom_codes(A, Codes), atomic_list_concat(Lines, '\n', A), ccl_sum_lines(Lines, Terms), nb_setval(K, Terms) ).
+ccl_sum_forget(F) :- atom_concat('$ccl_sum:', F, K), nb_setval(K, none).
 ccl_sum_lines([], []).
-ccl_sum_lines([L|Ls], Ts) :- ( L == [] -> Ts = Ts1 ; append(Body, [0'.], L), atom_codes(A, Body), catch(term_to_atom(T, A), _, fail) -> Ts = [T|Ts1] ; Ts = Ts1 ), ccl_sum_lines(Ls, Ts1).
+ccl_sum_lines([L|Ls], Ts) :- ( L == '' -> Ts = Ts1 ; sub_atom(L, _, 1, 0, '.'), sub_atom(L, 0, _, 1, A), catch(term_to_atom(T, A), _, fail) -> Ts = [T|Ts1] ; Ts = Ts1 ), ccl_sum_lines(Ls, Ts1).
 ccl_sum_load(F, D, T, G, E, Tmpls, Names) :-
     ccl_sum_terms(F, Terms),
     findall(N-Ty, member(decl(N, Ty), Terms), D), findall(N-Ty, member(typedef(N, Ty), Terms), T),
