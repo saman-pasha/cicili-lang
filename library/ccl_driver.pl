@@ -85,12 +85,14 @@ dr_diag(F, macro_error(M, here(_, L)), _) :- !, dr_error(F, L, ['macro: ', M]).
 dr_diag(F, macro_error(N, As, E), _) :- !, dr_error(F, 0, ['macro ', N, ' on ', As, ' threw ', E]).
 dr_diag(F, macro_failed(N, As), _) :- !, dr_error(F, 0, ['macro ', N, ' failed on ', As]).
 dr_diag(F, ownership(Kind, N, Form), where(Fn, line(L))) :- !, dr_kind(Kind, Text), dr_error(F, L, [Text, ' ''', N, ''' in ', Form, ' (function ', Fn, ')']).
-dr_diag(F, not_lowered(What), where(Fn)) :- !, dr_error(F, 0, ['not lowered yet: ', What, ' (function ', Fn, ')']).
+dr_diag(F, not_lowered(What), where(Fn, line(L))) :- !, dr_error(F, L, ['not lowered yet: ', What, ' (function ', Fn, ')']).
 dr_diag(F, compile_failed(Msg), _) :- !, dr_error(F, 0, ['LLVM: ', Msg]).
 dr_diag(F, cocolog_error(Msg), _) :- !, dr_error(F, 0, ['LLVM: ', Msg]).            % the embedded LLVM's refusal
 dr_diag(F, link_failed(Msg), _) :- !, dr_error(F, 0, ['link: ', Msg]).
 dr_diag(F, E, W) :- dr_error(F, 0, [E, ' ', W]).
 dr_kind(use_after_move, 'use after move of') :- !.
+dr_kind(borrow_after_move, 'use of a borrow after its owner was consumed:') :- !.
+dr_kind(borrow_escapes, 'a borrow leaves the function:') :- !.
 dr_kind(owner_leaked, 'owner leaked:') :- !.
 dr_kind(move_in_loop, 'owner consumed inside a loop:') :- !.
 dr_kind(move_of_non_owner, 'move of a non-owner:') :- !.

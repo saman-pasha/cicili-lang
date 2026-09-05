@@ -144,7 +144,7 @@ ccl_type_of(cond(_, A, B), T) :- !, ccl_type_of(A, AT), ccl_type_of(B, BT),
     ( ccl_is_arith(AT), ccl_is_arith(BT) -> ccl_usual(AT, BT, T) ; AT \== unknown -> T = AT ; T = BT ).
 ccl_type_of(stmt_expr(block(Is)), T) :- !,            % its declarations are in scope for its last expression
     ccl_scope_push, ccl_note_items(Is),
-    ( append(_, [expr(E)], Is) -> ccl_type_of(E, T) ; T = base([], [void]) ),
+    ( append(_, [expr(_, E)], Is) -> ccl_type_of(E, T) ; T = base([], [void]) ),
     ccl_scope_pop.
 ccl_type_of(bin(Op, A, B), T) :- !,
     ccl_type_of(A, AT), ccl_type_of(B, BT),

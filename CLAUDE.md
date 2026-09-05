@@ -99,7 +99,9 @@ Internals are `'$ccl_…'`. The repository is `cicili-lang`, the library
 `cicili_ast/3` mirrors `phrase/3`, answering the tokens left. Two DCGs in
 `library(ccl_syntax)`: `ccl_lex//2` over character codes -> tokens
 `tok(Kind, Value, Line)`; `ccl_externals//2` over tokens -> the AST (its
-vocabulary is the file's header). Precedence is a level per operator
+vocabulary is the file's header; every statement carries its line as its
+first argument, `expr(L, E)`, `if(L, C, T, E)`, `return(L, E)` ...).
+Precedence is a level per operator
 class; declarators are parsed inside out and folded onto the base type by
 `ccl_mk_type/4`. The preprocessor is NOT expanded -- a `#` line is a
 `directive/2` node -- so a typedef name from a header is unknown; it is
@@ -238,7 +240,15 @@ counts as leaked. Scope end and `return` run the frames' defers
 `ck_no_moves_across/3` refuses an outer owner consumed in the body; a
 `break`/`continue` closes the frames inside the loop and joins the loop's
 exits (`'$ck_loops'`). `ck_consumes/2`: free, fclose, and any callee whose
-i-th parameter is `own`. The lowering treats `move(E)` as `E`.
+i-th parameter is `own`. The lowering treats `move(E)` as `E`. **Borrows:**
+a plain pointer declared or assigned from an expression `ck_borrows_from/3`
+traces to an owner (`id`, `+`/`-`, a cast, `&p[i]`, `&p->x`, another
+borrow) is `N-borrow(P)`; `ck_consume` turns every `borrow(P)` into
+`dangling(P)` (`ck_dangle/3`), a use of which is `borrow_after_move`; a
+`return` of anything that borrows is `borrow_escapes` (`ck_no_escape/2`);
+assigning a borrow from something else unbinds it. Every statement node
+carries its line first (`ccl_add_lines/3` gives a macro's short forms the
+call's line), `ck_line/1` keeps it, `ck_short/2` names the form without it.
 
 ## How the LLVM module is written (the Cicili module pattern)
 

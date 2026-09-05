@@ -20,10 +20,12 @@ what runs today.
 * **M0 -- the LLVM path.** `proof/run.sh`: a hand-written LLVM IR module,
   compiled by the system `clang` (which consumes textual IR and drives the
   LLVM backend, no LLVM install) to a native binary that exits 42. GREEN.
-* **M3 -- the safe part, begun.** `own` pointers are linear, `move` hands
-  them on, and use after move, the double free, a leak on any path, a move
-  inside a loop are compile errors naming the form. GREEN: the owners
-  programs run, ten programs are refused each with its error.
+* **M3 -- the safe part.** `own` pointers are linear, `move` hands them
+  on, a borrow dangles when its owner is consumed and may not escape, and
+  use after move, the double free, a leak on any path, a move inside a
+  loop, a dangling borrow are compile errors naming the statement's line.
+  GREEN: the owners programs run, fourteen programs are refused each with
+  its error.
 * **M2 -- the lowering.** `cicili_ir/2`, `cicili_compile/3`, `cicili_link/3`:
   C11's core -- every type but bitfields and unions, every statement and
   operator, calls and variadic calls, structs by value and by pointer,
@@ -118,14 +120,15 @@ int main(void) {
 }
 ```
 
-the AST is (strings shown as text; they are code lists):
+the AST is (strings shown as text; they are code lists; every statement
+carries its line first):
 
 ```prolog
 unit([ include(2, system('stdio.h'),  file('/…/MacOSX.sdk/usr/include/stdio.h',  raw, unit([ … ]))),
        include(3, system('stdlib.h'), file('/…/MacOSX.sdk/usr/include/stdlib.h', raw, unit([ … ]))),
        function(5, none, base([], [int]), main, [], false,
-                block([ expr(call(id(printf), [str("hello, %s\n"), str("cicili-lang")])),
-                        return(int(0)) ])) ])
+                block([ expr(6, call(id(printf), [str("hello, %s\n"), str("cicili-lang")])),
+                        return(7, int(0)) ])) ])
 ```
 
 where each `unit([ … ])` is the header's own AST, its nested includes inside
@@ -291,18 +294,26 @@ Form), where(Function, line(L)))`, the form named:
 | refused as | when |
 |---|---|
 | `use_after_move` | a consumed owner is read, passed, or freed again (the double free) |
+| `borrow_after_move` | a borrow -- a plain pointer that took its value from an owner -- is used after the owner was consumed |
+| `borrow_escapes` | a borrow is returned from the function, whose owner is consumed by then |
 | `owner_leaked` | an owner is live, on any path, at its scope's end or at a `return` |
 | `move_in_loop` | an owner from outside a loop is consumed inside it and not re-owned |
 | `move_of_non_owner` | `move(x)` of something not declared `own` |
 | `owner_overwritten` | assignment to a live owner, which would leak what it held |
 | `goto_with_owners` | a `goto` in a function that has owners, not followed yet |
 
-`test/c/run/owners.c` does all of it and runs, and `own_struct.c` does it
-with a struct on the heap: an `own point *` parameter takes the struct
-over, a `const point *` one only looks; the programs under `test/c/safe/`
-are each refused with the error their `.expect` names.
-Not tracked yet: non-owning pointers copied from an owner, owners inside
-structs, owners through function pointers.
+A **borrow** is a plain pointer whose value came from an owner: `char *q =
+p`, `q = p + 1`, `&p[i]`, `&p->x`, or another borrow. It is bound to the
+owner: the moment the owner is consumed the borrow dangles and a use of it
+is refused, and a borrow may not be returned; assigning it from something
+else unbinds it. Every error names the statement's line.
+
+`test/c/run/owners.c` does all of it and runs, `own_struct.c` with a struct
+on the heap (an `own point *` parameter takes the struct over, a `const
+point *` one only looks), `borrows.c` with borrows; the programs under
+`test/c/safe/` are each refused with the error their `.expect` names.
+Not tracked yet: owners inside structs, owners through function pointers,
+borrows stored into structs or globals.
 
 ## `format`, `print`, `println`: global macros
 

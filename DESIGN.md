@@ -103,14 +103,16 @@ it is done (see below); the checker and the lowering take the AST from here.
   LLVM, `library(ccl_llvm)`, a cocolog module over `llvm-c` (parse, verify,
   target, passes, object), with `clang -c -x ir` as the door where the
   module is not built.
-* **M3 — structs and the safe part. BEGUN.** Structs, scopes and `defer`
+* **M3 — structs and the safe part. DONE, to its stated edge.** Structs, scopes and `defer`
   lower (M2); the first ownership check is in: `own` pointers are linear,
   `move` hands them on, and use after move, the double free, a leak on any
   path, a move in a loop, an overwritten owner are compile errors naming
-  the form (`library(ccl_check)`, run first by `cicili_ir`). Next inside
-  M3: borrows (a non-owning pointer copied from an owner, refused after the
-  owner is consumed), owners inside structs, statement lines in the AST so
-  the place is the statement's. **`defer` is decided (owner):** scope-bound, like
+  the form (`library(ccl_check)`, run first by `cicili_ir`); borrows -- a
+  plain pointer copied from an owner -- dangle when the owner is consumed
+  and may not escape; every statement carries its line, so the place is
+  the statement's. Beyond the edge, for later: owners inside structs,
+  borrows stored into structs or globals, the platform ABI for structs by
+  value. **`defer` is decided (owner):** scope-bound, like
   Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
   each scope a cleanup block running its defers last-first and branching
   to the enclosing scope's; a `return`, `break`, `continue` or `goto` out

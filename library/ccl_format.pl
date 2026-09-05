@@ -27,8 +27,8 @@
 ccl_macro_print(call(id(printf), [str(F)|Args])) --> [str(Fmt)], ccl_fmt_args(As), { ccl_fmt_compile(Fmt, As, F, Args) }.
 ccl_macro_println(call(id(printf), [str(F)|Args])) --> [str(Fmt)], ccl_fmt_args(As), { ccl_fmt_compile(Fmt, As, F0, Args), append(F0, [10], F) }.
 ccl_macro_format(stmt_expr(block([declaration(0, none, base([], [char]), [var(B, ptr([], base([], [char])), none)]),
-                                  expr(call(id(asprintf), [addr(id(B)), str(F)|Args])),
-                                  expr(id(B))]))) -->
+                                  expr(0, call(id(asprintf), [addr(id(B)), str(F)|Args])),
+                                  expr(0, id(B))]))) -->
     [str(Fmt)], ccl_fmt_args(As), { ccl_fmt_compile(Fmt, As, F, Args), ccl_gensym(fmt, B) }.
 ccl_fmt_args([A|As]) --> [A], !, ccl_fmt_args(As).
 ccl_fmt_args([]) --> [].

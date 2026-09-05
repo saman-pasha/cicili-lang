@@ -63,9 +63,10 @@ ir_end(Parts) :- ( ir_terminated(yes) -> true ; ir_emit(['  '|Parts]), ir_set_te
 %% a block starts: fall in from the block before unless it ended
 ir_block(L) :- ( ir_terminated(yes) -> true ; ir_emit(['  br label %', L]) ), ir_emit([L, ':']), ir_set_term(no).
 ir_alloca(R, LL) :- nb_getval('$ir_allocas', A), atomic_list_concat(['  ', R, ' = alloca ', LL], Line), nb_setval('$ir_allocas', [Line|A]).
-ir_where(W) :- ir_get('$ir_fn', W0), !, W = W0.
-ir_where(file).
-ir_fail(What) :- ir_where(W), throw(error(not_lowered(What), where(W))).
+ir_where(where(F, line(L))) :- ir_get('$ir_fn', F), !, ( ir_get('$ir_line', L) -> true ; L = 0 ).
+ir_where(where(file, line(0))).
+ir_fail(What) :- ir_where(W), throw(error(not_lowered(What), W)).
+
 
 %% ---- the environment: locals in frames, then the globals, then the table ------------
 ir_env_push :- nb_getval('$ir_env', E), nb_setval('$ir_env', [[]|E]), nb_getval('$ir_defers', D), nb_setval('$ir_defers', [[]|D]), ccl_scope_push.
@@ -255,7 +256,7 @@ ir_expr(move(E), V, T) :- !, ir_expr(E, V, T).                        % a move i
 ir_expr(compound_lit(T, Init), V, T1) :- !,
     ir_fresh(Addr), ir_type(T, LL), ir_alloca(Addr, LL), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E) ; T1 = T ).
 ir_expr(stmt_expr(block(Is)), V, T) :- !,
-    ir_env_push, ( append(Init, [expr(E)], Is) -> ir_stmts(Init), ir_expr(E, V, T) ; ir_stmts(Is), V = none, T = base([], [void]) ),
+    ir_env_push, ( append(Init, [expr(_, E)], Is) -> ir_stmts(Init), ir_expr(E, V, T) ; ir_stmts(Is), V = none, T = base([], [void]) ),
     ir_run_defers(1), ir_env_pop.
 ir_expr(E, _, _) :- ir_fail(expr(E)).
 
@@ -397,21 +398,21 @@ ir_stmt(directive(_, _)) :- !.
 ir_stmt(include(_, _, _)) :- !.
 ir_stmt(static_assert(_, _, _)) :- !.
 ir_stmt(empty) :- !.
-ir_stmt(expr(E)) :- !, ir_expr(E, _, _).
-ir_stmt(defer(_, _, Body)) :- !, ir_defer_push(Body).
-ir_stmt(if(C, T, E)) :- !,
+ir_stmt(expr(L, E)) :- !, ir_line(L), ir_expr(E, _, _).
+ir_stmt(defer(L, _, Body)) :- !, ir_line(L), ir_defer_push(Body).
+ir_stmt(if(L, C, T, E)) :- !, ir_line(L),
     ir_label(LT), ir_label(LE), ir_label(LM), ir_cond(C, CC),
     ( E == none -> ir_end(['br i1 ', CC, ', label %', LT, ', label %', LM]) ; ir_end(['br i1 ', CC, ', label %', LT, ', label %', LE]) ),
     ir_block(LT), ir_stmt(T), ir_end(['br label %', LM]),
     ( E == none -> true ; ir_block(LE), ir_stmt(E), ir_end(['br label %', LM]) ),
     ir_block(LM).
-ir_stmt(while(C, S)) :- !,
+ir_stmt(while(L, C, S)) :- !, ir_line(L),
     ir_label(LC), ir_label(LB), ir_label(LE), ir_block(LC), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LB, ', label %', LE]),
     ir_block(LB), ir_loop_push(LE, LC), ir_stmt(S), ir_loop_pop, ir_end(['br label %', LC]), ir_block(LE).
-ir_stmt(do(S, C)) :- !,
+ir_stmt(do(L, S, C)) :- !, ir_line(L),
     ir_label(LB), ir_label(LC), ir_label(LE), ir_block(LB), ir_loop_push(LE, LC), ir_stmt(S), ir_loop_pop,
     ir_block(LC), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LB, ', label %', LE]), ir_block(LE).
-ir_stmt(for(Init, C, Step, S)) :- !,
+ir_stmt(for(L, Init, C, Step, S)) :- !, ir_line(L),
     ir_env_push,
     ( Init = decl(_, Vs) -> ir_locals(Vs, none) ; Init == none -> true ; ir_expr(Init, _, _) ),
     ir_label(LC), ir_label(LB), ir_label(LS), ir_label(LE), ir_block(LC),
@@ -419,16 +420,16 @@ ir_stmt(for(Init, C, Step, S)) :- !,
     ir_block(LB), ir_loop_push(LE, LS), ir_stmt(S), ir_loop_pop,
     ir_block(LS), ( Step == none -> true ; ir_expr(Step, _, _) ), ir_end(['br label %', LC]),
     ir_block(LE), ir_run_defers(1), ir_env_pop.
-ir_stmt(return) :- !, ir_run_defers(all), ir_end(['ret void']).
-ir_stmt(return(E)) :- !,
+ir_stmt(return(L)) :- !, ir_line(L), ir_run_defers(all), ir_end(['ret void']).
+ir_stmt(return(L, E)) :- !, ir_line(L),
     nb_getval('$ir_ret', RT), ir_expr(E, V0, T0),
     ( ccl_resolve_type(RT, base(_, [void])) -> ir_run_defers(all), ir_end(['ret void'])
     ; ir_convert(V0, T0, RT, V), ir_run_defers(all), ir_type(RT, LL), ir_end(['ret ', LL, ' ', V]) ).
-ir_stmt(break) :- !, ir_loop_top(LE, _, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LE]).
-ir_stmt(continue) :- !, ir_continue_target(LC, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LC]).
-ir_stmt(goto(L)) :- !, atom_concat('L.', L, LL), ir_end(['br label %', LL]).
-ir_stmt(label(L, S)) :- !, atom_concat('L.', L, LL), ir_block(LL), ir_stmt(S).
-ir_stmt(switch(E, block(Is))) :- !,
+ir_stmt(break(L)) :- !, ir_line(L), ir_loop_top(LE, _, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LE]).
+ir_stmt(continue(L)) :- !, ir_line(L), ir_continue_target(LC, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LC]).
+ir_stmt(goto(Ln, L)) :- !, ir_line(Ln), atom_concat('L.', L, LL), ir_end(['br label %', LL]).
+ir_stmt(label(_, L, S)) :- !, atom_concat('L.', L, LL), ir_block(LL), ir_stmt(S).
+ir_stmt(switch(L, E, block(Is))) :- !, ir_line(L),
     ir_expr(E, V0, T0), ir_int(IT), ir_convert(V0, T0, IT, V),
     ir_label(LE), ir_switch_cases(Is, Cases, Default),
     ( Default = none -> DL = LE ; Default = DL ),
@@ -436,9 +437,10 @@ ir_stmt(switch(E, block(Is))) :- !,
     ir_end(['switch i32 ', V, ', label %', DL, ' [ ', CL, ' ]']),
     ir_env_push, ir_loop_push(LE, none), ir_switch_body(Is, Cases, Default), ir_loop_pop, ir_run_defers(1), ir_env_pop,
     ir_block(LE).
-ir_stmt(switch(E, S)) :- !, ir_stmt(switch(E, block([S]))).
-ir_stmt(case(_, S)) :- !, ir_stmt(S).
-ir_stmt(default(S)) :- !, ir_stmt(S).
+ir_stmt(switch(L, E, S)) :- !, ir_stmt(switch(L, E, block([S]))).
+ir_line(L) :- nb_setval('$ir_line', L).
+ir_stmt(case(_, _, S)) :- !, ir_stmt(S).
+ir_stmt(default(_, S)) :- !, ir_stmt(S).
 ir_stmt(S) :- ir_fail(stmt(S)).
 
 ir_locals([], _).
@@ -460,8 +462,8 @@ ir_continue_target(LC, D) :- nb_getval('$ir_loops', L), ( member(loop(_, LC, D),
 
 %% a switch body's cases, at the top level of its block
 ir_switch_cases([], [], none).
-ir_switch_cases([case(E, S)|Is], [case(E, L)|Cs], D) :- !, ir_label(L), ir_switch_cases([S|Is], Cs, D).
-ir_switch_cases([default(S)|Is], Cs, L) :- !, ir_label(L), ir_switch_cases([S|Is], Cs, _).
+ir_switch_cases([case(_, E, S)|Is], [case(E, L)|Cs], D) :- !, ir_label(L), ir_switch_cases([S|Is], Cs, D).
+ir_switch_cases([default(_, S)|Is], Cs, L) :- !, ir_label(L), ir_switch_cases([S|Is], Cs, _).
 ir_switch_cases([_|Is], Cs, D) :- ir_switch_cases(Is, Cs, D).
 ir_case_lines([], []).
 ir_case_lines([case(E, L)|Cs], [Line|Ls]) :- ir_const_int(E, N), atomic_list_concat(['i32 ', N, ', label %', L], Line), ir_case_lines(Cs, Ls).
@@ -471,8 +473,8 @@ ir_const_int(neg(int(N)), M) :- !, M is -N.
 ir_const_int(E, V) :- ccl_const_eval(E, V), !.
 ir_const_int(E, _) :- ir_fail(case(E)).
 ir_switch_body([], _, _).
-ir_switch_body([case(E, S)|Is], Cases, D) :- !, memberchk(case(E, L), Cases), ir_block(L), ir_switch_body([S|Is], Cases, D).
-ir_switch_body([default(S)|Is], Cases, D) :- !, ir_block(D), ir_switch_body([S|Is], Cases, D).
+ir_switch_body([case(_, E, S)|Is], Cases, D) :- !, memberchk(case(E, L), Cases), ir_block(L), ir_switch_body([S|Is], Cases, D).
+ir_switch_body([default(_, S)|Is], Cases, D) :- !, ir_block(D), ir_switch_body([S|Is], Cases, D).
 ir_switch_body([S|Is], Cases, D) :- ir_stmt(S), ir_switch_body(Is, Cases, D).
 
 %% ---- functions and globals -------------------------------------------------------------------
@@ -484,7 +486,7 @@ ir_item(declaration(_, Sto, _, Vs)) :- !, ir_globals(Vs, Sto).
 ir_item(_).
 
 ir_function(Sto, Ret, Name, Params, Var, Body, Text) :-
-    nb_setval('$ir_fn', Name), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no),
+    nb_setval('$ir_fn', Name), nb_setval('$ir_line', 0), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no),
     nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_ret', Ret), nb_setval('$ir_reg', 0),
     ccl_scope_push,
     ir_params(Params, 0, Sigs, Stores), ir_join(Sigs, ', ', SigTxt),

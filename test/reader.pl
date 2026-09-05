@@ -67,7 +67,7 @@ k3 :- check('main is a function at its line, returning int, taking void',
     ( unit('hello.c', unit(Is)), member(function(5, none, base([], [int]), main, [], false, _), Is) )).
 
 k4 :- check('its body: a call with a string (10 codes, ending in newline), then return 0',
-    ( fn_body('hello.c', main, [expr(call(id(printf), [str(S), _])), return(int(0))]), length(S, 10), last(S, 10) )).
+    ( fn_body('hello.c', main, [expr(6, call(id(printf), [str(S), _])), return(7, int(0))]), length(S, 10), last(S, 10) )).
 
 k5 :- check('cicili_ast/3 leaves nothing when the whole file parses',
     ( c('hello.c', P), cicili_ast(P, _, []) )).
@@ -124,13 +124,13 @@ k21 :- check('a list result is spliced: pair(lo, hi); is two declarations',
     ( unit('uses_macros.c', unit(Is)), append(_, [declaration(_, _, _, [var(lo, _, int(1))]), declaration(_, _, _, [var(hi, _, int(2))])|_], Is) )).
 
 k22 :- check('in an expression: square(a) is a * a',
-    ( fn_body('uses_macros.c', f, B), member(return(bin('+', bin('*', id(a), id(a)), _)), B) )).
+    ( fn_body('uses_macros.c', f, B), member(return(_, bin('+', bin('*', id(a), id(a)), _)), B) )).
 
 k23 :- check('a DCG macro parses its arguments: sum(a, 2, 3) folds to (a + 2) + 3',
-    ( fn_body('uses_macros.c', f, B), member(return(bin('+', _, bin('+', bin('+', id(a), int(2)), int(3)))), B) )).
+    ( fn_body('uses_macros.c', f, B), member(return(_, bin('+', _, bin('+', bin('+', id(a), int(2)), int(3)))), B) )).
 
 k24 :- check('as a statement: swap(a, b); is a block with a fresh temporary',
-    ( fn_body('uses_macros.c', f, B), member(block([declaration(_, _, _, [var(T, _, id(a))]), expr(assign('=', id(a), id(b))), expr(assign('=', id(b), id(T)))]), B), sub_atom(T, 0, 4, _, tmp_) )).
+    ( fn_body('uses_macros.c', f, B), member(block([declaration(_, _, _, [var(T, _, id(a))]), expr(_, assign('=', id(a), id(b))), expr(_, assign('=', id(b), id(T)))]), B), sub_atom(T, 0, 4, _, tmp_) )).
 
 k25 :- check('type inference: a parameter, the usual conversions, a member through a pointer and a typedef',
     ( fn_body('uses_macros.c', f, B),
@@ -163,7 +163,7 @@ k33 :- check('t := s; keeps the pointer type; c := k; drops the const: the new v
     ( fn_body('walrus.c', f, B), member(declaration(_, _, _, [var(t, ptr([], base([], [char])), _)]), B), member(declaration(_, _, _, [var(c, base([], [int]), _)]), B) )).
 
 k34 :- check('for (i := 0; ...) declares i in the for',
-    ( fn_body('walrus.c', f, B), member(for(decl(base([], [int]), [var(i, base([], [int]), int(0))]), _, postinc(id(i)), _), B) )).
+    ( fn_body('walrus.c', f, B), member(for(_, decl(base([], [int]), [var(i, base([], [int]), int(0))]), _, postinc(id(i)), _), B) )).
 
 k35 :- check('g := 7; at file scope is a global int',
     ( unit('walrus.c', unit(Is)), member(declaration(2, none, base([], [int]), [var(g, _, int(7))]), Is) )).
@@ -188,15 +188,15 @@ k41 :- check('a field the struct has not is an error naming it',
     ( c('pattern_bad2.c', P), catch(cicili_ast(P, _), error(E, _), true), E == no_member(zz, base([], [typedef(point_t)])) )).
 
 k42 :- check('println: {} next, {name} by name, {0} by index, {p} a struct by its members, % kept, newline added',
-    ( fn_body('fmt.c', main, B), member(expr(call(id(printf), [str(S), id(n), id(name), id(n), member(id(p), x), member(id(p), y)])), B),
+    ( fn_body('fmt.c', main, B), member(expr(_, call(id(printf), [str(S), id(n), id(name), id(n), member(id(p), x), member(id(p), y)])), B),
             codes_atom(S, 'n = %d name = %s again %d p = point_t { x: %d, y: %g } 100%%\n') )).
 
 k43 :- check('format is an expression of type char *: asprintf into a fresh buffer, in a statement expression',
-    ( fn_body('fmt.c', main, B), member(declaration(_, _, _, [var(s, ptr([], base([], [char])), stmt_expr(block([declaration(_, _, _, [var(Buf, _, none)]), expr(call(id(asprintf), [addr(id(Buf)), str(S), int(1), int(2), int(3)])), expr(id(Buf))])))]), B),
+    ( fn_body('fmt.c', main, B), member(declaration(_, _, _, [var(s, ptr([], base([], [char])), stmt_expr(block([declaration(_, _, _, [var(Buf, _, none)]), expr(_, call(id(asprintf), [addr(id(Buf)), str(S), int(1), int(2), int(3)])), expr(_, id(Buf))])))]), B),
             codes_atom(S, '%d + %d = %d') )).
 
 k44 :- check('a struct inside a struct nests; unsigned long is %lu; {{ }} are braces',
-    ( fn_body('fmt.c', main, B), member(expr(call(id(printf), [str(S), member(member(id(nd), at), x), member(member(id(nd), at), y), member(id(nd), name), member(id(nd), id)])), B),
+    ( fn_body('fmt.c', main, B), member(expr(_, call(id(printf), [str(S), member(member(id(nd), at), x), member(member(id(nd), at), y), member(id(nd), name), member(id(nd), id)])), B),
             codes_atom(S, 'node { at: point_t { x: %d, y: %g }, name: %s, id: %lu } {braces}\n') )).
 
 k45 :- check('a hole with no argument is an error with its place',
@@ -215,11 +215,11 @@ k49 :- check('and the types serve a block: a declaration, and a pattern through 
     ( fn_body('shorthand.c', f, B), member(declaration(_, _, base([], [typedef(point)]), [var(p, _, init(_))]), B), member(declaration(_, _, _, [var(a, base([], [int]), member(id(p), x))]), B) )).
 
 k72 :- check('defer(f) { fclose(f); } is a statement over its named variables, with its block, where it stands',
-    ( fn_body('defer.c', count_lines, B), member(defer(8, [id(f)], block([expr(call(id(fclose), [id(f)]))])), B),
-            member(defer(12, [id(buf)], block([expr(call(id(free), [id(buf)]))])), B) )).
+    ( fn_body('defer.c', count_lines, B), member(defer(8, [id(f)], block([expr(8, call(id(fclose), [id(f)]))])), B),
+            member(defer(12, [id(buf)], block([expr(12, call(id(free), [id(buf)]))])), B) )).
 
 k73 :- check('and a call named defer without a block is still a call',
-    ( fn_body('defer.c', g, [return(call(id(defer), [int(1), int(2)]))]) )).
+    ( fn_body('defer.c', g, [return(_, call(id(defer), [int(1), int(2)]))]) )).
 
 k74 :- check('buf := malloc(max); is a void * -- malloc\'s prototype came from <stdlib.h>',
     ( fn_body('defer.c', count_lines, B), member(declaration(10, none, _, [var(buf, ptr([], base([], [void])), call(id(malloc), _))]), B) )).
@@ -230,6 +230,12 @@ k75 :- check('own char *b = move(a); -- own is a qualifier, move a node, in the 
 k76 :- check('an own parameter and an own return type',
     ( unit('run/owners.c', unit(Is)), member(function(_, static, _, take, [param(ptr([], base([own], [char])), s)], _, _), Is),
             member(function(_, static, ptr([], base([own], [char])), make, _, _, _), Is) )).
+
+k77 :- check('every statement carries its line: the if, the while, the return in rich.c',
+    ( fn_body('rich.c', main, B), member(while(32, _, _), B), member(if(Li, _, goto(Lg, done), none), B), Li =:= Lg, Li > 40, member(label(45, done, return(46, _)), B) )).
+
+k78 :- check('a macro written in the short form gets the line of the call: swap(a, b); at line 12',
+    ( fn_body('uses_macros.c', f, B), member(block([declaration(12, _, _, _), expr(12, assign('=', id(a), id(b))), _]), B) )).
 
 k50 :- check('a typedef of a basic type',
     ( unit('rich.c', unit(Is)), member(typedef(_, [var(ulong, base([], [unsigned, long]), none)]), Is) )).
@@ -265,28 +271,28 @@ k60 :- check('the typedef name is a type from then on',
     ( fn_body('rich.c', main, B), member(declaration(_, none, base([], [typedef(point_t)]), _), B) )).
 
 k61 :- check('for, if/else-if, continue, break, compound assignment',
-    ( fn_body('rich.c', main, B), member(for(assign('=', id(i), int(0)), bin('<', id(i), id('LIMIT')), postinc(id(i)), block([if(_, continue, if(_, break, none)), expr(assign('+=', id(total), call(id(square), [id(i)])))])), B) )).
+    ( fn_body('rich.c', main, B), member(for(_, assign('=', id(i), int(0)), bin('<', id(i), id('LIMIT')), postinc(id(i)), block([if(_, _, continue(_), if(_, _, break(_), none)), expr(_, assign('+=', id(total), call(id(square), [id(i)])))])), B) )).
 
 k62 :- check('while, do-while',
-    ( fn_body('rich.c', main, B), member(while(bin('>', id(total), int(100)), expr(_)), B), member(do(block([expr(postinc(id(total)))]), bin('<', id(total), int(5))), B) )).
+    ( fn_body('rich.c', main, B), member(while(_, bin('>', id(total), int(100)), expr(_, _)), B), member(do(_, block([expr(_, postinc(id(total)))]), bin('<', id(total), int(5))), B) )).
 
 k63 :- check('switch with cases, a fallthrough and a default',
-    ( fn_body('rich.c', main, B), member(switch(id(argc), block([case(int(1), expr(_)), break, case(int(2), default(expr(assign('=', id(total), neg(id(total))))))])), B) )).
+    ( fn_body('rich.c', main, B), member(switch(_, id(argc), block([case(_, int(1), expr(_, _)), break(_), case(_, int(2), default(_, expr(_, assign('=', id(total), neg(id(total))))))])), B) )).
 
 k64 :- check('the conditional, casts, sizeof of a type and of an expression',
-    ( fn_body('rich.c', main, B), member(expr(assign('=', id(total), cond(bin('>', id(argc), int(1)), cast(base([], [int]), id(ratio)), bin('+', cast(_, sizeof_type(base([], [typedef(point_t)]))), sizeof(member(id(p), x)))))), B) )).
+    ( fn_body('rich.c', main, B), member(expr(_, assign('=', id(total), cond(bin('>', id(argc), int(1)), cast(base([], [int]), id(ratio)), bin('+', cast(_, sizeof_type(base([], [typedef(point_t)]))), sizeof(member(id(p), x)))))), B) )).
 
 k65 :- check('the operator levels: shift, or, and, unary not, xor',
-    ( fn_body('rich.c', main, B), member(expr(assign('=', id(mask), bin('^', bin('&', bin('|', bin('<<', id(mask), int(2)), int(3)), bitnot(bin('<<', int(1), int(4)))), int(15)))), B) )).
+    ( fn_body('rich.c', main, B), member(expr(_, assign('=', id(mask), bin('^', bin('&', bin('|', bin('<<', id(mask), int(2)), int(3)), bitnot(bin('<<', int(1), int(4)))), int(15)))), B) )).
 
 k66 :- check('member, address-of, arrow',
-    ( fn_body('rich.c', main, B), member(expr(assign('=', arrow(member(id(n), next), flags), int(5))), B), member(expr(assign('=', member(id(n), next), addr(id(n)))), B) )).
+    ( fn_body('rich.c', main, B), member(expr(_, assign('=', arrow(member(id(n), next), flags), int(5))), B), member(expr(_, assign('=', member(id(n), next), addr(id(n)))), B) )).
 
 k67 :- check('the comma operator, logical operators, goto and a label',
-    ( fn_body('rich.c', main, B), member(expr(assign('=', id(i), comma(id(total), comma(id(mask), int(3))))), B), member(if(not(bin('||', bin('&&', id(i), id(total)), not(id(mask)))), goto(done), none), B), member(label(done, return(_)), B) )).
+    ( fn_body('rich.c', main, B), member(expr(_, assign('=', id(i), comma(id(total), comma(id(mask), int(3))))), B), member(if(_, not(bin('||', bin('&&', id(i), id(total)), not(id(mask)))), goto(_, done), none), B), member(label(_, done, return(_, _)), B) )).
 
 k68 :- check('adjacent string literals are one string',
-    ( fn_body('rich.c', main, B), member(expr(call(id(printf), [_, _, str(S)])), B), codes_atom(S, ab) )).
+    ( fn_body('rich.c', main, B), member(expr(_, call(id(printf), [_, _, str(S)])), B), codes_atom(S, ab) )).
 
 k69 :- check('cicili_ast/3 answers the tokens from the first thing it could not read',
     ( c('bad.c', P), cicili_ast(P, unit(Is), [tok(_, _, 3)|_]), length(Is, 2) )).
@@ -362,6 +368,9 @@ t_checks :-
     section('the safe part, as read: own and move'),
     k75,
     k76,
+    section('statement lines'),
+    k77,
+    k78,
     section('rich.c: the grammar, one construct at a time'),
     k50,
     k51,

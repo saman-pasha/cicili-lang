@@ -44,10 +44,12 @@
 %%         ptr(Quals, Type)   block(Quals, Type)   arr(Size, Type)   fn(Ret, Params, Variadic)
 %%         Members: [member(Type, Name, Bits) ...]; Params: [param(Type, Name) ...]
 %%         Enumerators: [enumerator(Name, Value) ...]
-%% Statements:  block(Items)  if(C, Then, Else)  while(C, S)  do(S, C)
-%%   for(Init, Cond, Step, S)  return(E)  return  break  continue  goto(L)
-%%   switch(E, S)  case(E, S)  default(S)  label(L, S)  expr(E)  empty
+%% Statements, each with its Line first:  block(Items)  if(L, C, Then, Else)
+%%   while(L, C, S)  do(L, S, C)  for(L, Init, Cond, Step, S)  return(L, E)
+%%   return(L)  break(L)  continue(L)  goto(L, Name)  switch(L, E, S)
+%%   case(L, E, S)  default(L, S)  label(L, Name, S)  expr(L, E)  empty
 %%   defer(Line, [id(V) ...], Body)   runs Body at every exit of the scope, LIFO
+%%   (a macro may write them without the line; ccl_add_lines/3 adds the call's)
 %%   and a declaration/4 or typedef/2 or declare/2 as a block item;
 %%   `name := expr;' is a declaration/4 with the type inferred from expr, and
 %%   `{ a, _, f: b } := expr;' one declaration/4 per binding, from the struct's members
@@ -71,7 +73,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(16).
+ccl_reader_version(17).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -376,15 +378,45 @@ ccl_expand_macro(N, As, R) :-
     nb_getval('$ccl_macros', Ms), length(As, K), K1 is K + 1,
     ( memberchk(macro(N, P, K1), Ms) -> append(As, [R0], Args), G =.. [P|Args] ; memberchk(macro(N, P, dcg), Ms), G = phrase(N1, As), N1 =.. [P, R0] ),
     (   catch(G, E, ( E = error(macro_error(_, here(_, _)), _) -> throw(E) ; throw(error(macro_error(N, As, E), _)) ))
-    ->  ( is_list(R0) -> R = '$splice'(R0) ; R = R0 )
+    ->  ccl_here(_, L), ( is_list(R0) -> ccl_add_lines(L, '$splice'(R0), R) ; ccl_add_lines(L, R0, R) )
     ;   throw(error(macro_failed(N, As), _)) ).
 ccl_call_or_macro(id(move), [E], move(E)) :- !.                      % the safe part: ownership leaves E
 ccl_call_or_macro(id(N), As, R) :- length(As, K), ccl_is_macro(N, K), !, ccl_expand_macro(N, As, R).
 ccl_call_or_macro(F, As, call(F, As)).
-ccl_stmt_of(E, E) :- ccl_is_stmt(E), !.
-ccl_stmt_of(E, expr(E)).
+ccl_stmt_of(L, E, S) :- ccl_is_stmt(E), !, ccl_add_lines(L, E, S).
+ccl_stmt_of(L, E, expr(L, E)).
 ccl_is_stmt('$splice'(_)).
 ccl_is_stmt(T) :- functor(T, F, _), memberchk(F, [block, if, while, do, for, return, break, continue, goto, switch, case, default, label, empty, declaration, typedef, declare, defer]).
+%% a macro may write a statement in its short form -- expr(E), if(C, T, E),
+%% return(E) ... -- and here it gets the line of the call (declarations and
+%% defers written with line 0 too); a lined one is left as it is; the walk
+%% goes into blocks, and through expressions into their stmt_expr blocks
+ccl_add_lines(_, V, V) :- var(V), !.
+ccl_add_lines(L, '$splice'(Is), '$splice'(Js)) :- !, ccl_add_lines_list(L, Is, Js).
+ccl_add_lines(L, block(Is), block(Js)) :- !, ccl_add_lines_list(L, Is, Js).
+ccl_add_lines(L, expr(E), expr(L, E1)) :- !, ccl_add_lines(L, E, E1).
+ccl_add_lines(L, if(C, T, E), if(L, C1, T1, E1)) :- !, ccl_add_lines(L, C, C1), ccl_add_lines(L, T, T1), ccl_add_lines(L, E, E1).
+ccl_add_lines(L, while(C, S), while(L, C1, S1)) :- !, ccl_add_lines(L, C, C1), ccl_add_lines(L, S, S1).
+ccl_add_lines(L, do(S, C), do(L, S1, C1)) :- !, ccl_add_lines(L, S, S1), ccl_add_lines(L, C, C1).
+ccl_add_lines(L, for(I, C, St, S), for(L, I, C1, St1, S1)) :- !, ccl_add_lines(L, C, C1), ccl_add_lines(L, St, St1), ccl_add_lines(L, S, S1).
+ccl_add_lines(L, return(E), return(L, E1)) :- !, ccl_add_lines(L, E, E1).
+ccl_add_lines(L, return, return(L)) :- !.
+ccl_add_lines(L, break, break(L)) :- !.
+ccl_add_lines(L, continue, continue(L)) :- !.
+ccl_add_lines(L, goto(N), goto(L, N)) :- !.
+ccl_add_lines(L, switch(E, S), switch(L, E1, S1)) :- !, ccl_add_lines(L, E, E1), ccl_add_lines(L, S, S1).
+ccl_add_lines(L, case(E, S), case(L, E, S1)) :- !, ccl_add_lines(L, S, S1).
+ccl_add_lines(L, default(S), default(L, S1)) :- !, ccl_add_lines(L, S, S1).
+ccl_add_lines(L, label(N, S), label(L, N, S1)) :- atom(N), !, ccl_add_lines(L, S, S1).
+ccl_add_lines(L, declaration(0, St, B, Vs), declaration(L, St, B, Vs1)) :- !, ccl_add_lines_vars(L, Vs, Vs1).
+ccl_add_lines(L, defer(0, Vs, B), defer(L, Vs, B1)) :- !, ccl_add_lines(L, B, B1).
+ccl_add_lines(L, T, T1) :- compound(T), functor(T, F, _), \+ memberchk(F, [expr, if, while, do, for, return, switch, case, default, label, declaration, defer, typedef, declare]), !,
+    T =.. [F|As], ccl_add_lines_list(L, As, Bs), T1 =.. [F|Bs].
+ccl_add_lines(_, T, T).
+ccl_add_lines_list(_, [], []).
+ccl_add_lines_list(L, [X|Xs], [Y|Ys]) :- ( is_list(X) -> ccl_add_lines_list(L, X, Y) ; ccl_add_lines(L, X, Y) ), ccl_add_lines_list(L, Xs, Ys).
+ccl_add_lines_vars(_, [], []).
+ccl_add_lines_vars(L, [var(N, T, I)|Vs], [var(N, T, I1)|Vs1]) :- ccl_add_lines(L, I, I1), ccl_add_lines_vars(L, Vs, Vs1).
 ccl_splice('$splice'(L), More, Items) :- !, append(L, More, Items).
 ccl_splice(I, More, [I|More]).
 
@@ -621,25 +653,25 @@ ccl_block_item(Env, Env, declare(L, Base)) --> ccl_line(L), ccl_decl_specs(Env, 
 ccl_block_item(Env, Env, S) --> ccl_statement(Env, S).
 
 ccl_statement(Env, S) --> ccl_compound(Env, S), !.
-ccl_statement(Env, if(C, T, E)) --> ccl_kw(if), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ).
-ccl_statement(Env, while(C, S)) --> ccl_kw(while), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, S).
-ccl_statement(Env, do(S, C)) --> ccl_kw(do), !, ccl_statement(Env, S), ccl_kw(while), ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_p(';').
-ccl_statement(Env, for(Init, Cond, Step, S)) --> ccl_kw(for), !, ccl_p('('), ccl_for_init(Env, Init), ccl_opt_expr(Cond), ccl_p(';'), ccl_opt_expr(Step), ccl_p(')'), ccl_statement(Env, S).
-ccl_statement(_, return(E)) --> ccl_kw(return), ccl_expr(E), !, ccl_p(';').
-ccl_statement(_, return) --> ccl_kw(return), !, ccl_p(';').
-ccl_statement(_, break) --> ccl_kw(break), !, ccl_p(';').
-ccl_statement(_, continue) --> ccl_kw(continue), !, ccl_p(';').
-ccl_statement(_, goto(L)) --> ccl_kw(goto), !, ccl_id(L), ccl_p(';').
-ccl_statement(Env, switch(E, S)) --> ccl_kw(switch), !, ccl_p('('), ccl_expr(E), ccl_p(')'), ccl_statement(Env, S).
-ccl_statement(Env, case(E, S)) --> ccl_kw(case), !, ccl_cond_expr(E), ccl_p(':'), ccl_statement(Env, S).
-ccl_statement(Env, default(S)) --> ccl_kw(default), !, ccl_p(':'), ccl_statement(Env, S).
+ccl_statement(Env, if(L, C, T, E)) --> ccl_line(L), ccl_kw(if), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ).
+ccl_statement(Env, while(L, C, S)) --> ccl_line(L), ccl_kw(while), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, S).
+ccl_statement(Env, do(L, S, C)) --> ccl_line(L), ccl_kw(do), !, ccl_statement(Env, S), ccl_kw(while), ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_p(';').
+ccl_statement(Env, for(L, Init, C, Step, S)) --> ccl_line(L), ccl_kw(for), !, ccl_p('('), ccl_for_init(Env, Init), ccl_opt_expr(C), ccl_p(';'), ccl_opt_expr(Step), ccl_p(')'), ccl_statement(Env, S).
+ccl_statement(_, return(L, E)) --> ccl_line(L), ccl_kw(return), ccl_expr(E), !, ccl_p(';').
+ccl_statement(_, return(L)) --> ccl_line(L), ccl_kw(return), !, ccl_p(';').
+ccl_statement(_, break(L)) --> ccl_line(L), ccl_kw(break), !, ccl_p(';').
+ccl_statement(_, continue(L)) --> ccl_line(L), ccl_kw(continue), !, ccl_p(';').
+ccl_statement(_, goto(L, N)) --> ccl_line(L), ccl_kw(goto), !, ccl_id(N), ccl_p(';').
+ccl_statement(Env, switch(L, E, S)) --> ccl_line(L), ccl_kw(switch), !, ccl_p('('), ccl_expr(E), ccl_p(')'), ccl_statement(Env, S).
+ccl_statement(Env, case(L, E, S)) --> ccl_line(L), ccl_kw(case), !, ccl_cond_expr(E), ccl_p(':'), ccl_statement(Env, S).
+ccl_statement(Env, default(L, S)) --> ccl_line(L), ccl_kw(default), !, ccl_p(':'), ccl_statement(Env, S).
 %% defer(a, b) { body }  runs body at every exit of the enclosing scope, last
 %% registered first, over the named variables as they then are (owner's rule:
 %% scope-bound, like Cicili's cleanup); a call is never followed by a block
 ccl_statement(Env, defer(L, Vars, Body)) --> ccl_line(L), ccl_id(defer), ccl_p('('), ccl_defer_vars(Vars), ccl_p(')'), ccl_peek(p, '{'), !, ccl_compound(Env, Body).
-ccl_statement(Env, label(L, S)) --> ccl_id(L), ccl_p(':'), !, ccl_statement(Env, S).
+ccl_statement(Env, label(L, N, S)) --> ccl_line(L), ccl_id(N), ccl_p(':'), !, ccl_statement(Env, S).
 ccl_statement(_, empty) --> ccl_p(';'), !.
-ccl_statement(_, S) --> ccl_expr(E), ccl_p(';'), { ccl_stmt_of(E, S) }.   % a macro's result may be a statement
+ccl_statement(_, S) --> ccl_line(L), ccl_expr(E), ccl_p(';'), { ccl_stmt_of(L, E, S) }.   % a macro's result may be a statement
 
 ccl_defer_vars([id(V)|Vs]) --> ccl_id(V), ( ccl_p(','), !, ccl_defer_vars(Vs) ; { Vs = [] } ).
 ccl_defer_vars([]) --> [].
