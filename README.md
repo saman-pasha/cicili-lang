@@ -290,6 +290,9 @@ into a temporary.
 A pattern longer than the struct, or a field it has not, stops the read
 with `no_member(What, Type)` and the place.
 
+`name := expr <*> y;` ties the new variable to `y` (the tie operator, in
+the safe part below).
+
 ## `name { … }` declares a struct type
 
 At file scope, an identifier followed by a brace is a struct type with
@@ -350,6 +353,10 @@ named:
 | `move_of_non_owner` | `move(x)` of something not declared `own` |
 | `owner_overwritten` | assignment to a live owner, which would leak what it held |
 | `goto_with_owners` | a `goto` in a function that has owners, not followed yet |
+| `tie_unknown` | `x <*> y` where no `y` is declared before it: in scope, an earlier parameter, an earlier member |
+| `tie_outlived` | an owner tied to `y` is still live when `y` is consumed |
+| `tie_escapes` | a tied owner moved beyond its tie: into an untied slot, to an untied own parameter, returned with no result tie |
+| `tie_mismatch` | a value not within the tie of the slot, the parameter or the result it is given to |
 
 **A struct's own fields are owners too**, named by their path: `p->name`
 under an own pointer, `c.name` in a struct held by value, `c.inner.name`
@@ -388,6 +395,66 @@ point *` one only looks), `own_fields.c` with owners inside structs,
 `borrows.c` with borrows, `params.c` with parameters; the programs under
 `test/c/safe/` are each refused with the error their `.expect` names. Not
 opened for ownership: what a plain pointer reaches beyond its own fields.
+
+**The tie operator, `<*>`: `x <*> y` declares `x` to live within `y`**
+(owner's rule). It goes after a declarator, and `y` is something declared
+before it: a name in scope for a local, an earlier parameter, an earlier
+member of the struct. `x` is dead the moment `y` is consumed, or `y`'s
+scope ends: a tied plain value is a borrow of `y` whatever its type -- it
+dangles when `y` goes, may not escape, and takes only values whose owner
+outlives `y` -- and a tied owner must be consumed before `y` is, and may
+be moved only into a slot within `y`.
+
+```c
+int a; double b <*> a;                       /* b lives within a */
+own char *buf = malloc(16);
+view v <*> buf = { buf + 7, 3 };             /* v holds borrows of buf */
+struct list { own node *head; node *cur <*> head; };   /* in every list, cur borrows head */
+node *find(node *head, int k) <*> head;      /* the result borrows head */
+int gap(node *head, node *cur <*> head);     /* cur within head, checked at every call */
+m := find(l.head, 3) <*> l;                  /* after := too */
+```
+
+A struct member tied to an earlier member is a tied slot in every
+instance, the one place a borrow is stored: `l.cur = l.head + 2` is fine,
+and `l.cur` dangles when `l.head` is freed. A struct instance tied to an
+owner may hold borrows of it in any plain field. On a prototype the tie is
+a contract: a parameter tied to an earlier one is checked at every call,
+the argument within the argument; a result tied to a parameter makes the
+caller's variable a borrow of that argument (`node *f = find(l.head, 30)`
+borrows `l.head`, which nothing inferred before), and the callee's returns
+are checked against it. A tie to a plain local anchors it -- a root that
+nothing consumes, ending with its scope, so what is tied to it dangles
+there; `&x` of a plain local and a local array used as a pointer are
+anchored the same way, so `int *p = &x; return p;` is refused, while `&x`
+stored into a plain field stays what C always allowed. Refused as
+`tie_unknown`, `tie_outlived`, `tie_escapes`, `tie_mismatch` (the table
+above); `test/c/run/tie.c` does all of it and runs, eight `safe/tie_*.c`
+are refused.
+
+**`clone(p)` hands a function a copy.** For `own T *p`, `f(clone(p))` gives
+`f`'s own parameter a fresh copy of what `p` points to -- `malloc(sizeof
+T)`, the struct copied -- so `p` is not consumed; `own T *q = clone(p)`
+keeps one. It is a global macro (`library/ccl_format.pl`); `malloc` must be
+declared. A struct with an own member cannot be cloned, its copy would own
+the same memory twice. `test/c/run/clone.c` runs it.
+
+**A plain pointer is followed softly: an error for an owner is a warning
+for it.** A plain pointer local given fresh memory -- `char *p =
+malloc(8)`, `FILE *f = fopen(...)`, the result of an untied function --
+is *loose*: memory with no owner behind it. `free(p)`, an own parameter,
+`return p`, storing it into a slot, or an own pointer taking it over
+(`own char *q = p`) consumes it, and a borrow of it dangles when it is
+freed, as an owner's would. Where it is still unconsumed -- its scope's
+end, a `return`, an overwrite -- the check says `file:line: warning: plain
+pointer not consumed: 'p' in ...` where `own` would have made it
+`owner_leaked`. A slot the check cannot follow -- a global, a field, an
+element, `*p`, an item of an initializer, a struct by value -- given such
+a value warns at the binding instead: `warning: no owner behind: 's.buf'
+in ...`. The build goes on. There is no flag against either; what silences
+them is a statement the check can follow: `own`, a tie, a consume point,
+a value taken from an owner, a borrow or a parameter. Diagnostics, errors and warnings alike, are on stderr, as clang's;
+`cicili -v`'s lines and `cicili: ok` on stdout.
 
 ## `format`, `print`, `println`: global macros
 

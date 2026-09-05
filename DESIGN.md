@@ -126,6 +126,15 @@ it is done (see below); the checker and the lowering take the AST from here.
   callee's prototype is read through a function pointer too. The C core's
   last gaps -- unions, bitfields, static locals -- lower as C lays them out,
   the bitfield struct and the union in the ABI check with clang.
+  **The tie operator, `x <*> y` (owner's):** x lives within y -- a local
+  within another, a member within an earlier member, a parameter within an
+  earlier one, a function's result within a parameter -- and the check
+  makes a tied value a borrow of y whatever its type, a tied owner one that
+  must go before y and may move only within y, a tied member a slot where a
+  borrow is stored, and a prototype's ties a contract checked on both
+  sides: the caller's arguments and the callee's returns. `clone(p)` copies
+  what an owner points to, for an own parameter; a pointer with no owner
+  behind it is a warning.
   **`defer` is decided (owner):** scope-bound, like
   Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
   each scope a cleanup block running its defers last-first and branching

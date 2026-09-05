@@ -49,7 +49,7 @@ module/ccl_llvm.cicili   the embedded LLVM: a cocolog module in Cicili over llvm
 module/build-llvm.sh     LLVM=… sh module/build-llvm.sh  ->  library/ccl_llvm.so (Homebrew's LLVM)
 proof/forty2.ll, run.sh  M0: LLVM IR through clang to a native binary, exit 42
 test/config.sh           the neighbours and the library path, sourced by every gate
-test/reader.pl           the reader's gate: a cocolog program, one clause per check (71),
+test/reader.pl           the reader's gate: a cocolog program, one clause per check (72),
                          one process over one fresh store, every header parsed once
 test/reader.sh           runs it, and adds the check only a second process can make
 test/c/                  the gate's fixtures: hello.c, rich.c, the macro, :=, pattern,
@@ -77,7 +77,11 @@ process over `~/.cicili/KB` (`$CICILI_KB`, or `--no-kb` for `--local`); the run 
 `cicili: ok` or `cicili: N error(s)`, which the shell turns into the exit
 status. A diagnostic is `file:line: error: what` (`dr_diag/3`, one clause per
 error term; `once/1` around the report, since the callers' recovery fails
-after it).
+after it). A warning is `file:line: warning: what` (`dr_warnings/2`: the
+check's `'$ck_warnings'`, read through `ccl_check_warnings/1` and kept with
+the IR in `'$ccl_irmeta'/4`, so a served file prints them again). The
+command puts every diagnostic on stderr, as clang; `cicili: ...` and
+`unit(...)` lines on stdout.
 
 **The surface is four predicates** (owner's rule): `cicili_ast(+File, -AST)`
 (and `/3`), `cicili_ir(+Units, -IR)`, `cicili_compile(+IR, +ObjFile, +Flags)`,
@@ -198,6 +202,17 @@ named defer without a block stays a call; the node is
 `defer(Line, [id(V) …], block(...))`. It runs at every exit of its scope,
 LIFO, over the variables' values at that moment.
 
+**`x <*> y` is the tie operator** (owner's rule, and the spelling): x lives
+within y. The lexer has `<*>` as a punctuator (no C has it: `<*>` needs the
+`>` right after the `*`); `ccl_tie//2` reads it after a declarator in
+`ccl_init_declarator`, `ccl_member_declarator`, `ccl_param` and the
+function definition (before `{`), `ccl_tie_name//1` after the `:=` forms
+(`ccl_infer_decl/5`); `ccl_add_tie/3` (in `ccl_infer`) puts `tie(Y)` in
+the OUTERMOST qualifier list of the type, through an array to its element
+and through a function to its result, and `ccl_tie_of/2` reads it back.
+Nothing in the lowering or the layout reads a qualifier, so a tie costs
+them nothing.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -207,6 +222,11 @@ members. A predicate named `ccl_macro_X` in a macro file is the macro `X`
 is `macro(CName, Pred, Arity | dcg)`. `ccl_type_of/2` of a statement
 expression puts its declarations in scope for its last expression, which
 is how `s := format(...)` is a `char *`.
+`clone(p)` is the fourth global macro (owner's rule): `ccl_macro_clone/2`
+expands to `({ own T *c = malloc(sizeof(T)); *c = *p; c; })`, a fresh owner
+for an own parameter so `p` is not consumed; it refuses a non-pointer, a
+struct with an own member (`ccl_has_own_member/1`) and a file without
+`malloc` declared.
 
 **The knowledge base is the cache.** A file read whole is
 `'$ccl_ast'(Path, key(MTime, Version), meta(What, Count, Deps))` plus one
@@ -346,6 +366,55 @@ the struct's (`'$ck_borrowed'`): freeable and replaceable, exempt from the
 leak check, and `ck_complete_owners/2` demands them live or null at every
 return (`borrow_incomplete`). `params.c` runs, five `safe/` programs are
 refused.
+
+**Ties (`<*>`):** `'$ck_ties'` holds Key-Root for every declared tie -- a
+local's, a parameter's, a field's per instance (`ck_note_tie/2`; dropped
+when the key is declared again). A tied plain value is `borrow(Root)`
+whatever its type (`ck_var_tie/4`; `ck_field_ties/5` in member order, a
+tie naming a later member is `tie_unknown`; `ck_param_ties/4` after the
+owners, an earlier parameter only), the root being what y borrows when y
+is a borrow. A tied owner keeps its state: `ck_consume` refuses it live
+when its root goes (`ck_tied_consumed/3`, `tie_outlived`), and
+`ck_into_own`, `ck_args_` and `ck_no_escape` let it move only within its
+tie (`ck_tie_kept/4`, `tie_escapes`). A slot under a tied base is tied to
+the base's root (`ck_tied_to/2`, the base path from `ck_base_path/2`) and
+is assigned through `ck_into_tied/6`: `tie_mismatch` unless `ck_within/3`.
+A result tie is `'$ck_ret_tie'` -- the callee's returns must lie within
+it, the caller's `ck_borrows_from(call(...))` borrows the argument through
+`ck_call_tie/3` -- and a parameter tie is checked at every call by
+`ck_arg_ties/3`. A tie to a plain local, `&x` of one, or a local array
+used as a pointer ANCHORS it (`ck_anchor/3`: `Y-anchor` in the state
+frame of Y's symbol frame, the two pushed in lockstep; `ck_anchor_addrs/3`
+runs before an expression statement, an initializer, a return): a root
+nothing consumes; `ck_scope_end` dangles every borrow of a closing frame's
+keys. A borrow of an anchor may sit in a plain slot (`ck_into_plain`), as
+C always had it; a static local is never anchored (`'$ck_statics'`).
+Borrows are declared for any type that carries a pointer
+(`ck_carries_type/1`), not only pointers. A statement expression's last
+value is consumed when it is an owner, which is how `clone`'s copy leaves
+its block. **Loose pointers (owner's rule: an owner's error is a plain pointer's
+warning):** a plain pointer local given a fresh value (`ck_fresh_value/1`:
+not none, not an initializer, not null, not static) is `N-loose`, a root
+for borrows (`ck_borrow_source`) that nothing tied to it can outlive
+(`ck_within`); `free`, `fclose`, `realloc` (now in `ck_consumes`) and an
+own parameter consume it (`ck_consume_loose/3`: none, its borrows dangle),
+a `return` or a store into a slot takes it (`ck_loose_taken/3`,
+`ck_into_plain`), an own slot takes it over (`ck_into_own`: none, its
+borrows retargeted to the owner by `ck_retarget/4`); `ck_leaks` WARNS
+`unconsumed` for a loose key where an owner would be `owner_leaked`, and so
+does the id-assignment when it overwrites one. A rebind or a loose lands in
+the frame of the variable's symbol scope (`ck_declare_at/4`, which
+`ck_anchor/3` also uses). The `untied` warning ("no owner behind") stays
+for what the check cannot follow: `ck_untied_warn/4` for a struct by value
+and `ck_into_plain/5` for a field, an element, `*p`, a global, an
+initializer item (named by `ck_slot_label/4`). Both go into
+`'$ck_warnings'` (`warning(Kind, N, Form, where(F, line(L)))`, a macro's
+expansion squashed to `({ ... })`); no flag turns them off (owner's rule),
+only `own`, a tie, a consume point or a followed source. The ties'
+direction: a slot tied to y takes a value whose ROOT OUTLIVES y
+(`ck_within(Y, Root)`), an owner tied to y moves only into a slot WITHIN
+y (`ck_within(Slot, Y)`); `tie.c` and `clone.c` run, eight `safe/tie_*.c`
+are refused.
 
 ## How the LLVM module is written (the Cicili module pattern)
 

@@ -60,7 +60,8 @@ dr_c(F, Options, Flags, Objs, Objs1) :-
 %% ---- the IR beside the units in the store (M4) ----------------------------------------
 %% A unit's IR is kept under a predicate of its own, '$ccl_ir:<Path>'(Index,
 %% Chunk) -- chunks of 3500 characters, well under the store's clause budget
-%% once quoted -- with '$ccl_irmeta'(Path, Signature, Count) as the index. The
+%% once quoted -- with '$ccl_irmeta'(Path, Signature, Count, Warnings) as the
+%% index, the check's warnings kept with it so a served file prints them. The
 %% signature folds into one number everything the IR came from: the unit's key
 %% (its time and the reader's version), the key of every unit and macro file
 %% its AST reaches, the lowering's version and the host. A file whose signature
@@ -68,9 +69,11 @@ dr_c(F, Options, Flags, Objs, Objs1) :-
 %% having passed when the IR was made. A file whose check fails stores nothing.
 dr_ir(F, AST, IR) :-
     dr_ir_ready, dr_ir_sig(F, AST, Sig),
-    (   dr_ir_cached(F, Sig, IR0) -> dr_say(['served ', F, ' from the store']), IR = IR0
-    ;   dr_say(['check and lower ', F]), cicili_ir([AST], IR), dr_ir_remember(F, Sig, IR) ).
-dr_ir_ready :- ccl_kb_ready, dynamic('$ccl_irmeta'/3).                % cheap; an unset global would throw
+    (   dr_ir_cached(F, Sig, IR0, Ws) -> dr_say(['served ', F, ' from the store']), IR = IR0, dr_warnings(F, Ws)
+    ;   dr_say(['check and lower ', F]),
+        once(catch(cicili_ir([AST], IR), E, true)), ccl_check_warnings(Ws), dr_warnings(F, Ws),   % the warnings before the error, if any
+        ( var(E) -> dr_ir_remember(F, Sig, IR, Ws) ; throw(E) ) ).
+dr_ir_ready :- ccl_kb_ready, dynamic('$ccl_irmeta'/4).                % cheap; an unset global would throw
 dr_ir_pred(F, P) :- atom_concat('$ccl_ir:', F, P), dynamic(P/2).
 dr_ir_sig(F, AST, Sig) :-
     ccl_lowering_version(LV), ir_arch_init, ir_arch(Arch),
@@ -88,19 +91,19 @@ dr_items_deps([], []).
 dr_items_deps([include(_, _, file(P, _, U))|Is], [P|Ds]) :- !, dr_unit_deps(U, D1), dr_items_deps(Is, D2), append(D1, D2, Ds).
 dr_items_deps([include(_, _, macros(P, _))|Is], [P|Ds]) :- !, dr_items_deps(Is, Ds).
 dr_items_deps([_|Is], Ds) :- dr_items_deps(Is, Ds).
-dr_ir_cached(F, Sig, IR) :-
-    '$ccl_irmeta'(F, Sig, N), dr_ir_pred(F, P),
+dr_ir_cached(F, Sig, IR, Ws) :-
+    '$ccl_irmeta'(F, Sig, N, Ws), dr_ir_pred(F, P),
     findall(I-C, ( T =.. [P, I, C], call(T) ), Pairs), length(Pairs, N),
     sort(Pairs, Sorted), dr_ir_join(Sorted, Codes), atom_codes(IR, Codes).
 dr_ir_join([], []).
 dr_ir_join([_-C|T], Codes) :- atom_codes(C, Cs), dr_ir_join(T, Rest), append(Cs, Rest, Codes).
-dr_ir_remember(F, Sig, IR) :-
+dr_ir_remember(F, Sig, IR, Ws) :-
     dr_ir_forget(F), dr_ir_pred(F, P),
     atom_codes(IR, Codes), dr_chunks(Codes, Chunks),
-    (   catch(dr_ir_store(Chunks, P, 0, N), error(resource_error(clause_length), _), fail)
-    ->  assertz('$ccl_irmeta'(F, Sig, N))
+    (   catch(( dr_ir_store(Chunks, P, 0, N), assertz('$ccl_irmeta'(F, Sig, N, Ws)) ), error(resource_error(clause_length), _), fail)
+    ->  true
     ;   dr_ir_forget(F) ).
-dr_ir_forget(F) :- retractall('$ccl_irmeta'(F, _, _)), dr_ir_pred(F, P), T =.. [P, _, _], retractall(T).
+dr_ir_forget(F) :- retractall('$ccl_irmeta'(F, _, _, _)), dr_ir_pred(F, P), T =.. [P, _, _], retractall(T).
 dr_ir_store([], _, N, N).
 dr_ir_store([C|Cs], P, I, N) :- T =.. [P, I, C], assertz(T), I1 is I + 1, dr_ir_store(Cs, P, I1, N).
 dr_chunks([], []) :- !.
@@ -160,14 +163,32 @@ dr_diag(F, cocolog_error(Msg), _) :- !, dr_error(F, 0, ['LLVM: ', Msg]).        
 dr_diag(F, link_failed(Msg), _) :- !, dr_error(F, 0, ['link: ', Msg]).
 dr_diag(F, E, W) :- dr_error(F, 0, [E, ' ', W]).
 dr_kind(use_after_move, 'use after move of') :- !.
+dr_kind(owner_unset, 'owner used before it was given anything:') :- !.
 dr_kind(borrow_after_move, 'use of a borrow after its owner was consumed:') :- !.
 dr_kind(borrow_escapes, 'a borrow leaves the function:') :- !.
+dr_kind(borrow_stored, 'a borrow stored where it cannot be followed:') :- !.
+dr_kind(borrow_consumed, 'a borrow consumed:') :- !.
+dr_kind(borrow_incomplete, 'a borrowed struct''s own field not whole at the return:') :- !.
+dr_kind(owner_stored, 'an owner''s pointer stored into a plain slot:') :- !.
+dr_kind(tie_unknown, '<*> names nothing declared before it:') :- !.
+dr_kind(tie_outlived, 'owner outlives what it is tied to:') :- !.
+dr_kind(tie_escapes, 'tied owner moved beyond its tie:') :- !.
+dr_kind(tie_mismatch, 'value not within its tie:') :- !.
 dr_kind(owner_leaked, 'owner leaked:') :- !.
 dr_kind(move_in_loop, 'owner consumed inside a loop:') :- !.
 dr_kind(move_of_non_owner, 'move of a non-owner:') :- !.
 dr_kind(owner_overwritten, 'owner overwritten while live:') :- !.
 dr_kind(goto_with_owners, 'goto in a function with owners, at label') :- !.
 dr_kind(K, K).
+%% the check's warnings: file:line: warning: what, clang's shape, no error counted
+dr_warnings(_, []).
+dr_warnings(F, [warning(Kind, N, Form, where(Fn, line(L)))|Ws]) :-
+    dr_wkind(Kind, Text), write(F), write(':'), write(L), write(': warning: '), dr_write([Text, ' ''', N, ''' in ', Form, ' (function ', Fn, ')']), nl,
+    ( L > 0 -> dr_note_expansion(F, L) ; true ),
+    dr_warnings(F, Ws).
+dr_wkind(untied, 'no owner behind:') :- !.
+dr_wkind(unconsumed, 'plain pointer not consumed:') :- !.
+dr_wkind(K, K).
 dr_error(F, L, Parts) :-
     nb_getval('$dr_errors', N), N1 is N + 1, nb_setval('$dr_errors', N1),
     write(F), ( L > 0 -> write(':'), write(L) ; true ), write(': error: '), dr_write(Parts), nl,

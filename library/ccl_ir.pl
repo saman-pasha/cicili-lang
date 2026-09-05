@@ -44,7 +44,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(1).
+ccl_lowering_version(3).
 
 ccl_ir_units(Units, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units),                     % the symbol table, once

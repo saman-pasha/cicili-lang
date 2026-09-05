@@ -23,6 +23,14 @@
 %% These are DCG macros: the arguments are the list they parse. A predicate
 %% named ccl_macro_X is the macro X, so `format' can be a macro although
 %% format/2,3 is a builtin.
+%%
+%%   f(clone(p))            f(({ own T *c = malloc(sizeof(T)); *c = *p; c; }))
+%%
+%% clone(p), for `own T *p' (or any pointer): a fresh copy of what p points
+%% to, a new owner, so a function with an own parameter takes the copy and p
+%% stays the caller's (owner's rule). malloc must be declared (stdlib.h). A
+%% struct with an own member is refused -- the copy would own the same memory
+%% twice -- and so is anything that is not a pointer: cannot_clone(Expr).
 
 ccl_macro_print(call(id(printf), [str(F)|Args])) --> [str(Fmt)], ccl_fmt_args(As), { ccl_fmt_compile(Fmt, As, F, Args) }.
 ccl_macro_println(call(id(printf), [str(F)|Args])) --> [str(Fmt)], ccl_fmt_args(As), { ccl_fmt_compile(Fmt, As, F0, Args), append(F0, [10], F) }.
@@ -92,3 +100,18 @@ ccl_fmt_members([member(MT, M, _)|Ms], E, C, Args) :-
     ccl_fmt_members(Ms, E, C2, A2),
     ( C2 == [] -> Sep = [] ; Sep = ", " ),
     append(MC, ": ", C0), append(C0, C1, C01), append(C01, Sep, C012), append(C012, C2, C), append(A1, A2, Args).
+
+%% ---- clone --------------------------------------------------------------------
+ccl_macro_clone(E, stmt_expr(block([declaration(0, none, Base, [var(C, ptr([own], PT), call(id(malloc), [sizeof_type(PT)]))]),
+                                    expr(0, assign('=', deref(id(C)), deref(E))),
+                                    expr(0, id(C))]))) :-
+    ccl_type_of(E, T),
+    ( ccl_resolve_type(T, ptr(_, PT0)) -> true ; ccl_macro_error(cannot_clone(E)) ),
+    ( ccl_has_own_member(PT0) -> ccl_macro_error(cannot_clone_own_members(E)) ; true ),
+    ( ccl_declared(malloc, _) -> true ; ccl_macro_error(clone_needs_malloc) ),
+    ccl_clone_pointee(PT0, PT), ccl_base_of(PT, Base), ccl_gensym(clone, C).
+ccl_clone_pointee(base(Q0, S), base(Q, S)) :- !, ccl_clone_del(own, Q0, Q).       % the copy is own on the pointer
+ccl_clone_pointee(T, T).
+ccl_clone_del(_, [], []).
+ccl_clone_del(X, [X|T], T1) :- !, ccl_clone_del(X, T, T1).
+ccl_clone_del(X, [Y|T], [Y|T1]) :- ccl_clone_del(X, T, T1).

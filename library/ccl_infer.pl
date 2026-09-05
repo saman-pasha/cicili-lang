@@ -204,3 +204,26 @@ ccl_union_layout([], S, Al, N, Al) :- ccl_round_up(S, Al, N).
 ccl_union_layout([member(T, _, _)|Ms], S0, Al0, N, Al) :-
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), S1 is max(S0, S), Al1 is max(Al0, A), ccl_union_layout(Ms, S1, Al1, N, Al).
 ccl_round_up(X, A, Y) :- Y is ((X + A - 1) // A) * A.
+
+%% ---- the tie operator, `<*>' --------------------------------------------------
+%% `x <*> y' declares x to live within y. The reader keeps it as the qualifier
+%% tie(Y) in the OUTERMOST qualifier list of x's type -- through an array to
+%% its element, through a function to its result, which is how a result is
+%% tied to a parameter. The check reads it (library(ccl_check)); the lowering
+%% and the layout never look at a qualifier, so it costs them nothing.
+ccl_add_tie(Y, base(Q, S), base([tie(Y)|Q], S)) :- !.
+ccl_add_tie(Y, ptr(Q, T), ptr([tie(Y)|Q], T)) :- !.
+ccl_add_tie(Y, block(Q, T), block([tie(Y)|Q], T)) :- !.
+ccl_add_tie(Y, arr(N, T0), arr(N, T)) :- !, ccl_add_tie(Y, T0, T).
+ccl_add_tie(Y, fn(R0, Ps, V), fn(R, Ps, V)) :- !, ccl_add_tie(Y, R0, R).
+ccl_add_tie(_, T, T).
+ccl_tie_of(base(Q, _), Y) :- memberchk(tie(Y), Q), !.
+ccl_tie_of(ptr(Q, _), Y) :- memberchk(tie(Y), Q), !.
+ccl_tie_of(block(Q, _), Y) :- memberchk(tie(Y), Q), !.
+ccl_tie_of(arr(_, T), Y) :- !, ccl_tie_of(T, Y).
+ccl_tie_of(fn(R, _, _), Y) :- !, ccl_tie_of(R, Y).
+%% a struct (or union) with an own member, at any depth held by value: its copy
+%% would own the same memory twice, so clone refuses it
+ccl_has_own_member(T) :- ccl_members_of(T, Ms), member(member(MT, _, _), Ms), ( ccl_own_quals(MT) -> true ; ccl_has_own_member(MT) ), !.
+ccl_own_quals(ptr(Q, B)) :- ( memberchk(own, Q) ; B = base(Q2, _), memberchk(own, Q2) ), !.
+ccl_own_quals(base(Q, _)) :- memberchk(own, Q), !.

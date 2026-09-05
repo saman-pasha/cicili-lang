@@ -33,6 +33,8 @@ check "-shared -O1 makes a library" "$("$CICILI" -shared -O1 "$R/link/lib.c" -o 
 check "-ast-dump prints the unit" "$("$CICILI" -ast-dump "$R/run/forty2.c" | grep -c '^unit(\[function(')" "1"
 check "an unknown argument is an error, as clang says it" "$("$CICILI" --frobnicate x.c 2>&1)" "cicili: error: unknown argument: '--frobnicate'"
 check "no input files is an error" "$("$CICILI" -c 2>&1)" "cicili: error: no input files"
+check "the tie operator: a broken tie is refused in clang's shape" "$("$CICILI" -fsyntax-only "$R/safe/tie_arg.c" 2>&1 | head -1 | sed "s|$R/||")" "safe/tie_arg.c:4: error: value not within its tie: 'b' in call(id(gap),[id(a),id(b)]) (function main)"
+check "a pointer with no owner behind it is a warning on stderr, the build goes on" "$(printf '#include <stdlib.h>\nstruct s { char *q; } g;\nint main(void) { char *p = malloc(8); char **pp = &p; g.q = malloc(8); struct s l = { malloc(8) }; *pp = malloc(8); char *r = malloc(8); free(p); return 0; }\n' > warn.c; "$CICILI" -fsyntax-only warn.c 2>&1 >/dev/null | grep -o "warning: [^:]*: '[^']*'" | tr '\n' ' ')-$("$CICILI" -fsyntax-only warn.c 2>/dev/null; echo $?)" "warning: no owner behind: 'g.q' warning: no owner behind: 'l.q' warning: no owner behind: '*pp' warning: plain pointer not consumed: 'r' -0"
 check "a syntax error names the file and the line" "$(printf 'int f(void) { return ; ; }\nint h( { }\n' > bad.c; "$CICILI" -c bad.c 2>&1 | head -1)" "bad.c:2: error: syntax error: could not read this item (gave up near line 2)"
 # the store: hello.c and its headers are there by now; a build of it is seconds, not the forty of a first read
 s1=$(date +%s); "$CICILI" "$R/run/hello.c" -o hello2 >/dev/null; t_second=$(( $(date +%s) - s1 ))

@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(19).
+ccl_reader_version(20).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -175,6 +175,7 @@ ccl_punct(P) --> "...", !, { P = '...' }.
 ccl_punct(P) --> ">>=", !, { P = '>>=' }.
 ccl_punct(P) --> ":=", !, { P = ':=' }.
 ccl_punct(P) --> "<<=", !, { P = '<<=' }.
+ccl_punct(P) --> "<*>", !, { P = '<*>' }.        % the tie operator: x <*> y, x lives within y (no C reads <*>)
 ccl_punct(P) --> ccl_two_char(P), !.
 ccl_punct(P) --> [C], { ccl_one_char(C, P) }.
 ccl_two_char('->') --> "->".     ccl_two_char('++') --> "++".     ccl_two_char('--') --> "--".
@@ -205,10 +206,11 @@ ccl_unit(Tokens, unit(Items), Rest) :-
 %% arrays and functions decay to pointers, top-level qualifiers are dropped
 %% (the new variable is its own), and a type that cannot be inferred is an
 %% error naming the variable, the expression and the place.
-ccl_infer_decl(L, N, E, declaration(L, none, Base, [var(N, T, E)])) :-
+ccl_infer_decl(L, N, E, D) :- ccl_infer_decl(L, N, E, none, D).
+ccl_infer_decl(L, N, E, Tie, declaration(L, none, Base, [var(N, T, E)])) :-        % Tie: none, or the name after <*>
     ccl_type_of(E, T0),
     ( T0 == unknown -> ccl_here(F, _), throw(error(cannot_infer(N, E), here(F, L))) ; true ),
-    ccl_decay(T0, T1), ccl_strip_quals(T1, T), ccl_base_of(T, Base).
+    ccl_decay(T0, T1), ccl_strip_quals(T1, T2), ( Tie == none -> T = T2 ; ccl_add_tie(Tie, T2, T) ), ccl_base_of(T, Base).
 ccl_strip_quals(base(_, S), base([], S)) :- !.
 ccl_strip_quals(ptr(_, T), ptr([], T)) :- !.
 ccl_strip_quals(T, T).
@@ -472,7 +474,7 @@ ccl_external(Env0, [N|Env0], T) --> ccl_line(L), ccl_id(N), ccl_peek(p, '{'), !,
     { T = typedef(L, [var(N, base([], [struct(N, Ms)]), none)]), ccl_note_item(T) }.
 %% name := expr;  declares name with the type inferred from expr (a cocolog operator, on the C surface)
 ccl_external(Env, Env, '$splice'(Ds)) --> ccl_line(L), ccl_p('{'), ccl_pattern(P), ccl_p('}'), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_destructure(L, P, E, Ds) }.
-ccl_external(Env, Env, D) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_infer_decl(L, N, E, D), ccl_note_item(D) }.
+ccl_external(Env, Env, D) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_tie_name(Y), ccl_p(';'), { ccl_infer_decl(L, N, E, Y, D), ccl_note_item(D) }.
 %% a macro call at file scope: name(args) with an optional `;', its result an item (or items)
 ccl_external(Env, Env, Item) --> ccl_id(N), ccl_peek(p, '('), { ccl_macro_name(N) }, ccl_p('('), ccl_args(As), ccl_p(')'), { length(As, K), ccl_is_macro(N, K) }, !,
     ( ccl_p(';'), ! ; [] ), { ccl_expand_macro(N, As, Item) }.
@@ -482,7 +484,7 @@ ccl_external(Env, Env, static_assert(L, E, Msg)) --> ccl_line(L), ccl_kw('_Stati
 ccl_external(Env0, Env, Item) --> ccl_line(L), ccl_decl_specs(Env0, file, Sto, Base), ccl_external_rest(Env0, Env, L, Sto, Base, Item).
 
 ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto, Ret, Name, Params, Var, Body)) -->
-    ccl_declarator(Env, Base, Name, Type), { Type = fn(Ret, Params, Var) }, ccl_attrs, ccl_peek(p, '{'),
+    ccl_declarator(Env, Base, Name, Type0), { Type0 = fn(_, _, _) }, ccl_attrs, ccl_tie(Type0, Type), { Type = fn(Ret, Params, Var) }, ccl_peek(p, '{'),
     { ccl_note_tags(Ret), ccl_note_params(Params), ccl_declare(Name, Type) },
     ccl_push_scope, { ccl_declare_params(Params) }, ccl_compound(Env, Body), ccl_pop_scope, !.
 ccl_external_rest(Env0, Env, L, Sto, Base, Item) -->
@@ -583,7 +585,7 @@ ccl_member_decl(Env, Ms) --> ccl_decl_specs(Env, member, _, Base), ccl_member_de
 ccl_member_declarators(Env, Base, Ms) --> [tok(pp, _, _)], !, ccl_member_declarators(Env, Base, Ms).   % a #define between two declarators
 ccl_member_declarators(Env, Base, [M|Ms]) --> ccl_member_declarator(Env, Base, M), ( ccl_p(','), !, ccl_member_declarators(Env, Base, Ms) ; { Ms = [] } ).
 ccl_member_declarators(_, _, []) --> [].
-ccl_member_declarator(Env, Base, member(T, N, Bits)) --> ccl_declarator(Env, Base, N, T), ( ccl_p(':'), !, ccl_cond_expr(Bits) ; { Bits = none } ).
+ccl_member_declarator(Env, Base, member(T, N, Bits)) --> ccl_declarator(Env, Base, N, T0), ccl_tie(T0, T), ( ccl_p(':'), !, ccl_cond_expr(Bits) ; { Bits = none } ).
 ccl_member_declarator(_, Base, member(Base, anon, Bits)) --> ccl_p(':'), ccl_cond_expr(Bits).
 
 ccl_enum_spec(enum(N, Es)) --> ccl_kw(enum), ( ccl_id(N), ! ; { N = anon } ), ( ccl_p('{'), !, ccl_enumerators(Es), ccl_p('}') ; { Es = none } ).
@@ -597,9 +599,17 @@ ccl_enumerator(enumerator(N, V)) --> ccl_id(N), ( ccl_p('='), !, ccl_cond_expr(V
 %% then array and function suffixes; ccl_mk_type folds them onto the base.
 ccl_init_declarators(Env, Base, Ds) --> [tok(pp, _, _)], !, ccl_init_declarators(Env, Base, Ds).
 ccl_init_declarators(Env, Base, [D|Ds]) --> ccl_init_declarator(Env, Base, D), ( ccl_p(','), !, ccl_init_declarators(Env, Base, Ds) ; { Ds = [] } ).
-ccl_init_declarator(Env, Base, var(N, T, Init)) --> ccl_declarator(Env, Base, N, T), ccl_attrs, ( ccl_p('='), !, ccl_initializer(Init) ; { Init = none } ).
+ccl_init_declarator(Env, Base, var(N, T, Init)) --> ccl_declarator(Env, Base, N, T0), ccl_attrs, ccl_tie(T0, T), ( ccl_p('='), !, ccl_initializer(Init) ; { Init = none } ).
 
 ccl_declarator(Env, Base, Name, Type) --> ccl_decl_syntax(Env, D), { ccl_mk_type(D, Base, Name, Type) }.
+%% the tie operator after a declarator: `x <*> y', x lives within y (owner's
+%% rule; the check's business, library(ccl_check)) -- on a variable, a struct
+%% member (tied to an earlier member), a parameter (to an earlier parameter),
+%% a function (its result to a parameter), and after `name := expr'
+ccl_tie(T0, T) --> ccl_p('<*>'), !, ccl_id(Y), { ccl_add_tie(Y, T0, T) }.
+ccl_tie(T, T) --> [].
+ccl_tie_name(Y) --> ccl_p('<*>'), !, ccl_id(Y).
+ccl_tie_name(none) --> [].
 ccl_abstract_or_declarator(Env, Base, Name, Type) --> ccl_decl_syntax(Env, D), !, { ccl_mk_type(D, Base, Name, Type) }.
 ccl_abstract_or_declarator(_, Base, anon, Base) --> [].
 
@@ -624,7 +634,7 @@ ccl_params(Env, Ps, Var) --> ccl_param_list(Env, Ps, Var), !.
 ccl_params(_, [], false) --> [].
 ccl_param_list(_, [], true) --> ccl_p('...'), !.
 ccl_param_list(Env, [P|Ps], Var) --> ccl_param(Env, P), ( ccl_p(','), !, ccl_param_list(Env, Ps, Var) ; { Ps = [], Var = false } ).
-ccl_param(Env, param(T, N)) --> ccl_decl_specs(Env, param, _, Base), ccl_abstract_or_declarator(Env, Base, N, T), ccl_attrs.
+ccl_param(Env, param(T, N)) --> ccl_decl_specs(Env, param, _, Base), ccl_abstract_or_declarator(Env, Base, N, T0), ccl_attrs, ccl_tie(T0, T).
 
 ccl_mk_type(decl(Ptrs, Direct, Sfx), Base, Name, Type) :-
     ccl_apply_pointers(Ptrs, Base, T1),
@@ -661,7 +671,7 @@ ccl_block_items(Env0, Items) --> ccl_block_item(Env0, Env1, I), !, { ( Env1 == E
 ccl_block_items(_, []) --> [].
 ccl_block_item(Env, Env, directive(L, Text)) --> [tok(pp, Text, L)], !.
 ccl_block_item(Env, Env, '$splice'(Ds)) --> ccl_line(L), ccl_p('{'), ccl_pattern(P), ccl_p('}'), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_destructure(L, P, E, Ds) }.
-ccl_block_item(Env, Env, D) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_infer_decl(L, N, E, D), ccl_note_item(D) }.
+ccl_block_item(Env, Env, D) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_tie_name(Y), ccl_p(';'), { ccl_infer_decl(L, N, E, Y, D), ccl_note_item(D) }.
 ccl_block_item(Env0, Env, I) --> ccl_line(L), ccl_decl_specs(Env0, block, Sto, Base), ccl_init_declarators(Env0, Base, Ds), ccl_p(';'), !,
     { Sto == typedef -> ccl_declared_names(Ds, Ns), append(Ns, Env0, Env), I = typedef(L, Ds)
     ; Env = Env0, I = declaration(L, Sto, Base, Ds) }, { ccl_note_item(I) }.
@@ -691,7 +701,7 @@ ccl_statement(_, S) --> ccl_line(L), ccl_expr(E), ccl_p(';'), { ccl_stmt_of(L, E
 
 ccl_defer_vars([id(V)|Vs]) --> ccl_id(V), ( ccl_p(','), !, ccl_defer_vars(Vs) ; { Vs = [] } ).
 ccl_defer_vars([]) --> [].
-ccl_for_init(_, decl(Base, Ds)) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_infer_decl(L, N, E, D), D = declaration(_, _, Base, Ds), ccl_note_item(D) }.
+ccl_for_init(_, decl(Base, Ds)) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_tie_name(Y), ccl_p(';'), { ccl_infer_decl(L, N, E, Y, D), D = declaration(_, _, Base, Ds), ccl_note_item(D) }.
 ccl_for_init(Env, decl(Base, Ds)) --> ccl_decl_specs(Env, block, _, Base), ccl_init_declarators(Env, Base, Ds), ccl_p(';'), !, { ccl_note_item(declaration(0, none, Base, Ds)) }.
 ccl_for_init(_, E) --> ccl_opt_expr(E), ccl_p(';').
 ccl_opt_expr(E) --> ccl_expr(E), !.
