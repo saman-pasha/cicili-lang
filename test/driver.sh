@@ -20,6 +20,7 @@ check "and with no -o, a.out, as clang" "$("$CICILI" "$R/run/forty2.c"; ./a.out;
 check "-c makes NAME.o in the working directory" "$("$CICILI" -c "$R/run/forty2.c" && ls forty2.o)" "forty2.o"
 check "-S makes NAME.s with _main in it" "$("$CICILI" -S "$R/run/forty2.c" && grep -c '^_main:' forty2.s)" "1"
 check "-emit-llvm -c makes NAME.ll with the IR" "$("$CICILI" -emit-llvm -c "$R/run/forty2.c" && grep -c 'define i32 @main' forty2.ll)" "1"
+check "an own array's drain is a generated function in the IR" "$("$CICILI" -emit-llvm -c "$R/run/btree.c" && grep -c 'define internal void @ccl_drain_node' btree.ll)" "1"
 check "-fsyntax-only refuses a program the safe part refuses, exit 1, one line" "$("$CICILI" -fsyntax-only "$R/safe/use_after_free.c" 2>&1 | grep -c 'error: use after move of')-$("$CICILI" -fsyntax-only "$R/safe/use_after_free.c" >/dev/null 2>&1; echo $?)" "1-1"
 check "the diagnostic is file:line: error: what, clang's shape" "$("$CICILI" -fsyntax-only "$R/safe/leak.c" 2>&1 | head -1 | sed "s|$R/||")" "safe/leak.c:2: error: owner leaked: 'p' in return(int(0)) (function main)"
 check "two .c files and -O2 link into one program" "$("$CICILI" -O2 "$R/link/main.c" "$R/link/lib.c" -o app && ./app)" "42"

@@ -172,6 +172,10 @@ dr_kind(tie_outlived, 'owner outlives what it is tied to:') :- !.
 dr_kind(tie_escapes, 'tied owner moved beyond its tie:') :- !.
 dr_kind(tie_mismatch, 'value not within its tie:') :- !.
 dr_kind(untied, 'no owner behind:') :- !.
+dr_kind(own_unbounded, 'an own pointer with no owner to name (behind a plain pointer, in an array with no constant bound, an array parameter):') :- !.
+dr_kind(own_array_by_value, 'a struct with an own array held by value (it lives behind an own pointer):') :- !.
+dr_kind(own_array_untagged, 'an own array in a struct without a tag (the drain is named by it):') :- !.
+dr_kind(array_unset, 'an own array not zeroed at birth (calloc, or an initializer):') :- !.
 dr_kind(unconsumed, 'plain pointer not consumed:') :- !.
 dr_kind(owner_leaked, 'owner leaked:') :- !.
 dr_kind(move_in_loop, 'owner consumed inside a loop:') :- !.

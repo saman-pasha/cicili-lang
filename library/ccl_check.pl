@@ -87,6 +87,10 @@
 %%   tie_outlived        an owner tied to y still live when y is consumed
 %%   tie_escapes         a tied owner moved beyond its tie: into an untied slot, to an untied own parameter, returned with no result tie
 %%   tie_mismatch        a value not within the tie of the slot, the parameter or the result it is given to
+%%   own_unbounded       an own pointer with no owner to name: behind a plain pointer, in an array with no constant bound, an array parameter
+%%   own_array_by_value  a struct with an own array held by value
+%%   own_array_untagged  an own array in a struct without a tag
+%%   array_unset         an own array not zeroed at birth: from malloc or realloc, or a local without an initializer
 %% A plain pointer LOCAL given fresh memory -- malloc's result, an untied
 %% function's, anything not null, not static, not a borrow -- is LOOSE: memory
 %% with no owner behind it, that the check follows as an owner without the
@@ -97,6 +101,23 @@
 %% every pointer has an ownership path, or the program is not accepted):
 %%   unconsumed          a loose pointer (a plain local holding fresh memory) at its scope's end, a return, or overwritten
 %%   untied              a slot the check cannot follow -- a field, an element, a global, *p, a struct by value -- given a value with no owner behind it
+%% An OWN ARRAY, `own node *c[4]', holds a fixed number of owners: which one an
+%% index names cannot be told at compile time, so the array is one key whose
+%% elements are null or owned -- an invariant the lowering keeps by draining
+%% it: every non-null element freed (its own struct drained first) when the
+%% struct holding it is freed or the local's scope ends, the old element freed
+%% when one is overwritten, the slot nulled when an element is moved out or
+%% consumed. The check asks the rest: an element takes an owner (moved in), a
+%% null or a fresh value, never a borrow; an element leaves by move (or free,
+%% or an own parameter), and every borrow of the array dangles when any
+%% element goes; the array is zeroed at birth (calloc, an initializer, a call:
+%% `array_unset' for malloc or nothing); it lives as a local or in a struct
+%% behind an own pointer, never by value (`own_array_by_value': a copy would
+%% own its elements twice), in a struct with a tag (`own_array_untagged': the
+%% drain is a function named by it); and an own pointer sits nowhere else --
+%% behind a plain pointer, in an array with no constant bound, as an array
+%% parameter -- `own_unbounded'.
+%%
 %% A function's result may be tied to a static local of its own or to a global
 %% (`<*> table'): the caller's variable is then a borrow of static storage,
 %% static(Name), which nothing ends and nothing may free. `if (!p)' and
@@ -119,7 +140,7 @@ ck_items([_|Is]) :- ck_items(Is).
 
 %% ---- state: frames of Key-State, innermost first; with each frame its defers ----------
 ck_function(L, Ret, Name, Params, Body) :-
-    nb_setval('$ck_fn', Name), nb_setval('$ck_line', L), nb_setval('$ck_loops', []), nb_setval('$ck_ties', []), nb_setval('$ck_statics', []),
+    nb_setval('$ck_fn', Name), nb_setval('$ck_line', L), nb_setval('$ck_loops', []), nb_setval('$ck_ties', []), nb_setval('$ck_statics', []), nb_setval('$ck_arrays', []),
     ccl_scope_push, ccl_declare_params(Params),
     ck_param_names(Params, Names), nb_setval('$ck_params', Names),
     (   ccl_tie_of(Ret, RY)
@@ -146,7 +167,7 @@ ck_pointee_fields(N, T, Fs) :- ccl_resolve_type(T, ptr(_, PT)), ccl_members_of(P
 ck_is_borrowed_field(N) :- nb_getval('$ck_borrowed', Bs), memberchk(N, Bs).
 ck_complete_owners([], _).
 ck_complete_owners([N-S|Os], Form) :-
-    ( ck_is_borrowed_field(N), \+ memberchk(S, [live, null]) -> ck_fail(borrow_incomplete, N, Form) ; true ),
+    ( ck_is_borrowed_field(N), \+ memberchk(S, [live, null, array]) -> ck_fail(borrow_incomplete, N, Form) ; true ),
     ck_complete_owners(Os, Form).
 ck_body_static(declaration(_, static, _, Vs), N) :- member(var(N, _, _), Vs), !.
 ck_body_static(T, N) :- compound(T), T =.. [_|As], member(A, As), ck_body_static(A, N), !.
@@ -162,9 +183,9 @@ ck_param_owners([param(T, N)|Ps], Os) :-
     ck_param_owners(Ps, Os0),
     (   N == anon -> Os = Os0
     ;   ck_own_type(T)
-    ->  ck_var_fields(N, T, Fs), ck_states(Fs, live, FOs),
+    ->  ck_var_fields(N, T, Fs), ck_field_states(Fs, complete, FOs),
         ( ck_is_pointer_type(T) -> append([N-live|FOs], Os0, Os) ; append(FOs, Os0, Os) )
-    ;   ck_is_pointer_type(T) -> ( ck_pointee_fields(N, T, Fs) -> ck_states(Fs, live, FOs) ; FOs = [] ), append([N-borrow(N)|FOs], Os0, Os)
+    ;   ck_is_pointer_type(T) -> ( ck_pointee_fields(N, T, Fs) -> ck_field_states(Fs, complete, FOs) ; FOs = [] ), append([N-borrow(N)|FOs], Os0, Os)
     ;   ccl_resolve_type(T, arr(_, _)) -> Os = [N-borrow(N)|Os0]
     ;   Os = Os0 ).
 %% the ties of the parameters, in order: the fields' (a struct's members tied
@@ -173,7 +194,8 @@ ck_param_owners([param(T, N)|Ps], Os) :-
 ck_param_ties([], _, St, St).
 ck_param_ties([param(T, N)|Ps], Seen, St0, St) :-
     (   N == anon -> St2 = St0, Seen1 = Seen
-    ;   (   ck_own_type(T) -> ck_var_ties(N, T, Ts)
+    ;   ( ck_own_array_type(T) -> ck_fail(own_unbounded, N, param(N)) ; ck_type_rules(N, T, param(N)) ),
+        (   ck_own_type(T) -> ck_var_ties(N, T, Ts)
         ;   ck_is_pointer_type(T) -> ( ck_pointee_ties(N, T, Ts) -> true ; Ts = [] )
         ;   ck_var_ties(N, T, Ts) ),
         ck_field_ties_(Ts, St0, St1),
@@ -207,11 +229,75 @@ ck_member_fields([member(MT, F, _)|Ms], Base, Sep, Fs) :-
     (   F == anon -> Fs = Fs1
     ;   atomic_list_concat([Base, Sep, F], K),
         (   ck_own_type(MT) -> Fs = [K|Fs1]
+        ;   ck_own_array_type(MT) -> ck_note_array(K), Fs = [K|Fs1]
         ;   ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ccl_members_of(MT1, Sub) -> ck_member_fields(Sub, K, '.', Fs0), append(Fs0, Fs1, Fs)
         ;   Fs = Fs1 ) ),
     ck_member_fields(Ms, Base, Sep, Fs1).
 ck_states([], _, []).
 ck_states([K|Ks], S, [K-S|Ps]) :- ck_states(Ks, S, Ps).
+%% the fields' states by how the struct was born: complete (a call, a move),
+%% zeroed (calloc: null), garbage (malloc: unset); an own array is `array' or
+%% refused, since the lowering drains it and garbage cannot be drained
+ck_field_states([], _, []).
+ck_field_states([K|Ks], Mode, [K-S|Ps]) :- ck_field_state(K, Mode, S), ck_field_states(Ks, Mode, Ps).
+ck_field_state(K, Mode, S) :- ( ck_is_array_key(K) -> S = array ; Mode == garbage -> S = unset ; Mode == zeroed -> S = null ; S = live ).
+ck_alloc_mode(call(id(F), _), garbage) :- memberchk(F, [malloc, realloc]), !.
+ck_alloc_mode(call(id(calloc), _), zeroed) :- !.
+ck_alloc_mode(_, complete).
+ck_set_fields(St0, Key, Mode, Form, St) :-
+    ck_under_states(St0, Key, Ps),
+    ( Mode == garbage, member(A-_, Ps), ck_is_array_key(A) -> ck_fail(array_unset, A, Form) ; true ),
+    ck_set_fields_(Ps, Mode, St0, St).
+ck_set_fields_([], _, St, St).
+ck_set_fields_([K-S|Ps], Mode, St0, St) :-
+    (   ck_is_array_key(K) -> ck_set(St0, K, array, St1)
+    ;   ck_owner_state(S) -> ck_field_state(K, Mode, S1), ck_set(St0, K, S1, St1)
+    ;   St1 = St0 ),
+    ck_set_fields_(Ps, Mode, St1, St).
+
+%% ---- own arrays ---------------------------------------------------------------------------
+%% `own node *c[4]': the key is the array's (a local's name, a field's path,
+%% listed in '$ck_arrays'), its state `array'; an element is index(Path, _)
+ck_own_array_type(T) :- ccl_resolve_type(T, arr(_, ET)), ck_own_type(ET), !.
+ck_const(int(N), N) :- !.
+ck_const(id(E), N) :- ccl_enum_value(E, N), !.
+ck_note_array(K) :- nb_getval('$ck_arrays', As), ( memberchk(K, As) -> true ; nb_setval('$ck_arrays', [K|As]) ).
+ck_is_array_key(K) :- nb_getval('$ck_arrays', As), memberchk(K, As).
+ck_own_elem(index(A, _), K) :- ck_path(A, K), ck_is_array_key(K).
+ck_has_array_under(St, K) :- ck_under_states(St, K, Ps), member(A-_, Ps), ck_is_array_key(A), !.
+%% the rules a declared type must meet: an own pointer only where its owner is
+%% named (never behind a plain pointer, never in an array without a constant
+%% bound); a struct with an own array behind a pointer, never by value, and
+%% with a tag
+ck_type_rules(N, T, Form) :-
+    ck_bounds_ok(T, N, Form),
+    ccl_resolve_type(T, T1),
+    (   T1 = ptr(_, PT) -> ck_array_struct_ok(PT, N, Form)
+    ;   T1 = base(_, [struct(_, _)]) -> ( ck_has_own_array(T1) -> ck_fail(own_array_by_value, N, Form) ; true )
+    ;   true ).
+ck_bounds_ok(T, N, Form) :- ccl_resolve_type(T, T1), ck_bounds_ok_(T1, N, Form).
+ck_bounds_ok_(arr(NE, ET), N, Form) :- !, ( ck_own_type(ET), \+ ck_const(NE, _) -> ck_fail(own_unbounded, N, Form) ; true ), ck_bounds_ok(ET, N, Form).
+ck_bounds_ok_(ptr(_, ET), N, Form) :- !,
+    ccl_resolve_type(ET, ET1),
+    (   ( ET1 = ptr(_, _), ck_own_type(ET1) ; ck_own_array_type(ET1) ) -> ck_fail(own_unbounded, N, Form)
+    ;   ( ET1 = ptr(_, _) ; ET1 = arr(_, _) ) -> ck_bounds_ok(ET1, N, Form)
+    ;   true ).
+ck_bounds_ok_(_, _, _).
+ck_array_struct_ok(T, N, Form) :-
+    ccl_resolve_type(T, T1),
+    (   ck_has_own_array(T1)
+    ->  ( T1 = base(_, [struct(anon, _)]) -> ck_fail(own_array_untagged, N, Form) ; true ),
+        ccl_members_of(T1, Ms), ck_members_ok(Ms, Form)
+    ;   true ).
+ck_members_ok([], _).
+ck_members_ok([member(MT, F, _)|Ms], Form) :-
+    ck_bounds_ok(MT, F, Form),
+    ( ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]) -> ck_array_struct_ok(MT1, F, Form) ; true ),
+    ck_members_ok(Ms, Form).
+ck_has_own_array(T) :-
+    ccl_members_of(T, Ms), member(member(MT, _, _), Ms),
+    ( ck_own_array_type(MT) -> true ; ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ck_has_own_array(MT1) ), !.
+ck_no_array_copy(St, K, Form) :- ( ck_has_array_under(St, K) -> ck_fail(own_array_by_value, K, Form) ; true ).
 %% the tied fields of a variable, Key-TieKey in member order (a tie names an
 %% earlier member, else tie_unknown): under an own pointer with `->', in a
 %% struct by value with `.', a member held by value opened the same way
@@ -465,7 +551,7 @@ ck_param_index([_|Ps], Y, I0, I) :- I1 is I0 + 1, ck_param_index(Ps, Y, I1, I).
 ck_callee_sig(id(F), Sig) :- ccl_declared(F, T), !, ck_fn_sig(T, Sig).
 ck_callee_sig(F, Sig) :- ccl_type_of(F, T), T \== unknown, ck_fn_sig(T, Sig).
 ck_fn_sig(T, Sig) :- ccl_resolve_type(T, T1), ( T1 = fn(_, _, _) -> Sig = T1 ; T1 = ptr(_, FT), ccl_resolve_type(FT, Sig), Sig = fn(_, _, _) ).
-ck_borrow_source(K, S, P) :- ( ck_owner_state(S) -> P = K ; S == anchor -> P = K ; S == loose -> P = K ; S = borrow(P) -> true ; S = dangling(P) ).
+ck_borrow_source(K, S, P) :- ( ck_owner_state(S) -> P = K ; memberchk(S, [anchor, loose, array]) -> P = K ; S = borrow(P) -> true ; S = dangling(P) ).
 %% a return: a tied owner only within the result's tie; a borrow of a parameter
 %% or a global may leave, and with a result tie only what lies within it
 ck_no_escape(E, St) :-
@@ -585,14 +671,15 @@ ck_has_default(Is) :- member(case(_, _, S), Is), ck_has_default([S]), !.
 %% owner's value is a borrow, given a value with no owner behind it a warning
 ck_decls([], St, St).
 ck_decls([var(N, T, Init)|Vs], St0, St) :-
-    ccl_declare(N, T),
+    ccl_declare(N, T), ck_type_rules(N, T, var(N, Init)),
     ck_var_fields(N, T, Fs), ck_states(Fs, unset, FOs),
     ck_declare_all(St0, FOs, St1), ck_field_ties(N, T, St1, St2, Ts), ck_anchor_addrs(Init, St2, St3),
-    (   ck_own_type(T), ck_is_pointer_type(T)
+    (   ck_own_array_type(T)
+    ->  ck_note_array(N),
+        ( Init = init(Items) -> ck_declare(St3, N, array, St5), ck_init_slots(Items, T, N, St5, St6) ; ck_fail(array_unset, N, var(N, Init)) )
+    ;   ck_own_type(T), ck_is_pointer_type(T)
     ->  ck_declare(St3, N, unset, St4), ck_var_tie(N, T, St4, St5),
-        (   Init == none -> St6 = St5
-        ;   ck_into_own(N, Init, var(N, Init), St5, St6a, Kind),
-            ( Kind == fresh, \+ ck_allocation(Init) -> ck_set_all(St6a, Fs, live, St6) ; St6 = St6a ) )
+        ( Init == none -> St6 = St5 ; ck_into_own(N, Init, var(N, Init), St5, St6, _) )
     ;   ( Fs \== [] ; Ts \== [] )
     ->  ck_var_tie(N, T, St3, St5), ( Init == none -> St6 = St5 ; ck_fill(N, T, Init, var(N, Init), St5, St6) )
     ;   ck_var_tie(N, T, St3, St5),
@@ -603,10 +690,10 @@ ck_decls([var(N, T, Init)|Vs], St0, St) :-
             ;   ck_is_pointer_type(T), \+ ck_declared_tie(N, _), ck_fresh_value(Init) -> ck_declare(St5a, N, loose, St6)
             ;   ck_no_owner_behind(N, T, Init, var(N, Init)), St6 = St5a ) ) ),
     ck_decls(Vs, St6, St).
-ck_allocation(call(id(F), _)) :- memberchk(F, [malloc, calloc, realloc]).
 
 %% what a right-hand side is to a slot: an owner (moved in), a null, a borrow, or a fresh value
 ck_kind(E, _, null) :- ck_null(E), !.
+ck_kind(move(E), _, fresh) :- ck_own_elem(E, _), !.                  % an element moved out: an owner, complete
 ck_kind(move(E), St, K) :- !, ( ck_owner_path(St, E, P) -> K = owner(P) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
 ck_name(E, N) :- ( ck_path(E, N) -> true ; N = E ).
 ck_kind(E, St, owner(P)) :- ck_owner_path(St, E, P), !.
@@ -625,7 +712,8 @@ ck_into_own(Key, R, Form, St0, St, Kind) :-
     ;   Kind = borrow(P) -> ( ck_state(St0, P, loose) -> ck_expr(R, St0, St3a), ck_set(St3a, P, none, St3b), ( Key == none -> St3 = St3b ; ck_retarget(St3b, P, Key, St3) ), New = live   % the owner takes loose memory over
                               ; ck_fail(borrow_stored, P, Form) )
     ;   ck_strip_move(R, E), ( ck_call_tie(E, St0, PR) -> ( Key \== none, ck_within(St0, Key, PR) -> true ; ck_fail(tie_escapes, Key, Form) ) ; true ),
-        ck_expr(R, St0, St3), New = live ),
+        ck_expr(R, St0, St3a), New = live,
+        ( Key == none -> St3 = St3a ; ck_alloc_mode(E, Mode), ck_set_fields(St3a, Key, Mode, Form, St3) ) ),   % its fields: complete, zeroed, or garbage
     (   Key == none -> St = St3
     ;   ck_state(St3, Key, Cur) -> ( Cur == live -> ck_fail(owner_overwritten, Key, Form) ; ck_set(St3, Key, New, St) )
     ;   St = St3 ).
@@ -660,7 +748,7 @@ ck_into_tied(Key, Root, R, Form, St0, St) :-
 ck_complete_rest(St, none, _, St) :- !.
 ck_complete_rest(St0, Key, Prior, St) :- ck_under_states(St0, Key, Ps), ( Prior == null -> S = null ; S = live ), ck_complete_unset(Ps, S, St0, St).
 ck_complete_unset([], _, St, St).
-ck_complete_unset([K-KS|Ps], S, St0, St) :- ( KS == unset -> ck_set(St0, K, S, St1) ; St1 = St0 ), ck_complete_unset(Ps, S, St1, St).
+ck_complete_unset([K-KS|Ps], S, St0, St) :- ( KS == unset -> ( ck_is_array_key(K) -> ck_set(St0, K, array, St1) ; ck_set(St0, K, S, St1) ) ; St1 = St0 ), ck_complete_unset(Ps, S, St1, St).
 %% the fields of an owner moved into another owner: the same states, under the
 %% new base; a field's borrow of a sibling is re-rooted to the sibling's copy
 ck_transfer(St, _, _, none, St) :- !.
@@ -676,6 +764,7 @@ ck_under_root(R0, P, Key, R) :- atom_concat(P, Sfx, R0), ( sub_atom(Sfx, 0, 1, _
 %% struct its fields move over; from an initializer list, item by item; from a
 %% call or anything else, fresh: every own field live
 ck_fill(Key, T, R, Form, St0, St) :-
+    ck_no_array_copy(St0, Key, Form),
     (   R = init(Items) -> ck_init_slots(Items, T, Key, St0, St)
     ;   R = compound_lit(_, init(Items)) -> ck_init_slots(Items, T, Key, St0, St)
     ;   ck_path(R, P), ck_under_states(St0, P, Src), Src \== [] -> ck_expr(R, St0, St1), ck_move_fields(St1, Src, P, Key, Form, St)
@@ -777,7 +866,7 @@ ck_leaks_frames([fr(Os, _)|Frs], Form) :- ck_leaks(Os, Form), ck_leaks_frames(Fr
 ck_leaks([], _).
 ck_leaks([N-S|Os], Form) :-
     (   S == loose -> ck_fail(unconsumed, N, Form)
-    ;   ( memberchk(S, [moved, unset, null, none, anchor]) ; S = borrow(_) ; S = dangling(_) ; ck_is_borrowed_field(N) ) -> true
+    ;   ( memberchk(S, [moved, unset, null, none, anchor, array]) ; S = borrow(_) ; S = dangling(_) ; ck_is_borrowed_field(N) ) -> true
     ;   ck_fail(owner_leaked, N, Form) ),
     ck_leaks(Os, Form).
 ck_any_owner(st(Frs)) :- member(fr(Os, _), Frs), member(_-S, Os), ck_owner_state(S), !.
@@ -788,6 +877,7 @@ ck_merge_all([A, B|T], S) :- ck_merge(A, B, C), ck_merge_all([C|T], S).
 %% a value that is consumed if it is an owner or a struct with own fields (a return), else used
 ck_consume_or_use(E, St0, St) :- ck_owner_path(St0, E, K), !, ck_base_use(E, St0, St1), ck_consume(K, move, E, St1, St, _).
 ck_consume_or_use(move(E), St0, St) :- !, ck_expr(move(E), St0, St).
+ck_consume_or_use(E, St0, St) :- ck_path(E, K), ck_by_value(E), ck_has_array_under(St0, K), !, ck_fail(own_array_by_value, K, E).
 ck_consume_or_use(E, St0, St) :- ck_path(E, K), ck_by_value(E), ck_own_under(St0, K, Fs), Fs \== [], !, ck_expr(E, St0, St1), ck_move_out(St1, Fs, E, St).
 %% a struct held by value, not a pointer to one (whose own fields are the struct's, not the pointer's to move)
 ck_by_value(E) :- ccl_type_of(E, T), T \== unknown, \+ ck_is_pointer_type(T).
@@ -803,7 +893,7 @@ ck_consume(K, How, Form, St0, St, Prior) :-
     ( Prior == null -> true ; ck_fields_consumable(Fs, How, St0, Form) ),
     ck_tied_consumed(St0, K, Form),
     ck_set(St0, K, moved, St1), ck_set_all(St1, Fs, moved, St2),
-    ck_dangle_all(St2, [K|Fs], St).
+    ck_under(St2, K, All), ck_dangle_all(St2, [K|All], St).
 ck_fields_consumable([], _, _, _).
 ck_fields_consumable([F|Fs], How, St, Form) :-
     ck_state(St, F, S),
@@ -824,12 +914,13 @@ ck_dangle_owners([], _, []).
 ck_dangle_owners([N-borrow(P)|T], P, [N-dangling(P)|T1]) :- !, ck_dangle_owners(T, P, T1).
 ck_dangle_owners([X|T], P, [X|T1]) :- ck_dangle_owners(T, P, T1).
 %% a read of an owner, a field, a borrow, an anchor
-ck_read(K, S) :- ( memberchk(S, [live, null, none, anchor, loose]) -> true ; S = borrow(_) -> true ; S = dangling(P) -> ck_fail(borrow_after_move, K, borrowed_from(P)) ; S == unset -> ck_fail(owner_unset, K, id(K)) ; ck_fail(use_after_move, K, id(K)) ).
+ck_read(K, S) :- ( memberchk(S, [live, null, none, anchor, loose, array]) -> true ; S = borrow(_) -> true ; S = dangling(P) -> ck_fail(borrow_after_move, K, borrowed_from(P)) ; S == unset -> ck_fail(owner_unset, K, id(K)) ; ck_fail(use_after_move, K, id(K)) ).
 
 ck_expr(_, dead, dead) :- !.
 ck_expr(id(N), St, St) :- !, ( ck_state(St, N, S) -> ck_read(N, S) ; true ).
 ck_expr(member(E, F), St0, St) :- ck_path(member(E, F), K), ck_state(St0, K, S), !, ck_expr(E, St0, St), ck_read(K, S).
 ck_expr(arrow(E, F), St0, St) :- ck_path(arrow(E, F), K), ck_state(St0, K, S), !, ck_expr(E, St0, St), ck_read(K, S).
+ck_expr(move(E), St0, St) :- ck_own_elem(E, K), !, ck_expr(E, St0, St1), ck_dangle(St1, K, St).   % an element out: the array's borrows dangle
 ck_expr(move(E), St0, St) :- !, ( ck_owner_path(St0, E, K) -> ck_base_use(E, St0, St1), ck_consume(K, move, move(E), St1, St, _) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
 ck_expr(call(id(F), Args), St0, St) :- !, ck_args(Args, id(F), St0, St).
 ck_expr(call(F, Args), St0, St) :- !,
@@ -846,6 +937,8 @@ ck_expr(assign('=', L, R), St0, St) :- ck_path(L, K), ck_by_value(L), ck_own_und
     ck_base_use(L, St0, St1), ( ccl_type_of(L, T) -> true ; T = unknown ), ck_fill(K, T, R, assign('=', L, R), St1, St).
 ck_expr(assign('=', L, R), St0, St) :- ck_path(L, K), ck_tied_to(K, Root), !,
     ck_base_use(L, St0, St1), ck_into_tied(K, Root, R, assign('=', L, R), St1, St).
+ck_expr(assign('=', L, R), St0, St) :- ck_own_elem(L, K), !,                 % an element: an own slot; the old one freed by the lowering
+    ck_lval_use(L, St0, St1), ck_into_own(none, R, assign('=', L, R), St1, St2, _), ck_dangle(St2, K, St).
 ck_expr(assign('=', id(N), R), St0, St) :- ( ck_state(St0, N, _) ; ck_is_local(N) ), !,
     ck_expr(R, St0, St1),
     (   ck_is_param(N), ck_state(St1, N, borrow(N)) -> ck_rebind(St1, N, none, St2)   % a parameter re-assigned is a plain local from here
@@ -859,6 +952,7 @@ ck_expr(assign('=', id(N), R), St0, St) :- ( ck_state(St0, N, _) ; ck_is_local(N
     ;   St = St2 ).
 ck_expr(assign('=', L, R), St0, St) :- !,
     ck_lval_use(L, St0, St1),
+    ( ck_path(R, RK), ck_by_value(R), ck_has_array_under(St1, RK) -> ck_fail(own_array_by_value, RK, assign('=', L, R)) ; true ),
     (   ccl_type_of(L, T), T \== unknown
     ->  (   ck_own_type(T) -> ck_into_own(none, R, assign('=', L, R), St1, St, _)
         ;   ck_carries_type(T) -> ck_slot_name(L, Name), ck_into_plain(Name, R, assign('=', L, R), St1, St)
@@ -910,6 +1004,7 @@ ck_callee_params(params(Ps), Ps).
 ck_param_tied(Callee, I) :- ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(PT, _)), ccl_tie_of(PT, _).
 ck_args_([], _, _, St, St).
 ck_args_([A|As], Callee, I, St0, St) :-
+    ( ck_path(A, AK), ck_by_value(A), ck_has_array_under(St0, AK) -> ck_fail(own_array_by_value, AK, call(Callee, [A|As])) ; true ),
     (   ck_consumes(Callee, I)
     ->  ( Callee = id(F), memberchk(F, [free, fclose]) -> How = free ; How = move ),
         ( Callee = id(_) -> Form = call(Callee, [A|As]) ; Form = call(pointer, [A|As]) ),
@@ -917,6 +1012,7 @@ ck_args_([A|As], Callee, I, St0, St) :-
         (   ck_owner_path(St0, A1, K)
         ->  ( How == move, ck_tied_to(K, _), \+ ck_param_tied(Callee, I) -> ck_fail(tie_escapes, K, Form) ; true ),
             ck_base_use(A1, St0, St1a), ck_consume(K, How, Form, St1a, St1, _)
+        ;   ck_own_elem(A1, K) -> ck_expr(A1, St0, St1a), ck_dangle(St1a, K, St1)          % an element freed, or taken: the slot nulled by the lowering
         ;   A = move(_) -> ck_expr(A, St0, St1)
         ;   ck_path(A, K), ck_by_value(A), ck_own_under(St0, K, Fs), Fs \== [] -> ck_expr(A, St0, St1a), ck_move_out(St1a, Fs, Form, St1)
         ;   ck_borrows_from(A, St0, P), ck_state(St0, P, loose) -> ck_expr(A, St0, St1a), ck_consume_loose(St1a, P, St1)   % loose memory freed, or taken by an own parameter

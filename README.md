@@ -359,6 +359,10 @@ named:
 | `tie_mismatch` | a value not within the tie of the slot, the parameter or the result it is given to |
 | `unconsumed` | a plain pointer holding fresh memory, never consumed: at its scope's end, a `return`, or overwritten |
 | `untied` | a slot the check cannot follow -- a global, a field, an element, `*p`, an initializer item, a struct by value -- given a value with no owner behind it |
+| `own_unbounded` | an own pointer with no owner to name: behind a plain pointer (`own T **p`), in an array with no constant bound, as an array parameter |
+| `own_array_by_value` | a struct with an own array held by value, or copied: its copy would own the elements twice |
+| `own_array_untagged` | an own array in a struct without a tag, which names its drain |
+| `array_unset` | an own array not zeroed at birth: a struct from `malloc` or `realloc`, a local without an initializer |
 
 **A struct's own fields are owners too**, named by their path: `p->name`
 under an own pointer, `c.name` in a struct held by value, `c.inner.name`
@@ -465,17 +469,37 @@ return;` or `if (p == NULL)`, `p` is null on that path, its own fields
 with it, so `drop(own node *x) { if (!x) return; ... free(x); }` is
 accepted as written.
 
+**An own array, `own node *C[4]`, holds owners the check cannot tell
+apart** -- which one `C[i]` names is not known at compile time -- so it
+is one owner with an invariant, *every element is null or owned*, that
+the lowering keeps with code the source did not write: when the struct
+holding the array is freed, every non-null element is freed first, its own
+struct drained before it, through one generated function per struct type,
+`ccl_drain_<tag>`, recursive as the type is; a local array is drained the
+same way at every exit of its scope, as a `defer`; the old element is
+freed when a slot is overwritten; and the slot is nulled when an element
+is moved out or handed to `free`, `fclose` or an own parameter. The check
+asks the rest: an element takes an owner (`move`), a null or a fresh
+value, never a borrow; it leaves by `move`, `free` or an own parameter,
+and every borrow of the array dangles when any element goes; the array is
+zeroed at birth, `calloc`, an initializer, or a call that built it; it
+lives as a local or in a tagged struct behind an own pointer, never by
+value; and an own pointer sits nowhere its owner cannot be named, not
+behind a plain pointer, not in an array without a constant bound, not as
+an array parameter. Refused as `own_unbounded`, `own_array_by_value`,
+`own_array_untagged`, `array_unset`. A struct with an own array cannot be
+cloned either.
+
 `test/c/run/btree.c` is the ownership test case: a B-tree whose every
-node is owned by its parent -- the first child through `child`, the
-siblings through `next` -- and the root by the tree; walks and searches
-borrow, a search's result is tied to the tree it came from, a full node is
-split by moving its upper half into a new owner, and the tree is dropped
-node by node with every owner consumed exactly once. Two shapes it taught:
-surgery on a struct's own fields is done in a function that takes the
-struct as a parameter (its fields are keys there, a local borrow's are
-not), and a node the check must see assigned field by field is built with
-`malloc` in place, since an own pointer from any other call is taken as
-complete. Diagnostics, errors and warnings alike, are on stderr, as clang's;
+node owns its children through `own node *C[4]` and the root belongs to
+the tree; walks and searches borrow, a search's result is tied to the
+tree it came from, a parameter is tied to an earlier one, a full node is
+split by moving its upper children into a new owner, and freeing the root
+drains the whole tree, every node freed exactly once (`leaks` finds none).
+`slots.c` does the same with a local array. One shape the tree taught:
+surgery on a struct's own fields and elements is done in a function that
+takes the struct as a parameter, since its fields are keys there and a
+local borrow's are not. Diagnostics, errors and warnings alike, are on stderr, as clang's;
 `cicili -v`'s lines and `cicili: ok` on stdout.
 
 ## `format`, `print`, `println`: global macros

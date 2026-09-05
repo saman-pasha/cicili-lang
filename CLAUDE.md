@@ -55,6 +55,7 @@ test/reader.sh           runs it, and adds the check only a second process can m
 test/c/                  the gate's fixtures: hello.c, rich.c, the macro, :=, pattern,
                          format and shorthand samples, the bad ones
 test/objects.sh          the objects layer's gate
+bench/btree/run.sh       the B-tree benchmark: cicili -O3, clang -O3 on the same algorithm, Rust's BTreeSet
 tutorials/NN-*.pl        the objects layer's lessons; goal `main', last line `done'
 DESIGN.md                the architecture, the neighbours' roles, M0..M4
 ```
@@ -273,6 +274,11 @@ its members. Externals used get `declare` lines from their prototypes.
 An anonymous struct's name lives in `'$ir_anons'`, not in `'$ir_structs'`
 where a name means "defined". Not lowered yet: VLAs, `_Complex`, `long double` (as double) -- each
 `error(not_lowered(What), where(F))`.
+Every address is `getelementptr inbounds` and signed integer arithmetic
+is `nsw` (C's undefined behaviours, past the object and signed overflow),
+so LLVM widens loop counters and drops the sign extensions before an
+index: a third of a B-tree's search time, measured by `bench/btree/run.sh`
+(cicili -O3, clang -O3 on the same algorithm, Rust's BTreeSet).
 **Unions, bitfields, static locals** (M2b's gaps, closed): a struct's LLVM
 shape comes from its C layout (`ccl_members_layout/4` in `ccl_infer`: SysV
 packing, `lay(Name, T, ByteOff, none | bits(BitOff, Width, UnitBytes))`;
@@ -420,10 +426,42 @@ fields with it (`ck_set_null/3`). An owner moved in from an own FIELD
 (whose pointee is not opened) has complete fields (`ck_complete_rest/4`),
 and a struct's fields move out, or fill, only for a struct held BY VALUE
 (`ck_by_value/1`), never for a pointer parameter whose pointee's fields
-are keys. `btree.c` is the ownership test case: a B-tree with linked
-children (an array of own pointers has no rule yet: which element is
-consumed cannot be told statically), `statics.c` ties its static results,
-`untied.c` and `unconsumed.c` are refused; `tie.c` and `clone.c` run, eight `safe/tie_*.c`
+are keys. `statics.c` ties its static results, `untied.c` and
+`unconsumed.c` are refused.
+
+**Own arrays (owner's rule: a constant bound, or nothing):** `own node
+*C[4]` is one key -- a local's name or a field's path, listed in
+`'$ck_arrays'` (`ck_note_array/1`, `ck_own_elem/2`) -- with the state
+`array`: readable, a root for borrows, exempt from leaks, never consumed
+by the check, since the LOWERING drains it. An element `index(Path, _)` is
+an own slot with no key (`ck_into_own(none, ...)`): an owner moved in, a
+null, a fresh value, never a borrow; `move(C[i])` is `fresh` to the
+receiver and dangles the array's borrows (`ck_dangle(K)`), as does
+freeing or overwriting an element. The struct's birth sets its fields by
+mode (`ck_alloc_mode/2`: malloc/realloc garbage, calloc zeroed, else
+complete; `ck_set_fields/5`), and a garbage array is `array_unset`; a
+local array needs an initializer. `ck_type_rules/3` at every local and
+parameter: `ck_bounds_ok/3` (`own_unbounded`: an own pointer behind a
+plain pointer, an array with a non-constant bound; an array parameter
+too), `ck_array_struct_ok/3` (`own_array_untagged`, and the members'
+bounds), `own_array_by_value` for a struct with an own array declared,
+copied (`ck_no_array_copy/3` in `ck_fill`), passed or returned by value.
+The lowering (`ccl_ir`): `ir_drain_functions/1` makes one
+`function(0, static, void, ccl_drain_<tag>, [x], ...)` per tagged struct
+in `'$ccl_tags'` with an own array (`ck_has_own_array/1`), its body a
+`for` per array path (`ir_drain_loop/3`: `if (a[i]) { ccl_drain_T(a[i]);
+drain_free(a[i]); }`, recursive through the element's struct), noted with
+`ccl_items_note/1` and lowered after the units; `free(E)` of a pointer to
+such a struct becomes `({ drain(E); drain_free(E); })` (`ir_drain_free/2`,
+E bound to a temporary unless an id; `drain_free/1` is the lowering's own
+node for a free past the drain); `a[i] = R` becomes `({ T **p = &a[i]; T
+*n = R; if (*p) { drain(*p); free(*p); } *p = n; })` (`ir_elem_assign/3`);
+`move(a[i])` loads then stores null (`ir_own_elem/1`); an element handed
+to a consumer is wrapped in `move` first (`ir_moved_args/3` over
+`ck_consumes`); a local own array registers its drain loop as a defer
+(`ir_array_defers/2`). `btree.c` on `own node *C[4]` is the ownership
+test case (`leaks` finds none), `slots.c` a local array; four `safe/`
+programs are refused; `tie.c` and `clone.c` run, eight `safe/tie_*.c`
 are refused.
 
 ## How the LLVM module is written (the Cicili module pattern)

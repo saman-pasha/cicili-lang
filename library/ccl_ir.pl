@@ -44,13 +44,14 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(4).
+ccl_lowering_version(6).
 
 ccl_ir_units(Units, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units),                     % the symbol table, once
     ccl_check_noted(Units),                                             % the safe part first: a violation is a compile error
     nb_setval('$ir_fdefs', []), nb_setval('$ir_gdefs', []),
-    ir_units(Units),
+    ir_drain_functions(Drains), ccl_items_note(Drains),                 % one drain per struct with an own array (below)
+    ir_units(Units), ir_items(Drains),
     ir_assemble(IR).
 
 ir_note_units([]).
@@ -94,9 +95,9 @@ ir_alloca_aligned(R, LL, Al) :- nb_getval('$ir_allocas', A), atomic_list_concat(
 %% a temporary for a struct crossing a call, over-aligned so every piece's load and store is aligned
 ir_tmp(LL, Tmp) :- ir_fresh(Tmp), ir_alloca_aligned(Tmp, LL, 16).
 ir_store_at(PL, V, Addr, 0) :- !, ir_ins(['store ', PL, ' ', V, ', ptr ', Addr]).
-ir_store_at(PL, V, Addr, Off) :- ir_fresh(G), ir_ins([G, ' = getelementptr i8, ptr ', Addr, ', i64 ', Off]), ir_ins(['store ', PL, ' ', V, ', ptr ', G]).
+ir_store_at(PL, V, Addr, Off) :- ir_fresh(G), ir_ins([G, ' = getelementptr inbounds i8, ptr ', Addr, ', i64 ', Off]), ir_ins(['store ', PL, ' ', V, ', ptr ', G]).
 ir_load_at(PL, Addr, 0, V) :- !, ir_fresh(V), ir_ins([V, ' = load ', PL, ', ptr ', Addr]).
-ir_load_at(PL, Addr, Off, V) :- ir_fresh(G), ir_ins([G, ' = getelementptr i8, ptr ', Addr, ', i64 ', Off]), ir_fresh(V), ir_ins([V, ' = load ', PL, ', ptr ', G]).
+ir_load_at(PL, Addr, Off, V) :- ir_fresh(G), ir_ins([G, ' = getelementptr inbounds i8, ptr ', Addr, ', i64 ', Off]), ir_fresh(V), ir_ins([V, ' = load ', PL, ', ptr ', G]).
 ir_where(where(F, line(L))) :- nb_getval('$ir_fn', F), nb_getval('$ir_line', L).
 ir_fail(What) :- ir_where(W), throw(error(not_lowered(What), W)).
 
@@ -208,7 +209,7 @@ ir_run_map([lay(N, T, Off, bits(BOff, W, _))|Ls], Idx, Start, RunLL, [m(N, Idx, 
 ir_member_slot(Base, ST, N, Slot, T) :-
     (   ir_is_union(ST) -> ( ccl_member_type(ST, N, T) -> Slot = Base ; ir_fail(no_member(N, ST)) )
     ;   ir_type(ST, SLL), nb_getval('$ir_maps', Maps), memberchk(SLL-shape(_, Map), Maps), memberchk(m(N, Idx, T, BF), Map)
-    ->  ir_fresh(P), ir_ins([P, ' = getelementptr ', SLL, ', ptr ', Base, ', i32 0, i32 ', Idx]),
+    ->  ir_fresh(P), ir_ins([P, ' = getelementptr inbounds ', SLL, ', ptr ', Base, ', i32 0, i32 ', Idx]),
         ( BF == none -> Slot = P ; BF = bf(RunLL, Off, W, Signed), Slot = bf(P, RunLL, Off, W, Signed) )
     ;   ir_fail(no_member(N, ST)) ).
 ir_slot_addr(bf(_, _, _, _, _), _) :- !, ir_fail(address_of_bitfield).
@@ -403,7 +404,11 @@ ir_expr(id(N), V, T) :- !,
     (   T1 = arr(_, E) -> V = Addr, T = ptr([], E)
     ;   T1 = fn(_, _, _) -> V = Addr, T = ptr([], T0)
     ;   ir_type(T0, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', Addr]), T = T0 ).
-ir_expr(call(F, Args), V, RT) :- !, ir_call(F, Args, V, RT).
+ir_expr(call(F, Args), V, RT) :- !,
+    ir_moved_args(F, Args, Args1),
+    ( F = id(free), Args1 = [E], ir_drain_free(E, S) -> ir_expr(S, V, RT) ; ir_call(F, Args1, V, RT) ).
+ir_expr(drain_free(E), V, RT) :- !, ir_call(id(free), [E], V, RT).          % the lowering's own free, past the drain
+ir_expr(assign('=', L, R), V, LT) :- ir_own_elem(L), !, ir_elem_assign(L, R, S), ir_expr(S, V, LT).   % an own array's element: the old one freed
 ir_expr(assign('=', L, R), V, LT) :- !,
     ir_lval(L, Slot, LT), ir_expr(R, V0, RT), ir_convert(V0, RT, LT, V), ir_store_slot(Slot, LT, V).
 ir_expr(assign(Op, L, R), V, LT) :- !,
@@ -421,7 +426,7 @@ ir_expr(bin('||', A, B), V, T) :- !, ir_int(T),
 ir_expr(bin(Op, A, B), V, T) :- ir_cmp_op(bin(Op, A, B), _), !, ir_int(T), ir_expr_i1(bin(Op, A, B), C), ir_bool(C, V).
 ir_expr(bin(Op, A, B), V, T) :- !, ir_expr(A, VA, TA), ir_binary(Op, VA, TA, B, V, T).
 ir_expr(neg(E), V, T) :- !, ir_expr(E, V0, T0), ccl_promote(T0, T), ir_convert(V0, T0, T, V1), ir_type(T, LL),
-    ir_fresh(V), ( ir_is_fp(T) -> ir_ins([V, ' = fneg ', LL, ' ', V1]) ; ir_ins([V, ' = sub ', LL, ' 0, ', V1]) ).
+    ir_fresh(V), ( ir_is_fp(T) -> ir_ins([V, ' = fneg ', LL, ' ', V1]) ; ir_signed(T) -> ir_ins([V, ' = sub nsw ', LL, ' 0, ', V1]) ; ir_ins([V, ' = sub ', LL, ' 0, ', V1]) ).
 ir_expr(pos(E), V, T) :- !, ir_expr(E, V, T).
 ir_expr(bitnot(E), V, T) :- !, ir_expr(E, V0, T0), ccl_promote(T0, T), ir_convert(V0, T0, T, V1), ir_type(T, LL), ir_fresh(V), ir_ins([V, ' = xor ', LL, ' ', V1, ', -1']).
 ir_expr(not(E), V, T) :- !, ir_int(T), ir_cond(E, C), ir_fresh(C1), ir_ins([C1, ' = xor i1 ', C, ', true']), ir_bool(C1, V).
@@ -444,6 +449,7 @@ ir_expr(cond(C, A, B), V, T) :- !,
     ir_block(LF), ir_expr(B, VB0, TB1), ir_convert(VB0, TB1, T, VB), ir_cur_label(LF1), ir_end(['br label %', LE]),
     ir_block(LE), ir_type(T, LL), ir_fresh(V), ir_ins([V, ' = phi ', LL, ' [ ', VA, ', %', LT1, ' ], [ ', VB, ', %', LF1, ' ]']).
 ir_expr(comma(A, B), V, T) :- !, ir_expr(A, _, _), ir_expr(B, V, T).
+ir_expr(move(E), V, T) :- ir_own_elem(E), !, ir_lval(E, Slot, T), ir_load_slot(Slot, T, V), ir_store_slot(Slot, T, null).   % out of an own array: the slot nulled
 ir_expr(move(E), V, T) :- !, ir_expr(E, V, T).                        % a move is the value; the checker did the rest
 ir_expr(compound_lit(T, Init), V, T1) :- !,
     ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E) ; T1 = T ).
@@ -491,10 +497,14 @@ ir_decayed(T, D) :- ccl_resolve_type(T, T1), ( T1 = arr(_, E) -> D = ptr([], E) 
 ir_ptr_add(Op, P, PT, I, IT, V) :-
     ir_elem(PT, E), ir_type(E, EL), ir_convert(I, IT, base([], [long]), I1),
     ( Op == '-' -> ir_fresh(N), ir_ins([N, ' = sub i64 0, ', I1]) ; N = I1 ),
-    ir_fresh(V), ir_ins([V, ' = getelementptr ', EL, ', ptr ', P, ', i64 ', N]).
-ir_arith_op('+', T, Ins) :- ( ir_is_fp(T) -> Ins = fadd ; Ins = add ).
-ir_arith_op('-', T, Ins) :- ( ir_is_fp(T) -> Ins = fsub ; Ins = sub ).
-ir_arith_op('*', T, Ins) :- ( ir_is_fp(T) -> Ins = fmul ; Ins = mul ).
+    ir_fresh(V), ir_ins([V, ' = getelementptr inbounds ', EL, ', ptr ', P, ', i64 ', N]).
+%% signed overflow is undefined in C, so signed integer arithmetic is `nsw':
+%% LLVM then widens loop counters and drops the sign extensions before an
+%% index (every address is `inbounds' for the same reason: past the object
+%% is undefined too); together a third of a B-tree's search time
+ir_arith_op('+', T, Ins) :- ( ir_is_fp(T) -> Ins = fadd ; ir_signed(T) -> Ins = 'add nsw' ; Ins = add ).
+ir_arith_op('-', T, Ins) :- ( ir_is_fp(T) -> Ins = fsub ; ir_signed(T) -> Ins = 'sub nsw' ; Ins = sub ).
+ir_arith_op('*', T, Ins) :- ( ir_is_fp(T) -> Ins = fmul ; ir_signed(T) -> Ins = 'mul nsw' ; Ins = mul ).
 ir_arith_op('/', T, Ins) :- ( ir_is_fp(T) -> Ins = fdiv ; ir_signed(T) -> Ins = sdiv ; Ins = udiv ).
 ir_arith_op('%', T, Ins) :- ( ir_is_fp(T) -> Ins = frem ; ir_signed(T) -> Ins = srem ; Ins = urem ).
 ir_arith_op('&', _, and). ir_arith_op('|', _, or). ir_arith_op('^', _, xor). ir_arith_op('<<', _, shl).
@@ -504,11 +514,73 @@ ir_arith_op('>>', T, Ins) :- ( ir_signed(T) -> Ins = ashr ; Ins = lshr ).
 ir_step(E, Op, When, V, T) :-
     ir_lval(E, Slot, T), ir_type(T, LL), ir_load_slot(Slot, T, Cur),
     ir_fresh(New),
-    (   ir_is_ptr(T) -> ir_elem(T, El), ir_type(El, ELL), ( Op == add -> D = 1 ; D = -1 ), ir_ins([New, ' = getelementptr ', ELL, ', ptr ', Cur, ', i64 ', D])
+    (   ir_is_ptr(T) -> ir_elem(T, El), ir_type(El, ELL), ( Op == add -> D = 1 ; D = -1 ), ir_ins([New, ' = getelementptr inbounds ', ELL, ', ptr ', Cur, ', i64 ', D])
     ;   ir_is_fp(T) -> ( Op == add -> F = fadd ; F = fsub ), ir_ins([New, ' = ', F, ' ', LL, ' ', Cur, ', 1.0'])
+    ;   ir_signed(T) -> ir_ins([New, ' = ', Op, ' nsw ', LL, ' ', Cur, ', 1'])
     ;   ir_ins([New, ' = ', Op, ' ', LL, ' ', Cur, ', 1']) ),
     ir_store_slot(Slot, T, New),
     ( When == pre -> V = New ; V = Cur ).
+
+%% ---- own arrays: the drains the source did not write ---------------------------------------
+%% `own node *c[4]' holds owners the check cannot tell apart, so the lowering
+%% keeps them: every non-null element freed (its own struct drained first)
+%% when the struct holding the array is freed -- through one generated
+%% function per struct with an own array, ccl_drain_<tag>(T *x), recursive as
+%% the type is -- or when a local array's scope ends (a defer registered at
+%% the declaration); the old element freed when one is overwritten; the slot
+%% nulled when an element is moved out or handed to a consumer.
+ir_own_elem(index(A, _)) :- ccl_type_of(A, AT), AT \== unknown, ck_own_array_type(AT).
+ir_needs_drain(T) :- ccl_resolve_type(T, T1), T1 = base(_, [struct(_, _)]), ck_has_own_array(T1).
+ir_struct_tag(T, Tag) :- ccl_resolve_type(T, base(_, [struct(Tag, _)])).
+ir_drain_name(T, D) :- ir_struct_tag(T, Tag), atom_concat(ccl_drain_, Tag, D).
+%% the functions: one per tagged struct in the symbol table with an own array
+ir_drain_functions(Fns) :-
+    nb_getval('$ccl_tags', Tags),
+    findall(F, ( member(Tag-Ms, Tags), Tag \== anon, Ms \== none, T = base([], [struct(Tag, Ms)]), ck_has_own_array(T), ir_drain_function(Tag, Ms, F) ), Fns).
+ir_drain_function(Tag, Ms, function(0, static, base([], [void]), D, [param(ptr([], base([], [struct(Tag, none)])), x)], false, block(Loops))) :-
+    atom_concat(ccl_drain_, Tag, D), ir_array_loops(Ms, id(x), arrow, Loops).
+ir_array_loops([], _, _, []).
+ir_array_loops([member(MT, F, _)|Ms], Base, How, Loops) :-
+    ( How == arrow -> P = arrow(Base, F) ; P = member(Base, F) ),
+    (   F \== anon, ck_own_array_type(MT) -> ir_drain_loop(P, MT, Loop), Loops = [Loop|Loops1]
+    ;   F \== anon, ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ck_has_own_array(MT1) -> ccl_members_of(MT1, Sub), ir_array_loops(Sub, P, member, L0), append(L0, Loops1, Loops)
+    ;   Loops = Loops1 ),
+    ir_array_loops(Ms, Base, How, Loops1).
+%% for (int i = 0; i < N; i++) if (a[i]) { ccl_drain_T(a[i]); free(a[i]); }
+ir_drain_loop(Path, T, for(0, decl(base([], [int]), [var(I, base([], [int]), int(0))]), bin('<', id(I), int(N)), postinc(id(I)), if(0, Elem, block(Calls), none))) :-
+    ccl_resolve_type(T, arr(NE, ET)), ck_const(NE, N), ccl_gensym(i, I), Elem = index(Path, id(I)),
+    (   ccl_resolve_type(ET, ptr(_, PT)), ir_needs_drain(PT), ir_drain_name(PT, D) -> Calls = [expr(0, call(id(D), [Elem])), expr(0, drain_free(Elem))]
+    ;   Calls = [expr(0, drain_free(Elem))] ).
+%% free(p) of a struct with an own array: the drain first
+ir_drain_free(E, S) :-
+    ck_strip_move(E, E0), ccl_type_of(E0, T), T \== unknown, ccl_resolve_type(T, ptr(_, PT)), ir_needs_drain(PT), ir_drain_name(PT, D),
+    (   E = id(_) -> S = stmt_expr(block([expr(0, call(id(D), [E])), expr(0, drain_free(E))]))
+    ;   ccl_gensym(drain, Tmp), ccl_base_of(T, Base),
+        S = stmt_expr(block([declaration(0, none, Base, [var(Tmp, T, E)]), expr(0, call(id(D), [id(Tmp)])), expr(0, drain_free(id(Tmp)))])) ).
+%% an element handed to a consumer (free, fclose, an own parameter) is moved out: the slot nulled
+ir_moved_args(F, Args, Args1) :-
+    (   F = id(_) -> Callee = F
+    ;   ccl_type_of(F, FT), FT \== unknown, ck_fn_params(FT, Ps) -> Callee = params(Ps)
+    ;   Callee = none ),
+    ir_moved_args_(Args, Callee, 1, Args1).
+ir_moved_args_([], _, _, []).
+ir_moved_args_([A|As], Callee, I, [A1|As1]) :-
+    ( Callee \== none, A = index(_, _), ir_own_elem(A), ck_consumes(Callee, I) -> A1 = move(A) ; A1 = A ),
+    I1 is I + 1, ir_moved_args_(As, Callee, I1, As1).
+%% a[i] = R: ({ T **p = &a[i]; T *n = R; if (*p) { drain(*p); free(*p); } *p = n; })
+ir_elem_assign(L, R, stmt_expr(block([declaration(0, none, Base, [var(P, ptr([], ET), addr(L))]),
+                                      declaration(0, none, Base, [var(N, ET, R)]),
+                                      if(0, deref(id(P)), block(Calls), none),
+                                      expr(0, assign('=', deref(id(P)), id(N)))]))) :-
+    L = index(A, _), ccl_type_of(A, AT), ccl_resolve_type(AT, arr(_, ET)), ccl_base_of(ET, Base),
+    ccl_gensym(slot, P), ccl_gensym(new, N),
+    (   ccl_resolve_type(ET, ptr(_, PT)), ir_needs_drain(PT), ir_drain_name(PT, D) -> Calls = [expr(0, call(id(D), [deref(id(P))])), expr(0, drain_free(deref(id(P))))]
+    ;   Calls = [expr(0, drain_free(deref(id(P))))] ).
+%% a local own array: drained at every exit of its scope, as a defer
+ir_array_defers([], _).
+ir_array_defers([var(N, T, _)|Vs], Sto) :-
+    ( Sto \== extern, ck_own_array_type(T) -> ir_drain_loop(id(N), T, Loop), ir_defer_push(block([Loop])) ; true ),
+    ir_array_defers(Vs, Sto).
 
 %% ---- calls ------------------------------------------------------------------------------
 ir_call(id(N), Args, V, RT) :-
@@ -559,7 +631,7 @@ ir_lval(id(N), Addr, T) :- !, ( ir_lookup(N, loc(Addr, T)) -> true ; ir_fail(und
 ir_lval(deref(E), Addr, T) :- !, ir_expr(E, Addr, PT), ir_elem(PT, T).
 ir_lval(index(A, I), Addr, T) :- !,
     ir_expr(A, P, PT), ir_elem(PT, T), ir_type(T, LL), ir_expr(I, IV, IT), ir_convert(IV, IT, base([], [long]), I1),
-    ir_fresh(Addr), ir_ins([Addr, ' = getelementptr ', LL, ', ptr ', P, ', i64 ', I1]).
+    ir_fresh(Addr), ir_ins([Addr, ' = getelementptr inbounds ', LL, ', ptr ', P, ', i64 ', I1]).
 ir_lval(member(E, N), Slot, T) :- !,
     ( ir_lval(E, Base0, ST) -> ir_slot_addr(Base0, Base) ; ir_expr(E, SV, ST), ir_type(ST, SLL), ir_fresh(Base), ir_alloca_typed(Base, ST), ir_ins(['store ', SLL, ' ', SV, ', ptr ', Base]) ),
     ir_member_slot(Base, ST, N, Slot, T).
@@ -581,7 +653,7 @@ ir_init(Slot, T, E) :-
     ;   ir_expr(E, V0, ET), ir_convert(V0, ET, T, V), ir_store_slot(Slot, T, V) ).
 ir_init_string(Addr, arr(_, _), S) :- append(S, [0], Cs), ir_init_chars(Cs, Addr, 0).
 ir_init_chars([], _, _).
-ir_init_chars([C|Cs], Addr, I) :- ir_fresh(P), ir_ins([P, ' = getelementptr i8, ptr ', Addr, ', i64 ', I]), ir_ins(['store i8 ', C, ', ptr ', P]), I1 is I + 1, ir_init_chars(Cs, Addr, I1).
+ir_init_chars([C|Cs], Addr, I) :- ir_fresh(P), ir_ins([P, ' = getelementptr inbounds i8, ptr ', Addr, ', i64 ', I]), ir_ins(['store i8 ', C, ', ptr ', P]), I1 is I + 1, ir_init_chars(Cs, Addr, I1).
 ir_init_items([], _, _, _).
 ir_init_items([item(Ds, V)|Is], Addr, T, I) :-
     ccl_resolve_type(T, T1),
@@ -590,7 +662,7 @@ ir_init_items([item(Ds, V)|Is], Addr, T, I) :-
     ;   I0 = I, Ds1 = [] ),
     ir_init_slot(Addr, T1, I0, Ds1, V), I1 is I0 + 1, ir_init_items(Is, Addr, T, I1).
 ir_init_slot(Addr, arr(_, El), I, Ds, V) :- !,
-    ir_type(El, LL), ir_fresh(P), ir_ins([P, ' = getelementptr ', LL, ', ptr ', Addr, ', i64 ', I]), ir_init_sub(P, El, Ds, V).
+    ir_type(El, LL), ir_fresh(P), ir_ins([P, ' = getelementptr inbounds ', LL, ', ptr ', Addr, ', i64 ', I]), ir_init_sub(P, El, Ds, V).
 ir_init_slot(Addr, ST, I, Ds, V) :-
     ccl_members_of(ST, Ms), I1 is I + 1, ( ccl_nth(I1, Ms, member(MT, N, _)) -> true ; ir_fail(initializer(I)) ),
     ir_member_slot(Addr, ST, N, Slot, MT), ir_init_sub(Slot, MT, Ds, V).
@@ -602,7 +674,7 @@ ir_stmts([]).
 ir_stmts([S|Ss]) :- ir_stmt(S), ir_stmts(Ss).
 ir_stmt(block(Is)) :- !, ir_env_push, ir_stmts(Is), ir_run_defers(1), ir_env_pop.
 ir_stmt('$splice'(Is)) :- !, ir_stmts(Is).
-ir_stmt(declaration(_, Sto, _, Vs)) :- !, ( Sto == static -> ir_static_locals(Vs) ; ir_locals(Vs, Sto) ).
+ir_stmt(declaration(_, Sto, _, Vs)) :- !, ( Sto == static -> ir_static_locals(Vs) ; ir_locals(Vs, Sto), ir_array_defers(Vs, Sto) ).
 ir_stmt(typedef(_, _)) :- !.
 ir_stmt(declare(_, _)) :- !.
 ir_stmt(directive(_, _)) :- !.

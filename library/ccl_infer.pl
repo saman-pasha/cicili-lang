@@ -227,3 +227,4 @@ ccl_tie_of(fn(R, _, _), Y) :- !, ccl_tie_of(R, Y).
 ccl_has_own_member(T) :- ccl_members_of(T, Ms), member(member(MT, _, _), Ms), ( ccl_own_quals(MT) -> true ; ccl_has_own_member(MT) ), !.
 ccl_own_quals(ptr(Q, B)) :- ( memberchk(own, Q) ; B = base(Q2, _), memberchk(own, Q2) ), !.
 ccl_own_quals(base(Q, _)) :- memberchk(own, Q), !.
+ccl_own_quals(arr(_, T)) :- ccl_own_quals(T), !.

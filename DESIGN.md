@@ -137,8 +137,13 @@ it is done (see below); the checker and the lowering take the AST from here.
   ownership path or the program is refused: a plain pointer holding fresh
   memory is followed to its consume point, and a slot the check cannot
   follow takes no such value; a result may be tied to static storage; a
-  null test refines an owner. `test/c/run/btree.c`, a B-tree, is the
-  ownership test case.
+  null test refines an owner. An own array of constant bound, `own node
+  *C[4]`, is one owner whose elements are null or owned, an invariant the
+  lowering keeps with generated drains -- at the holder's free, at a
+  local's scope end, at an overwrite -- and the check completes: no borrow
+  stored, zeroed at birth, behind an own pointer in a tagged struct, an own
+  pointer nowhere its owner cannot be named. `test/c/run/btree.c`, a
+  B-tree on such an array, is the ownership test case.
   **`defer` is decided (owner):** scope-bound, like
   Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
   each scope a cleanup block running its defers last-first and branching
