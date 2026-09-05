@@ -38,7 +38,7 @@ need() { [ $# -ge 2 ] || { echo "$me: error: argument to '$1' is missing" >&2; e
 q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/\\\\'/g")"; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version) "$C" --local query "use_module(library(cicili)), ccl_version(V), ( catch(ccl_cocolog_version(CV), _, fail) -> true ; CV = '?' ), ( catch(use_module(library(ccl_llvm)), _, fail), catch(ccl_llvm_version(L), _, fail) -> true ; L = 'clang as the back end' ), write('cicili-lang '), write(V), write(' (cocolog '), write(CV), write('; LLVM '), write(L), write(')'), nl" 2>/dev/null | grep -a "^cicili-lang"; exit 0 ;;
+    --version) "$C" --local query "use_module(library(cicili)), ccl_version(V), ( catch(ccl_cocolog_version(CV), _, fail) -> true ; CV = '?' ), ( catch(use_module(library(ccl_llvm)), _, fail), catch(ccl_llvm_version(L), _, fail) -> true ; L = 'not built' ), write('cicili-lang '), write(V), write(' (cocolog '), write(CV), write('; LLVM '), write(L), write(')'), nl" 2>/dev/null | grep -a "^cicili-lang"; exit 0 ;;
     -h|--help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -c) opts="$opts compile_only," ;;
     -S) opts="$opts assembly," ;;

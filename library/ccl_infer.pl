@@ -85,7 +85,7 @@ ccl_member_type(T, N, MT) :- ccl_members_of(T, Ms), memberchk(member(MT, N, _), 
 
 %% ---- classes ----------------------------------------------------------------------
 ccl_is_pointer(T) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, _) ; T1 = arr(_, _) ; T1 = block(_, _) ), !.
-ccl_is_float(T) :- ccl_resolve_type(T, base(_, S)), ( memberchk(double, S) ; memberchk(float, S) ), !.
+ccl_is_float(T) :- ccl_resolve_type(T, base(_, S)), ( memberchk(double, S) ; memberchk(float, S) ; memberchk('_Float16', S) ), !.
 ccl_is_integer(T) :- ccl_resolve_type(T, base(_, S)), \+ memberchk(double, S), \+ memberchk(float, S), \+ memberchk(void, S),
     ( memberchk(int, S) ; memberchk(char, S) ; memberchk(short, S) ; memberchk(long, S) ; memberchk(signed, S)
     ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; S = [enum(_, _)] ), !.
@@ -174,7 +174,7 @@ ccl_size_align(base(_, S), N, A) :- ccl_basic_size(S, N), !, A = N.
 ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N, A).
 ccl_size_align(base(_, [union(_, Ms)]), N, A) :- Ms \== none, !, ccl_union_layout(Ms, 0, 1, N, A).
 ccl_size_align(base(_, [enum(_, _)]), 4, 4) :- !.
-ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; ccl_count(long, S, 2) -> N = 8
+ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; memberchk('_Float16', S) -> N = 2 ; ccl_count(long, S, 2) -> N = 8
     ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1
     ; memberchk(int, S) -> N = 4 ; memberchk(unsigned, S) -> N = 4 ; memberchk(signed, S) -> N = 4 ; memberchk(void, S) -> N = 1 ; fail ).
 ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).

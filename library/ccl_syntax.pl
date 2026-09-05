@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(22).
+ccl_reader_version(23).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -105,11 +105,14 @@ ccl_block_comment(L, L) --> [].                    % an unterminated comment end
 
 %% a token, and the line after it
 %% 35 is #, 34 is ", 39 is ', 92 is \ -- numbers, because 0'" and 0'' read badly
+ccl_token(L, L, tok(p, '##', L))     --> [35, 35], { nb_getval('$ccl_hash', punct) }, !.      % inside a macro body (the preprocessor's mode): the operators
+ccl_token(L, L, tok(p, '#', L))      --> [35], { nb_getval('$ccl_hash', punct) }, !.
 ccl_token(L0, L, tok(cocolog, Text, L0)) --> [35], ccl_pp_line(L0, L1, Cs), { ccl_trim(Cs, T), atom_codes(cocolog, T) }, !,   % #cocolog ... #end: the lines between, raw
     ccl_cocolog_body(L1, L, Body), { atom_codes(Text, Body) }.
 ccl_token(L0, L, tok(pp, Text, L0)) --> [35], !, ccl_pp_line(L0, L, Cs), { atom_codes(Text, [35|Cs]) }.
 ccl_token(L, L, tok(str, S, L))     --> [34], !, ccl_str_body(S).
 ccl_token(L, L, tok(chr, C, L))     --> [39], !, ccl_chr_body(C), [39].
+ccl_token(L, L, tok(num, Cs, L))    --> [D], { ccl_digit(D), nb_getval('$ccl_hash', punct) }, !, ccl_pp_number(Ds), { Cs = [D|Ds] }.   % the preprocessor's mode: a number as spelled, suffix and all, for `##'
 ccl_token(L, L, T)                  --> ccl_number(L, T), !.
 ccl_token(L, L, T)                  --> ccl_word(L, T), !.
 ccl_token(L, L, tok(p, P, L))       --> ccl_punct(P).
@@ -176,6 +179,10 @@ ccl_octal_value([D|Ds], N0, N) :- N1 is N0 * 8 + D - 0'0, ccl_octal_value(Ds, N1
 
 ccl_word(L, T) --> [C], { ccl_alpha(C) }, ccl_alnums(Cs), { atom_codes(A, [C|Cs]), ( ccl_keyword(A) -> T = tok(kw, A, L) ; T = tok(id, A, L) ) }.
 ccl_alnums([C|Cs]) --> [C], { ccl_alnum(C) }, !, ccl_alnums(Cs).
+%% a pp-number: digits, letters, dots, and a sign after an exponent letter
+ccl_pp_number([E, S|Cs]) --> [E, S], { ( E =:= 0'e ; E =:= 0'E ; E =:= 0'p ; E =:= 0'P ), ( S =:= 0'+ ; S =:= 0'- ) }, !, ccl_pp_number(Cs).
+ccl_pp_number([C|Cs]) --> [C], { ( ccl_alnum(C) ; C =:= 0'. ) }, !, ccl_pp_number(Cs).
+ccl_pp_number([]) --> [].
 ccl_alnums([]) --> [].
 ccl_alpha(C) :- ( C >= 0'a, C =< 0'z ; C >= 0'A, C =< 0'Z ; C =:= 0'_ ).
 ccl_alnum(C) :- ( ccl_alpha(C) ; ccl_digit(C) ).
@@ -185,7 +192,7 @@ ccl_keyword(K) :- ccl_lang(cpp), ccl_cpp_keyword(K).
 ccl_c_keyword(K) :- memberchk(K, [auto, break, case, char, const, continue, default, do, double, else,
     enum, extern, float, for, goto, if, inline, int, long, register, restrict, return, short,
     signed, sizeof, static, struct, switch, typedef, union, unsigned, void, volatile, while,
-    '_Bool', '_Complex', '_Noreturn', '_Atomic', '_Static_assert', '_Thread_local']).
+    '_Bool', '_Complex', '_Noreturn', '_Atomic', '_Static_assert', '_Thread_local', '_Float16']).
 %% ---- C++ (M5, cicili++): the mode -------------------------------------------
 %% '$ccl_lang' is c or cpp: from the file's extension (ccl_read_file: .cpp .cc
 %% .cxx .C .hpp .hh .hxx) or forced by the driver (cicili++ reads everything as
@@ -335,6 +342,9 @@ ccl_collect_item(template(_, _, I), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collec
 ccl_collect_item(_, D, D, T, T, G, G, E, E).
 ccl_collect_unit(unit(Is), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_items(Is, D0, D, T0, T, G0, G, E0, E).
 ccl_collect_unit(partial(U, _, _), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_unit(U, D0, D, T0, T, G0, G, E0, E).
+ccl_collect_unit(summary(F), D0, D, T0, T, G0, G, E0, E) :- !,                  % a C++ library header's summary (ccl_include)
+    ccl_sum_load(F, Ds, Ts, Gs, Es, Tmpls, Names), append(Ds, D, D0), append(Ts, T, T0), append(Gs, G, G0), append(Es, E, E0),
+    ccl_note_templates(Tmpls), ccl_add_envs(Names).
 ccl_collect_unit(_, D, D, T, T, G, G, E, E).
 ccl_collect_vars([], D, D, G, G, E, E).
 ccl_collect_vars([var(N, Ty, _)|Vs], [N-Ty|D0], D, G0, G, E0, E) :- ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_vars(Vs, D0, D, G1, G, E1, E).
@@ -646,7 +656,7 @@ ccl_specs(_, _, St, Q0, S0, St, Q, S) --> [], { reverse(Q0, Q), reverse(S0, S) }
 
 ccl_storage(K) :- memberchk(K, [typedef, extern, static, auto, register, inline, '_Noreturn', '_Thread_local', mutable, thread_local, explicit, virtual, friend]).
 ccl_qualifier(K) :- memberchk(K, [const, volatile, restrict, '_Atomic', constexpr]).
-ccl_basic_type(K) :- memberchk(K, [void, char, short, int, long, float, double, signed, unsigned, '_Bool', '_Complex', bool, wchar_t, char16_t, char32_t]).
+ccl_basic_type(K) :- memberchk(K, [void, char, short, int, long, float, double, signed, unsigned, '_Bool', '_Complex', '_Float16', bool, wchar_t, char16_t, char32_t]).   % _Float16: the SDK's math.h, half
 
 %% Scope is file, block, param, member or typename. `name x' is a type
 %% anywhere. `name *' is a type wherever an expression cannot stand: at file
@@ -1000,11 +1010,17 @@ ccl_postfix(E) --> ccl_primary(P), ccl_postfix_(P, E).
 ccl_postfix_(id(T), E) --> ccl_cpp, ccl_peek(p, '{'), { nb_getval('$ccl_env', G), ccl_known_typedef(G, T) }, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(id(T), Vs), E).   % T{args}, a temporary
 ccl_postfix_(A, E) --> ccl_p('['), !, ccl_expr(I), ccl_p(']'), ccl_postfix_(index(A, I), E).
 ccl_postfix_(A, E) --> ccl_p('('), !, ccl_args(As), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
-ccl_postfix_(A, E) --> ccl_p('.'), !, ccl_id(N), ccl_postfix_(member(A, N), E).
-ccl_postfix_(A, E) --> ccl_p('->'), !, ccl_id(N), ccl_postfix_(arrow(A, N), E).
+ccl_postfix_(A, E) --> ccl_p('.'), !, ccl_member_name(N), ccl_postfix_(member(A, N), E).
+ccl_postfix_(A, E) --> ccl_p('->'), !, ccl_member_name(N), ccl_postfix_(arrow(A, N), E).
+%% C++: x.item<float>(), a member template with its arguments -- the member's
+%% name is tmpl(N, Args) when the arguments read as such, ending before what a
+%% call or a closing paren starts (`x.n < y' scans to its `;' and is not one)
+ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_id(N), ccl_targs_ahead, { nb_getval('$ccl_env', Env) }, ccl_targs(Env, As), !.
+ccl_member_name(N) --> ccl_id(N).
 ccl_postfix_(A, E) --> ccl_p('++'), !, ccl_postfix_(postinc(A), E).
 ccl_postfix_(A, E) --> ccl_p('--'), !, ccl_postfix_(postdec(A), E).
 ccl_postfix_(E, E) --> [].
+ccl_args([A|As]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).   % C++: f({1, 2}), a braced list as an argument
 ccl_args([A|As]) --> ccl_assign_expr(A), !, ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).
 ccl_item_values([], []).
 ccl_item_values([item(_, V)|Is], [V|Vs]) :- ccl_item_values(Is, Vs).

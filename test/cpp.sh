@@ -21,6 +21,8 @@ echo "-- cicili++, the command"
 cd "$D"
 got=$("$ROOT/bin/cicili++" "$ROOT/test/cpp/hello.cpp" -o hello 2>&1 && ./hello)
 if [ "$got" = "hello, cicili++" ]; then echo "ok   cicili++ hello.cpp -o hello: a binary that runs, linked through c++"; else echo "FAIL cicili++ hello.cpp -o hello"; echo "     got  $got"; failures=$((failures + 1)); fi
+s1=$(date +%s); "$ROOT/bin/cicili++" "$ROOT/test/cpp/hello.cpp" -o hello2 >/dev/null 2>&1; t1=$(( $(date +%s) - s1 )); n=$(ls "$HOME/.cicili/cpp/"*.sum 2>/dev/null | wc -l | tr -d ' ')
+if [ "$t1" -lt 8 ] && [ "$n" -ge 1 ]; then echo "ok   a second build reads stdio.h's summary from ~/.cicili/cpp, no preprocessing ($t1 s, $n summaries)"; else echo "FAIL a second build is served from the summary cache"; echo "     got  $t1 s, $n summaries"; failures=$((failures + 1)); fi
 got=$("$ROOT/bin/cicili++" -fsyntax-only "$ROOT/test/cpp/classes.cpp" 2>&1; echo "exit $?")
 if [ "$got" = "exit 0" ]; then echo "ok   cicili++ -fsyntax-only reads a file of classes, and says nothing"; else echo "FAIL cicili++ -fsyntax-only classes.cpp"; echo "     got  $got"; failures=$((failures + 1)); fi
 if [ "$failures" -eq 0 ]; then echo "GREEN: cicili++"; else echo "RED: $failures failure(s)"; exit 1; fi

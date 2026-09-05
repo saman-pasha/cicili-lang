@@ -37,6 +37,14 @@ what runs today.
   `sret` clang uses, proven against clang-built code both ways --
   `defer` -- lowered to LLVM IR and run. `test/compile.sh`: eighteen
   programs built, run and checked, GREEN.
+* **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
+  anywhere (owner's rule): a header the raw reader cannot take goes
+  through `library(ccl_pp)` -- directives, conditional groups, macro
+  expansion with `#`, `##` and `__VA_ARGS__`, `#include_next`, the
+  built-ins, the target's predefined macros as data -- and the inclusion
+  path comes from the SDK's and LLVM's conventional places. `<stdio.h>`'s
+  closure of 38 files in two seconds, the declarations the same as
+  clang's; GREEN in every gate, `test/c/run/pp.c` the proof.
 * **M4 -- the cache.** Every file read whole is in the user's store,
   `~/.cicili/KB`, keyed by its time and the reader's version, and so is
   the IR of every file built, keyed by everything it came from; a rebuild
@@ -100,7 +108,7 @@ node:
 | `Shape::scale(…) { }`, `Counter::~Counter() { }`, `int Counter::made = 0;` | a `function` or `var` named `scoped([Shape], scale)`, `dtor_def(L, C, Quals, Body)`, `ctor_def(…)` |
 | `operator+`, `operator[]`, `operator+=` | the name `operator('+')` |
 | `T &x`, `T &&x`, `int f(int k = 1)` | `ref(Q, T)`, `rref(Q, T)`, `param(T, k, int(1))` |
-| `A::b`, `::g`, `std::vector<int>`, `Buf<int, 4>`, `max2<int>(1, 2)` | `scoped([A], b)`, `scoped([global], g)`, `scoped([std], tmpl(vector, [int]))`, `tmpl('Buf', [int, int(4)])`, `call(tmpl(max2, [int]), …)` |
+| `A::b`, `::g`, `std::vector<int>`, `Buf<int, 4>`, `max2<int>(1, 2)`, `t.item<float>()` | `scoped([A], b)`, `scoped([global], g)`, `scoped([std], tmpl(vector, [int]))`, `tmpl('Buf', [int, int(4)])`, `call(tmpl(max2, [int]), …)`, `call(member(t, tmpl(item, [float])), [])` |
 | `Shape s(2, 3)`, `Square q{4}`, `new T(args)`, `new T[n]`, `delete p`, `delete[] p` | `var(s, T, ctor(Args))`, `init(…)`, `new(T, Args)`, `new_array(T, N)`, `delete(E)`, `delete_array(E)` |
 | `this`, `true`, `nullptr`, `static_cast<T>(e)`, `unsigned(k)` | `this`, `bool(true)`, `nullptr`, `ccast(static, T, E)`, `ccast(functional, T, E)` |
 | `auto x = e;` | inferred as `:=` infers, else `var(x, base([], [auto]), E)` |
@@ -109,16 +117,26 @@ node:
 | `[k, &t](int a) mutable -> int { }` | `lambda([cap(val, k), cap(ref, t)], Params, Ret, Body)` |
 | `enum class Color : int { … }` | `enum_class('Color', Enumerators)` |
 
-A C++ library header, `<cstdio>` and kin, is flattened by one `clang++ -E`
-run and read once, as far as it reads, never raw: a `<sstream>` attempted
-raw, header by header, took ten minutes. And `cicili++` keeps everything in
-memory: the flattened headers are thousands of items each, and cocolog's
-store takes a writing process's rows at a cost that follows their count,
-never reclaiming a dead one -- a summary cache is the way there, so a run
-reads its headers again, about two seconds a header. `test/cpp.sh` is the
-gate: `test/cpp.pl`'s 21 checks over `test/cpp/*.cpp`, Cicili's own
-emitted C++ (`objects.cpp`, `emit_report.cpp` with `<sstream>`) read
-whole, `hello.cpp` built and run.
+A C++ library header, `<cstdio>` and kin, is flattened by one run of the
+preprocessor (`library(ccl_pp)`, the same one C's headers get; `_Pragma`
+operators dropped as `clang -E` drops them) and read once, as far as it
+reads, never raw: a `<sstream>` attempted raw, header by header, took ten
+minutes. What it contributes is its
+declarations, not its text, so it is **summarized to one file**,
+`~/.cicili/cpp/<name>-<fold>.sum`: the functions and globals, typedefs,
+tags with their members (bodies dropped), enumerators, template and type
+names the reader found, keyed by the reader's version and the time of
+every file the preprocessor pulled; the next run loads the summary in
+place of preprocessing and reading forty thousand lines, a second build of
+`hello.cpp` taking seconds where the first took thirty. cocolog's store is not
+involved, since it cannot hold units that size (a finding in
+`CLAUDE.md`), so `cicili++` runs `--no-kb`. `test/cpp.sh` is the gate:
+`test/cpp.pl`'s 21 checks over `test/cpp/*.cpp`, the six C++ files of
+Cicili's own test suite -- `objects.cpp`, `emit_report.cpp` with
+`<sstream>`, `specialise.cpp`, `syntax.cpp` with `<vector>` and
+`<stdexcept>`, `torch.cpp` and `torch-fragment.cpp` over a libtorch stub --
+read whole, `hello.cpp` built and run, and built again from the
+summaries: 30 seconds served, two minutes the first time.
 
 ## The compiler, in four predicates
 
@@ -136,9 +154,12 @@ entry block, C's usual conversions, `defer` as the static cleanup chain,
 structs laid out as LLVM named types, calls through the prototypes the
 headers gave. `cicili_compile` parses, verifies, optimizes and emits through
 the embedded LLVM, `library(ccl_llvm)`, a cocolog module over `llvm-c` built
-by `module/build-llvm.sh` from Homebrew's LLVM; where that module is not
-built it goes through `clang -c -x ir`, the same backend by another door.
-`cicili_link` drives the system linker. Errors: `not_lowered(What)` with the function,
+by `module/build-llvm.sh` from Homebrew's LLVM -- the whole back end
+(owner's rule: no clang and no LLVM binary is run, by the reader or the
+build; where the module is not built the compile is the error
+`no_embedded_llvm`). `cicili_link` drives the system linker through `cc`
+(`c++` for cicili++), the one system tool left: `llvm-c` has no linker to
+embed. Errors: `not_lowered(What)` with the function,
 `compile_failed(Message)`, `link_failed(Message)`. `test/compile.sh` builds
 and runs the programs under `test/c/run/` and checks what they print and
 return.
@@ -206,12 +227,27 @@ The full AST vocabulary is at the top of `library/ccl_syntax.pl`.
 **An `#include` is found and read too.** Each one becomes
 `include(Line, Spec, file(Path, How, Unit))`: the header is found on the
 inclusion path -- the including file's directory for a quoted name, then
-`ccl_include_dir/1` facts, `$CICILI_INCLUDE`, and the toolchain's own list,
-asked of `clang -E -v` once -- and read with the same reader, recursively.
-`How` is `raw` when the file as written reads whole (a local header, a
-wrapper like this SDK's `stdio.h`); a system header full of conditionals is
-run through `clang -E -dD` and the result read, `preprocessed`, its
-`#define`s kept as directives. A header nowhere on the path is `missing`;
+`ccl_include_dir/1` facts, `$CICILI_INCLUDE`, and the toolchain's
+directories where the conventions put them, no tool run: the C++ library
+(`$LLVM`'s or Homebrew's `include/c++/v1`, else the SDK's), this
+compiler's own freestanding headers (`library/include`: `stddef.h`,
+`stdarg.h`, `stdbool.h`, `float.h`, `iso646.h`, `stdalign.h`,
+`stdnoreturn.h`), `/usr/local/include`, then the SDK (`$SDKROOT`, the
+Command Line Tools', Xcode's) or `/usr/include` -- and read with the same
+reader, recursively. `How` is `raw` when the file as written reads whole
+(a local header, a wrapper like this SDK's `stdio.h`); a system header
+full of conditionals goes through **the preprocessor, `library(ccl_pp)`,
+written in cocolog** -- directives, conditional groups with their
+constant expressions, `defined`, macro expansion with `#`, `##`,
+`__VA_ARGS__` and hide sets, `#include` and `#include_next` on the same
+path, `#pragma once`, `__has_include`, `__FILE__`/`__LINE__`/`__COUNTER__`,
+the target's predefined macros as data (both architectures, and C++'s) --
+and the result is read, `preprocessed`. It works line by line, lexing only
+the lines of the groups taken and a macro's body on its first use, and
+skips a guarded header on its second include; `<stdio.h>`'s closure of 38
+files takes two seconds. `__has_feature`, `__has_attribute` and kin
+answer 0 so a header takes its plainest path, `__has_builtin` 1 (libc++'s
+other branch is an `#error`). A header nowhere on the path is `missing`;
 a header that includes itself through another is cut as `cyclic(Path)`.
 The typedef names an included unit declares are known to the rest of the
 including file, and `ccl_declares(+Unit, +Name, -Item)` finds a declaration

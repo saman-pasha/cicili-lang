@@ -33,7 +33,7 @@ does the thing it is best at, and none is modified.
 | **cicili** | the LANGUAGE and its meaning: `func`, `struct`, `let`, `letin`, ownership, `maybe`/`either`, generics. Its `doc/DOC-C.md` and `doc/DOC-CPP.md` are the spec cicili-lang compiles to the same meaning. And it is the language any NATIVE piece of cicili-lang is written in — the LLVM binding and the driver are Cicili modules. | we read its docs and reuse its surface; we never edit its Common Lisp transpiler. cicili-lang is a second, independent back end for the same language: LLVM where the original is C. |
 | **cocolog** | the compiler's HOST. Every pass is cocolog clauses: the reader → an AST of terms, the type checker (unification), the ownership and lifetime checker (the "safe"), and the lowering to LLVM IR. Its DCG reads the surface; its store holds the symbol tables; the objects-and-modules module already here may structure the passes. | the compiler is a set of `.pl` files and, where a pass needs C speed, cocolog modules — all loaded through `COCOLOG_LIBRARY`, none of cocolog's own source changed. |
 | **ZiguratIP** | through cocolog's store: a PERSISTENT compilation cache. A module's checked AST and its emitted IR, keyed by the hash of its source, live in the store, so a rebuild recompiles only what changed — cocolog's suspend-to-store nature applied to compilation. | reached only as cocolog's backing store, never directly. A design proposal, not required for M0–M2. |
-| **LLVM** | the TARGET and the optimizer and the code generator. cicili-lang emits LLVM IR; LLVM lowers it to native code. | reached first as textual IR + `clang` as assembler/linker (PROVEN, see M0), later — if wanted — as an in-memory `llvm-c` binding written as a Cicili cocolog module, for optimization passes and object emission without shelling out. |
+| **LLVM** | the TARGET and the optimizer and the code generator. cicili-lang emits LLVM IR; LLVM lowers it to native code. | reached first as textual IR + `clang` as assembler/linker (PROVEN, see M0), since M2 as the in-memory `llvm-c` binding written as a Cicili cocolog module (`library(ccl_llvm)`: parse, verify, passes, object) -- and ONLY so: owner's rule (M5), no clang and no LLVM binary is run by anything here; the reader has its own preprocessor in cocolog, and the link through `cc` is the one system tool left, `llvm-c` having no linker. |
 
 ## The pipeline
 
@@ -51,7 +51,7 @@ Cicili source  ──reader──▶  AST (cocolog terms)
                                 │
                           emit  module.ll
                                 │
-                    clang module.ll  (LLVM backend: IR → native .o → link)
+             library(ccl_llvm)  (the embedded LLVM: IR → native .o; cc links)
                                 │
                              a binary
 ```
@@ -101,8 +101,8 @@ it is done (see below); the checker and the lowering take the AST from here.
   the static cleanup chain) built and run by `test/compile.sh`, which
   checks each program's output and exit code -- through the embedded
   LLVM, `library(ccl_llvm)`, a cocolog module over `llvm-c` (parse, verify,
-  target, passes, object), with `clang -c -x ir` as the door where the
-  module is not built.
+  target, passes, object), the only back end (the `clang -c -x ir` door
+  of M2 closed in M5 by the owner's rule).
 * **M3 — structs and the safe part. DONE.** Structs, scopes and `defer`
   lower (M2); the first ownership check is in: `own` pointers are linear,
   `move` hands them on, and use after move, the double free, a leak on any
@@ -185,11 +185,19 @@ it is done (see below); the checker and the lowering take the AST from here.
   constructors and their initializers, destructors, inheritance, operators,
   default arguments, references, `new`/`delete`, `this`, the casts,
   lambdas, range-for, try/catch/throw, `auto` by inference, enum class;
-  gated by `test/cpp.sh` (21 constructs, Cicili's emitted C++ read whole, a
-  C++ file that is C built through `c++`). A library header is flattened by
-  `clang++ -E` and read once, in memory: cocolog's store cannot hold units
-  that size (the finding in `CLAUDE.md`), so the cache the plan below
-  counted on is a summary cache still to design. The plan: the reader
+  gated by `test/cpp.sh` (21 constructs, the six C++ files of Cicili's test
+  suite read whole, a C++ file that is C built through `c++`). **The
+  preprocessor is cocolog's own** (`library(ccl_pp)`, owner's rule: no
+  clang, no LLVM binary, the embedded LLVM alone): directives, conditional
+  groups, macro expansion, `#include_next`, the built-ins, the target's
+  predefined macros as data; it replaced every `clang -E` and `clang++
+  -E`, and the inclusion path comes from the SDK's and LLVM's conventional
+  places. A library header is flattened by
+  it, read once, and SUMMARIZED to one file under `~/.cicili/cpp`
+  -- its declarations, not its text -- which the next run loads instead:
+  cocolog's store cannot hold units that size (the finding in
+  `CLAUDE.md`), and the summary is what the passes need of a header
+  anyway. The plan: the reader
   grows the C++ forms, because the libraries are in C++: classes
   with member functions, constructors and destructors and access labels;
   `namespace` and `::`; references; `new`/`delete`; templates, on

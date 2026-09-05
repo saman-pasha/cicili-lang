@@ -136,7 +136,9 @@ c21 :- check('Color::Green, static_cast<long>(t), unsigned(k)',
 c_real :-
     section('real C++ from the neighbours, read entirely'),
     os_env('CICILI', Cicili),
-    real_file(Cicili, 'test/cpp/objects.cpp'), real_file(Cicili, 'test/cpp/emit_report.cpp').
+    real_file(Cicili, 'test/cpp/objects.cpp'), real_file(Cicili, 'test/cpp/emit_report.cpp'),
+    real_file(Cicili, 'test/cpp/specialise.cpp'), real_file(Cicili, 'test/cpp/syntax.cpp'),
+    real_file(Cicili, 'test/cpp/torch.cpp'), real_file(Cicili, 'test/cpp/torch-fragment.cpp').
 real_file(Cicili, Rel) :-
     atomic_list_concat([Cicili, '/', Rel], P),
     (   exists_file(P)

@@ -94,7 +94,7 @@ k11 :- check('a header that is nowhere is missing, and the file still reads',
 k12 :- check('a cycle of headers is cut, not followed',
     ( c('a.h', AH), unit('cyc.c', unit([include(1, _, file(_, raw, unit([include(1, _, file(_, raw, unit([include(1, _, cyclic(AH))|_])))|_])))])) )).
 
-k13 :- check('the toolchain\'s inclusion path is asked of clang, once',
+k13 :- check('the toolchain\'s inclusion path comes from the SDK\'s and LLVM\'s conventional places, no tool run',
     ( ccl_include_path(Ds), length(Ds, N), N > 1 )).
 
 k14 :- check('after hello.c, its headers are in the store, one clause per item',
@@ -310,7 +310,7 @@ k70 :- check('cicili_ast/2 makes that a syntax error naming the line, and where 
 k71 :- check('a lexical error names its line too',
     ( c('lex.c', P), catch(cicili_ast(P, _), error(syntax_error(cicili_ast(_, lexical, line(L))), _), true), L =:= 2 )).
 
-k73 :- check('the tie operator <*>: on a member, a result, a parameter, a local, and after :=',
+k81 :- check('the tie operator <*>: on a member, a result, a parameter, a local, and after :=',
     ( unit('tie.c', unit(Is)),
       member(declare(_, base(_, [struct(list, Ms)])), Is), member(member(ptr([tie(head)|_], _), cur, none), Ms),
       member(declaration(_, _, _, [var(find, fn(ptr([tie(head)|_], _), _, _), none)]), Is),
@@ -318,10 +318,19 @@ k73 :- check('the tie operator <*>: on a member, a result, a parameter, a local,
       member(declaration(_, _, _, [var(b, base([tie(a)|_], [double]), float(_))]), B),
       member(declaration(_, _, _, [var(c, base([tie(b)|_], [int]), id(a))]), B) )).
 
-k74 :- check('#cocolog ... #end defines macros in place: a clause, a rule, a DCG rule, and the block stays an item',
+k82 :- check('#cocolog ... #end defines macros in place: a clause, a rule, a DCG rule, and the block stays an item',
     ( unit('cocolog.c', unit(Is)), member(cocolog(2, _), Is),
       fn_body('cocolog.c', f, B), member(return(_, bin('+', bin('*', id(a), int(2)), bin('*', id(a), id(a)))), B),
       fn_body('cocolog.c', g, B2), member(expr(_, call(id(puts), [str(S)])), B2), atom_codes(A, S), A == 'hi bob' )).
+
+k83 :- check('pp_defs.h is preprocessed (its false group is not C): #if/#elif/#else, defined, __has_include, ##, #, __VA_ARGS__, a continuation, __LINE__',
+    ( unit('pp.c', unit([include(1, local('pp_defs.h'), file(_, preprocessed, unit(Is)))|_])),
+      member(typedef(_, [var(mytype, base([], [int]), none)]), Is),
+      member(declaration(_, static, _, [var(pp_text, _, str(S))]), Is), atom_codes(A, S), A == 'hello world',
+      member(declare(_, base(_, [enum(_, Es)])), Is),
+      member(enumerator('PP_AREA', bin('*', int(3), int(4))), Es), member(enumerator('PP_CAT', int(42)), Es),
+      member(enumerator('PP_TAKEN', int(1)), Es), member(enumerator('PP_HAS', int(1)), Es), member(enumerator('PP_BITS', int(64)), Es),
+      member(enumerator('PP_ZERO', int(7)), Es), member(enumerator('PP_LINE', int(40)), Es) )).
 
 t_checks :-
     section('hello.c, whole'),
@@ -414,9 +423,11 @@ t_checks :-
     k67,
     k68,
     section('the tie operator'),
-    k73,
+    k81,
     section('a #cocolog block'),
-    k74,
+    k82,
+    section('the preprocessor, in cocolog: a header raw cannot take'),
+    k83,
     section('where it stops'),
     k69,
     k70,

@@ -27,19 +27,24 @@ module/cicili.cicili     the module: the C side (registration, ccl_version/1, an
                          ccl_cocolog_version/1 over the engine's coco_version_text) and the Prolog
                          half -- cicili_ast/2,3 (the reader's door) and the objects layer
 library/ccl_syntax.pl    the lexer and the parser, two DCGs; COMMITTED (library/*.so is not)
-library/ccl_include.pl   #include: the inclusion path (asked of clang), resolution, the
-                         nested read (raw, else clang -E -dD), .pl macro files, the cycle
-                         guard, the KB cache
+library/ccl_include.pl   #include: the inclusion path (the SDK's and LLVM's conventional
+                         places, no tool run), resolution, the nested read (raw, else
+                         through ccl_pp), .pl macro files, the cycle guard, the KB cache
+library/ccl_pp.pl        the preprocessor, in cocolog (owner's rule: no clang, no LLVM
+                         binary): ccl_pp_file/3 -- directives, conditionals, macros, the
+                         built-ins, the target's predefined macros as pp_predef/3 facts
+library/include/         the compiler's own freestanding headers: stddef.h, stdarg.h,
+                         stdbool.h, float.h, iso646.h, stdalign.h, stdnoreturn.h
 library/ccl_infer.pl     the macro facilities: ccl_type_of/2 and lookups over the symbol table
 library/ccl_format.pl    format, print, println: the global macros, Rust's holes
 library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause per construct
-library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, else clang -c -x ir), cicili_link/3 (cc)
+library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, nothing else), cicili_link/3 (cc)
 library/ccl_check.pl     the safe part: owners (own), move, the flow walk; run first by cicili_ir
 test/c/safe/             programs the check must REFUSE, each with the error its .expect names
 bin/cicili               the command: clang's arguments, one cocolog run over ./KB (ccl_drive/2)
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
-test/cpp.pl, cpp.sh      the C++ reader's gate: 21 checks over test/cpp/*.cpp, Cicili's emitted C++ read whole,
-                         hello.cpp built through cicili++
+test/cpp.pl, cpp.sh      the C++ reader's gate: 21 checks over test/cpp/*.cpp, the six C++ files of Cicili's
+                         test suite read whole, hello.cpp built through cicili++, and again from the summaries
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
                          and the IR cache (dr_ir/3: a file's IR beside its unit in the store)
 test/driver.sh           the command's gate; test/c/link and test/c/inc its fixtures
@@ -126,15 +131,17 @@ dropped, `typeof(…)` a specifier, `({ … })` a `stmt_expr/1`, and C99's
 compound literal `(T){…}` a `compound_lit/2`; and what Apple's SDK headers
 add: `__asm("…")` after a declarator, `_Nonnull` and kin as qualifiers,
 `(^block)` pointers, a `#define` inside a struct body or a declarator list
-(clang -E -dD keeps them where they stood). C++ is not read yet.
+(the preprocessor leaves a `#define` where it stood only when it is the
+reader's, in a raw read). C++ is read in cicili++'s mode (below).
 
 **An `#include` is read as it is met** (`library(ccl_include)`): the
 parser calls `ccl_include/2` at the directive, which resolves the name on
 the inclusion path (the including file's directory for a quoted name; then
-`ccl_include_dir/1`, `$CICILI_INCLUDE`, and clang's list from `clang -E -x c
--v /dev/null`, cached in `'$ccl_incpath'`), reads the file raw with the
-same reader, and only if raw does not read whole runs THAT file through
-`clang -E -dD` and reads the result; `file(Path, raw|preprocessed, Unit)`,
+`ccl_include_dir/1`, `$CICILI_INCLUDE`, and the toolchain's directories
+from where the conventions put them, `ccl_toolchain_dirs/1`, no tool run,
+cached in `'$ccl_incpath'`), reads the file raw with the same reader, and
+only if raw does not read whole runs THAT file through the preprocessor
+(`ccl_pp_parse/4`, below) and reads the result; `file(Path, raw|preprocessed, Unit)`,
 or `missing`, or `cyclic(Path)` through a `'$ccl_reading'/1` guard. The
 included unit's typedef names are appended to the includer's Env. The
 current file is a global, `'$ccl_file'`, saved and restored with `'$ccl_env'`
@@ -256,14 +263,27 @@ prototype at file scope. An optional word is `( ccl_kw(inline) ; [] )`,
 no cut. The C++ items reach the bulk noter (`ccl_collect_item`: extern_c,
 namespace by its bare name, template; `class` as a tag; `param/3`; refs)
 and `ccl_note_item`. A C++ library header (`system(_)` or `next(_)` spec,
-kind kept in `'$ccl_inc_kind'`) is flattened by `clang++ -E -dD -x c++`
-and read once (`ccl_read_unit`), never raw -- raw, `<sstream>`'s
+kind kept in `'$ccl_inc_kind'`) is flattened by the preprocessor
+(`ccl_pp_parse/4`) and read once (`ccl_read_unit`), never raw -- raw, `<sstream>`'s
 hundreds of headers each failed and got preprocessed in turn: ten
 minutes -- and `#include_next` looks past the including file's directory
-(`ccl_resolve_include(next(_), …)`). The driver reads `.cpp .cc .cxx .C`
-through `dr_c`, skips the check and the lowering under `-fsyntax-only` in
-cpp mode (M6's), and `ccl_link` uses `c++`. `cicili++` runs `--no-kb`:
-see the findings.
+(`ccl_resolve_include(next(_), …)`). **The summary cache:** a flattened
+library header is summarized to `~/.cicili/cpp/<name>-<fold>.sum`
+(`ccl_sum_file/2`, two folds of the path), one term per line: `sum(Path,
+key(ReaderVersion, cpp))` and a `dep(File, Time)` per file the
+preprocessor pulled, then `decl(N, T)`, `typedef(N, T)`, `tag(Tag,
+Ms)` (bodies dropped by `ccl_sum_slim/2`), `enum(N, V)`, `tname(N)` (the
+names the parser's Env needs: typedefs and tags), `template(N)` -- what
+`ccl_collect_items` and `ccl_items_typedefs` give (`ccl_sum_write/4`). A
+valid summary (`ccl_sum_valid/1`: the version, every dep's time) makes the
+include node `include(L, Spec, summary(F))`, and each consumer reads it
+where it would walk a unit: `ccl_include_typedefs` (the Env),
+`ccl_include_scope` → `ccl_sum_note/1` (the four tables, the templates,
+the global env), `ccl_collect_item` (the bulk rebuild before the check
+and the lowering), `dr_items_deps` (the IR signature). The driver reads
+`.cpp .cc .cxx .C` through `dr_c`, skips the check and the lowering under
+`-fsyntax-only` in cpp mode (M6's), and `ccl_link` uses `c++`. `cicili++`
+runs `--no-kb`: see the findings.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
@@ -309,6 +329,65 @@ the check having passed when the IR was made; a refused file stores
 nothing. BUMP `ccl_lowering_version/1` (in `ccl_ir.pl`) whenever the check
 or the lowering changes what it emits; `KB.version` is
 `Reader.Lowering`, and a change of either starts the store afresh.
+
+## How the preprocessor is implemented (owner's rule: cocolog, not clang)
+
+`library(ccl_pp)`: `ccl_pp_file(+Path, -Tokens, -Files)` preprocesses a
+file standalone -- the target's predefined macros and its own -- into the
+reader's tokens, naming every file it pulled (the summary's deps).
+`ccl_pp_parse/4` in `ccl_include` runs the grammar over those tokens
+inside `ccl_with_file/2`. **Line by line:** `pp_source/2` turns a file
+into `line(N, Atom)` terms once per process -- physical lines from
+`atomic_list_concat/3`, continuations joined, comments removed, a block
+comment's lines counted -- and only a line holding a slash or ending in a
+backslash is walked code by code (`pp_clean/3`): a walk in cocolog costs a
+microsecond a character and `<stdio.h>`'s closure is 700,000 of them.
+`pp_run/3` takes a line: a `#` line is a directive (`pp_directive/6`), a
+text line is lexed (`pp_lex_line/3`) and its tokens expanded (`pp_toks/5`,
+pulling the next lines when a function-like macro's arguments run on).
+A false group is skipped by its `#` lines alone (`pp_skip_group/4`, never
+lexing), and a header whose whole text is `#ifndef X … #endif` is
+remembered as guarded (`pp_note_guard/2`): its next `#include`, X still
+defined, is nothing -- the SDK includes `sys/cdefs.h` ten times. A macro
+is `'$pp:<Name>'` = `mac(Params, codes(Cs))`, lexed on its first use
+(`pp_macro/3`); `Params` is `obj` or a list with `va(N)` last; the names
+are listed in `'$pp_names'` for `pp_reset/0`. Expansion follows the
+standard: an argument is expanded before substitution unless `#` or `##`
+takes it (`pp_subst/4`), pastes are spelled and re-lexed (`pp_paste_two/3`),
+GNU's `, ## __VA_ARGS__` drops the comma (`vamarker`), every token of an
+expansion is `h(Token, HideSet)` (`pp_wrap/4`) so a macro never re-expands
+inside itself, and carries the invocation's line. `#if` (`pp_eval/1`):
+`defined` and the built-ins first (`pp_defined_pass/2`), expansion, the
+built-ins again (a macro may expand to one), then every name left is 0,
+`true` 1, and the reader's `ccl_cond_expr//1` + `ccl_const_eval/2` decide.
+`__has_include` and `__has_include_next` resolve for real
+(`ccl_resolve_include/3`); `__has_feature`, `__has_extension`,
+`__has_attribute`, `__has_cpp_attribute`, `__has_warning` answer 0 (the
+plainest path, the one the reader reads best), `__has_builtin` and
+`__is_identifier` 1 (libc++'s other branch is an `#error`),
+`__is_target_arch/vendor/os` per host. `#error` drops the rest of THAT
+file and is listed in `'$pp_errors'`; `_Pragma("…")` goes with its operand
+(`clang -E` made it a `#pragma` line). **The lexer has a mode for it:**
+`'$ccl_hash'` = `punct` makes `#` and `##` punctuators and a number a
+`tok(num, Spelling, L)` (so `200112L` pastes whole), normalized back to
+`int`/`float` at the end (`pp_finish/2`) and inside `#if`; the whole run
+lexes in that mode, restored to `line` after. **The predefined macros**
+are `pp_predef(any|x86_64|arm64|cpp, Name, Text)` facts at the end of the
+file, 580 of them taken once from the reference compiler's `-dM -E` (the
+ABI's facts: `__LP64__`, `__SIZEOF_*`, `__*_MAX__`, `__APPLE__`, the arch,
+`__cplusplus` …); the host's arch from `uname -m`, cached in `'$pp_arch'`.
+The compiler's own headers live in `library/include` (found through
+`COCOLOG_LIBRARY`'s directories + `/include`, ahead of the SDK; the SDK
+ships `stddef.h` but not `stdarg.h`), and the inclusion path is
+`ccl_toolchain_dirs/1`: C++'s library first in C++ and ONE tree only
+(two libc++ trees mix their wrappers: the SDK's `ctype.h` under LLVM's
+`cctype` defines `_LIBCPP_CTYPE_H` and trips an `#error`), then
+`library/include`, `/usr/local/include`, the SDK. Gated by
+`test/c/run/pp.c` (a header only the preprocessor can read, its macros'
+results as enumerators and a typedef) and `test/reader.pl`'s `k83`.
+Not done: `#elifdef`, `__has_embed`, `#embed`, trigraphs, a `//` comment
+ending in a backslash; the user's own file is still read raw (its macros
+are cocolog's), and a summary does not yet carry a header's macros.
 
 ## How the lowering is implemented
 
@@ -633,11 +712,26 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `test/cpp.sh` run `--local`, a run reads its headers again (about two
   seconds each, flattened), and the C++ cache is a summary cache still to
   design. To raise with cocolog's owner beside compaction.
+* **cocolog's `term_to_atom(-T, +A)` fails past some tens of KB of atom**
+  (`type_error(atom, …)` on a 37 KB line): a summary file keeps a term per
+  LINE, its dependencies one each, never a list of hundreds in one term.
 * **cocolog's reader refuses a clause with `is` as a plain atom argument**
   (`var(is, …)`: an operator where an atom is meant), and a check name with
   `"` inside a quoted atom did not read either; `ensure_loaded/1` then says
   only `its clauses would not consult`, no line. Bisect by splitting the
   file into clauses (`test/cpp.pl` needed that twice).
+* **`sub_atom/5` with a free position costs about 150 µs a call** (it
+  enumerates), and a plain walk over a code list about a microsecond a
+  code: the preprocessor tests a line with `atom_codes/2` + `memberchk/2`
+  (builtins, 8 µs), splits a file with `atomic_list_concat/3` (0.12 s for
+  700,000 codes) and walks only the lines that need it. `sub_atom/5` with
+  every position bound is fine. There is no clock predicate
+  (`statistics/2`, `get_time/1` absent): a piece is timed from the shell.
+* **A gate check with two clauses of one name runs both, by backtracking
+  from a later failure, in odd counts** (k73 and k74 each had two: the
+  `defer` ones and the tie/`#cocolog` ones; the gate printed one 3 times,
+  another 7). Every check name is unique: the tie is `k81`, `#cocolog`
+  `k82`, the preprocessor `k83`.
 * **An unset global throws** (`nb_getval/2`: existence_error), so a global
   is read through `ccl_global/3` or a `once(catch(...))`.
 * cocolog has `abolish/1`, `clause/2` on consulted clauses and `retract/1`

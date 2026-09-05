@@ -135,6 +135,7 @@ ir_type_(T, _) :- ir_fail(type(T)).
 ir_base(S, void) :- memberchk(void, S), !.
 ir_base(S, double) :- memberchk(double, S), !.
 ir_base(S, float) :- memberchk(float, S), !.
+ir_base(S, half) :- memberchk('_Float16', S), !.
 ir_base(S, i8) :- ( memberchk(char, S) ; memberchk('_Bool', S) ), !.
 ir_base(S, i16) :- memberchk(short, S), !.
 ir_base(S, i64) :- memberchk(long, S), !.

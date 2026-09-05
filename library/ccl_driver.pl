@@ -86,6 +86,7 @@ dr_fold([C|Cs], S0, M, S) :- S1 is (S0 * M + C) mod 2147483647, dr_fold(Cs, S1, 
 %% every file an AST reaches: the headers read into it, at any depth, and the macro files
 dr_unit_deps(unit(Is), Ds) :- !, dr_items_deps(Is, Ds).
 dr_unit_deps(partial(U, _, _), Ds) :- !, dr_unit_deps(U, Ds).
+dr_unit_deps(summary(F), [F]) :- !.                                             % a C++ library header's summary
 dr_unit_deps(_, []).
 dr_items_deps([], []).
 dr_items_deps([include(_, _, file(P, _, U))|Is], [P|Ds]) :- !, dr_unit_deps(U, D1), dr_items_deps(Is, D2), append(D1, D2, Ds).
@@ -159,6 +160,7 @@ dr_diag(F, macro_failed(N, As), _) :- !, dr_error(F, 0, ['macro \'', N, '\' fail
 dr_diag(F, ownership(Kind, N, Form), where(Fn, line(L))) :- !, dr_kind(Kind, Text), dr_error(F, L, [Text, ' ''', N, ''' in ', Form, ' (function ', Fn, ')']).
 dr_diag(F, not_lowered(What), where(Fn, line(L))) :- !, dr_error(F, L, ['not lowered yet: ', What, ' (function ', Fn, ')']).
 dr_diag(F, compile_failed(Msg), _) :- !, dr_error(F, 0, ['LLVM: ', Msg]).
+dr_diag(F, no_embedded_llvm, _) :- !, dr_error(F, 0, ['the embedded LLVM is not built: LLVM=... sh module/build-llvm.sh']).
 dr_diag(F, cocolog_error(Msg), _) :- !, dr_error(F, 0, ['LLVM: ', Msg]).            % the embedded LLVM's refusal
 dr_diag(F, link_failed(Msg), _) :- !, dr_error(F, 0, ['link: ', Msg]).
 dr_diag(F, E, W) :- dr_error(F, 0, [E, ' ', W]).
