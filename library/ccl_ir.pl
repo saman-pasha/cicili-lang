@@ -21,6 +21,16 @@
 %% statement expressions. Not yet: bitfields, unions, static locals, VLAs,
 %% long double, _Complex -- each throws error(not_lowered(What), where(F)).
 %%
+%% A struct by value crosses a call the way the platform's C ABI says (M3):
+%% on x86-64 (SysV) a struct of 16 bytes or less is split into eightbytes,
+%% each INTEGER (an iN of the bytes it holds) or SSE (float, double,
+%% <2 x float>), passed and returned as those pieces; a bigger one is passed
+%% in memory (ptr byval) and returned through sret. On arm64 (AAPCS64) 16
+%% bytes or less is i64 or [2 x i64], a homogeneous float aggregate [k x T],
+%% and a bigger one goes by a pointer to a copy, returned through sret. The
+%% host decides (uname -m); ir_abi/2 classifies, ir_fn_sig/6 spells a
+%% signature, and a define, a call and a declare all read the same answer.
+%%
 %% THE SURFACE:
 %%   ccl_ir_units(+Units, -IR)     IR the module text, an atom
 %%   ccl_ir_function(+Item, -Text) one function, for the curious
@@ -47,8 +57,16 @@ ir_items([I|Is]) :- ir_item(I), ir_items(Is).
 ir_reset :-
     ccl_ensure_globals, ( once(catch(os_env('CCL_IR_TRACE', Tr), _, fail)), Tr \== '' -> nb_setval('$ir_trace', yes) ; nb_setval('$ir_trace', no) ),
     nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_fn', file), nb_setval('$ir_line', 0), nb_setval('$ir_ret', none), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no), nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
-    nb_setval('$ir_externs', []), nb_setval('$ir_defined', []), nb_setval('$ir_gmap', []).
+    nb_setval('$ir_externs', []), nb_setval('$ir_defined', []), nb_setval('$ir_gmap', []), nb_setval('$ir_ret_abi', scalar),
+    ir_arch_init.
 ir_get(K, V) :- nb_getval(K, V).                                       % every '$ir_*' key is set by ir_reset / ir_function
+%% the host's architecture, once per process: sysv (x86-64) or aapcs (arm64)
+ir_arch_init :-
+    (   once(catch(nb_getval('$ir_arch', _), _, fail)) -> true
+    ;   ( once(catch(proc_run('uname -m', 5000, Out, 0), _, fail)), ir_text_atom(Out, M), ( sub_atom(M, _, _, _, arm64) ; sub_atom(M, _, _, _, aarch64) ) -> A = aapcs ; A = sysv ),
+        nb_setval('$ir_arch', A) ).
+ir_text_atom(Out, A) :- ( atom(Out) -> A = Out ; is_list(Out) -> atom_codes(A, Out) ; A = '' ).
+ir_arch(A) :- nb_getval('$ir_arch', A).
 ir_fresh(R) :- nb_getval('$ir_reg', N), N1 is N + 1, nb_setval('$ir_reg', N1), atomic_list_concat(['%t', N1], R).
 ir_label(L) :- nb_getval('$ir_reg', N), N1 is N + 1, nb_setval('$ir_reg', N1), atomic_list_concat(['L', N1], L).
 ir_emit(Parts) :-
@@ -63,6 +81,13 @@ ir_end(Parts) :- ( ir_terminated(yes) -> true ; ir_emit(['  '|Parts]), ir_set_te
 %% a block starts: fall in from the block before unless it ended
 ir_block(L) :- ( ir_terminated(yes) -> true ; ir_emit(['  br label %', L]) ), ir_emit([L, ':']), ir_set_term(no).
 ir_alloca(R, LL) :- nb_getval('$ir_allocas', A), atomic_list_concat(['  ', R, ' = alloca ', LL], Line), nb_setval('$ir_allocas', [Line|A]).
+ir_alloca_aligned(R, LL, Al) :- nb_getval('$ir_allocas', A), atomic_list_concat(['  ', R, ' = alloca ', LL, ', align ', Al], Line), nb_setval('$ir_allocas', [Line|A]).
+%% a temporary for a struct crossing a call, over-aligned so every piece's load and store is aligned
+ir_tmp(LL, Tmp) :- ir_fresh(Tmp), ir_alloca_aligned(Tmp, LL, 16).
+ir_store_at(PL, V, Addr, 0) :- !, ir_ins(['store ', PL, ' ', V, ', ptr ', Addr]).
+ir_store_at(PL, V, Addr, Off) :- ir_fresh(G), ir_ins([G, ' = getelementptr i8, ptr ', Addr, ', i64 ', Off]), ir_ins(['store ', PL, ' ', V, ', ptr ', G]).
+ir_load_at(PL, Addr, 0, V) :- !, ir_fresh(V), ir_ins([V, ' = load ', PL, ', ptr ', Addr]).
+ir_load_at(PL, Addr, Off, V) :- ir_fresh(G), ir_ins([G, ' = getelementptr i8, ptr ', Addr, ', i64 ', Off]), ir_fresh(V), ir_ins([V, ' = load ', PL, ', ptr ', G]).
 ir_where(where(F, line(L))) :- nb_getval('$ir_fn', F), nb_getval('$ir_line', L).
 ir_fail(What) :- ir_where(W), throw(error(not_lowered(What), W)).
 
@@ -136,6 +161,78 @@ ir_member_index(T, N, I, MT) :- ccl_members_of(T, Ms), ir_member_index_(Ms, N, 0
 ir_member_index(T, N, _, _) :- ir_fail(no_member(N, T)).
 ir_member_index_([member(MT, N, _)|_], N, I, I, MT) :- !.
 ir_member_index_([_|Ms], N, I0, I, MT) :- I1 is I0 + 1, ir_member_index_(Ms, N, I1, I, MT).
+
+%% ---- the ABI of a struct by value --------------------------------------------------
+%% ir_abi(+T, -Abi): scalar | direct([piece(LL, ByteOffset) ...]) | memory(LL, Align) | indirect(LL, Align)
+ir_abi(T, Abi) :-
+    ccl_resolve_type(T, T1),
+    (   ir_is_aggregate(T1) -> ir_type(T1, LL), ccl_size_align(T1, N, A), ir_arch(Arch), ir_abi_(Arch, T1, LL, N, A, Abi)
+    ;   Abi = scalar ).
+ir_is_aggregate(base(_, [struct(_, Ms)])) :- Ms \== none.
+ir_is_aggregate(base(_, [union(_, Ms)])) :- Ms \== none.
+ir_abi_(sysv, T, LL, N, A, Abi) :- ( N > 16 -> Abi = memory(LL, A) ; ir_leaves(T, 0, Ls), ir_eightbytes(Ls, N, 0, Ps), Abi = direct(Ps) ).
+ir_abi_(aapcs, T, LL, N, A, Abi) :-
+    (   N > 16 -> Abi = indirect(LL, A)
+    ;   ir_leaves(T, 0, Ls), ir_hfa(Ls, K, FT) -> atomic_list_concat(['[', K, ' x ', FT, ']'], P), Abi = direct([piece(P, 0)])
+    ;   N =< 8 -> Abi = direct([piece(i64, 0)])
+    ;   Abi = direct([piece('[2 x i64]', 0)]) ).
+%% the scalar leaves of a type, each at its byte offset: int | float | double
+ir_leaves(T, Off, Ls) :-
+    ccl_resolve_type(T, T1),
+    (   T1 = base(_, [struct(_, Ms)]), Ms \== none -> ir_member_leaves(Ms, Off, 0, Ls)
+    ;   T1 = base(_, [union(_, Ms)]), Ms \== none -> ir_union_leaves(Ms, Off, Ls)
+    ;   T1 = arr(int(K), E) -> ccl_size_align(E, ES, _), ir_array_leaves(K, E, ES, Off, Ls)
+    ;   ir_is_fp(T1) -> ( T1 = base(_, S), memberchk(float, S) -> Ls = [leaf(Off, float)] ; Ls = [leaf(Off, double)] )
+    ;   Ls = [leaf(Off, int)] ).
+ir_member_leaves([], _, _, []).
+ir_member_leaves([member(MT, _, _)|Ms], Base, Cur, Ls) :-
+    ccl_resolve_type(MT, MT1), ccl_size_align(MT1, S, A), ccl_round_up(Cur, A, Off), Off1 is Off + S,
+    AbsOff is Base + Off, ir_leaves(MT1, AbsOff, L1), ir_member_leaves(Ms, Base, Off1, L2), append(L1, L2, Ls).
+ir_union_leaves([], _, []).
+ir_union_leaves([member(MT, _, _)|Ms], Off, Ls) :- ir_leaves(MT, Off, L1), ir_union_leaves(Ms, Off, L2), append(L1, L2, Ls).
+ir_array_leaves(0, _, _, _, []) :- !.
+ir_array_leaves(K, E, ES, Off, Ls) :- ir_leaves(E, Off, L1), K1 is K - 1, Off1 is Off + ES, ir_array_leaves(K1, E, ES, Off1, L2), append(L1, L2, Ls).
+%% SysV: each eightbyte is INTEGER when any integer or pointer lies in it, else SSE
+ir_eightbytes(_, N, Off, []) :- Off >= N, !.
+ir_eightbytes(Ls, N, Off, [piece(P, Off)|Ps]) :-
+    End is Off + 8, ir_leaves_in(Ls, Off, End, Cs), Bytes is min(N - Off, 8),
+    (   memberchk(int, Cs) -> Bits is Bytes * 8, atom_concat(i, Bits, P)
+    ;   memberchk(double, Cs) -> P = double
+    ;   Cs == [float, float] -> P = '<2 x float>'
+    ;   Cs == [float] -> P = float
+    ;   Bits is Bytes * 8, atom_concat(i, Bits, P) ),
+    ir_eightbytes(Ls, N, End, Ps).
+ir_leaves_in([], _, _, []).
+ir_leaves_in([leaf(O, C)|Ls], Off, End, Cs) :- ( O >= Off, O < End -> Cs = [C|Cs1] ; Cs = Cs1 ), ir_leaves_in(Ls, Off, End, Cs1).
+%% AAPCS64: a homogeneous floating-point aggregate, up to four of one kind
+ir_hfa([leaf(_, FT)|Ls], K, FT) :- memberchk(FT, [float, double]), ir_all_leaves(Ls, FT), length(Ls, K0), K is K0 + 1, K =< 4.
+ir_all_leaves([], _).
+ir_all_leaves([leaf(_, C)|Ls], C) :- ir_all_leaves(Ls, C).
+%% the LLVM type a direct struct is passed or returned as
+ir_pieces_type([piece(P, _)], P) :- !.
+ir_pieces_type([piece(P1, _), piece(P2, _)], CL) :- atomic_list_concat(['{ ', P1, ', ', P2, ' }'], CL).
+ir_piece_lls([], []).
+ir_piece_lls([piece(P, _)|Ps], [P|Ls]) :- ir_piece_lls(Ps, Ls).
+ir_sret_attr(memory(LL, A), S) :- atomic_list_concat(['ptr sret(', LL, ') align ', A], S).
+ir_sret_attr(indirect(LL, A), S) :- atomic_list_concat(['ptr sret(', LL, ') align ', A], S).
+%% a parameter's type (an array decays) and its ABI
+ir_param_abi(T, PT, Abi) :- ccl_resolve_type(T, T1), ( T1 = arr(_, E) -> PT = ptr([], E) ; PT = T ), ir_abi(PT, Abi).
+%% a parameter's LLVM types with their attributes (a define, a declare), and plain (a call's type list)
+ir_abi_lls(scalar, T, [LL]) :- ir_type(T, LL).
+ir_abi_lls(direct(Pcs), _, LLs) :- ir_piece_lls(Pcs, LLs).
+ir_abi_lls(memory(LL, A), _, [S]) :- atomic_list_concat(['ptr byval(', LL, ') align ', A], S).
+ir_abi_lls(indirect(_, _), _, [ptr]).
+%% a function type's signature: the return LL (void, with an sret parameter
+%% first, when the struct is returned in memory) and the parameters' LLs
+ir_fn_sig(RT, Ps, Var, RetLL, RetAbi, ParamLLs) :-
+    ir_abi(RT, RetAbi),
+    (   RetAbi = scalar -> ir_type(RT, RetLL), Lead = []
+    ;   RetAbi = direct(Pcs) -> ir_pieces_type(Pcs, RetLL), Lead = []
+    ;   ir_sret_attr(RetAbi, Sret), RetLL = void, Lead = [Sret] ),
+    ir_params_lls(Ps, PLs), append(Lead, PLs, ParamLLs0),
+    ( Var == true -> append(ParamLLs0, ['...'], ParamLLs) ; ParamLLs = ParamLLs0 ).
+ir_params_lls([], []).
+ir_params_lls([param(T, _)|Ps], LLs) :- ir_param_abi(T, PT, Abi), ir_abi_lls(Abi, PT, L1), ir_params_lls(Ps, L2), append(L1, L2, LLs).
 
 ir_signed(T) :- ccl_resolve_type(T, base(_, S)), \+ memberchk(unsigned, S).
 ir_is_ptr(T) :- ccl_is_pointer(T).
@@ -325,17 +422,36 @@ ir_call(F, Args, V, RT) :-
     ( FT1 = ptr(_, FnT) -> true ; FnT = FT1 ), ccl_resolve_type(FnT, fn(RT, Ps, Var)), !,
     ir_call_(FV, RT, Ps, Var, Args, V).
 ir_call(F, _, _, _) :- ir_fail(call(F)).
+%% a call under the ABI: a struct returned in memory gets a temporary as its
+%% sret argument, one returned in pieces is stored to a temporary and loaded
+%% back as the struct; a struct argument is handed over the same way
 ir_call_(Callee, RT, Ps, Var, Args, V) :-
-    ir_args(Args, Ps, ArgTxt, ParamLLs), ir_type(RT, RL),
-    ( Var == true -> ir_join(ParamLLs, ', ', PL), atomic_list_concat([RL, ' (', PL, ', ...)'], Sig) ; Sig = RL ),
-    ( RL == void -> ir_ins(['call ', Sig, ' ', Callee, '(', ArgTxt, ')']), V = none
-    ; ir_fresh(V), ir_ins([V, ' = call ', Sig, ' ', Callee, '(', ArgTxt, ')']) ).
-ir_args(Args, Ps, Txt, PLLs) :- ir_args_(Args, Ps, Parts, PLLs), ir_join(Parts, ', ', Txt).
+    ir_abi(RT, RetAbi),
+    (   ( RetAbi = memory(_, _) ; RetAbi = indirect(_, _) )
+    ->  ir_type(RT, RLL), ir_tmp(RLL, Sret), ir_sret_attr(RetAbi, SA), atomic_list_concat([SA, ' ', Sret], LeadPart), Lead = [LeadPart], LeadLL = [ptr], CL = void
+    ;   Lead = [], LeadLL = [], ( RetAbi = direct(Pcs) -> ir_pieces_type(Pcs, CL) ; ir_type(RT, CL) ) ),
+    ir_args_(Args, Ps, Parts0, PLLs0), append(Lead, Parts0, Parts), append(LeadLL, PLLs0, PLLs), ir_join(Parts, ', ', ArgTxt),
+    ( Var == true -> ir_join(PLLs, ', ', PL), atomic_list_concat([CL, ' (', PL, ', ...)'], Sig) ; Sig = CL ),
+    (   CL == void
+    ->  ir_ins(['call ', Sig, ' ', Callee, '(', ArgTxt, ')']),
+        ( RetAbi == scalar -> V = none ; ir_fresh(V), ir_ins([V, ' = load ', RLL, ', ptr ', Sret]) )
+    ;   ir_fresh(R), ir_ins([R, ' = call ', Sig, ' ', Callee, '(', ArgTxt, ')']),
+        (   RetAbi = direct(_) -> ir_type(RT, RLL2), ir_tmp(RLL2, T2), ir_ins(['store ', CL, ' ', R, ', ptr ', T2]), ir_fresh(V), ir_ins([V, ' = load ', RLL2, ', ptr ', T2])
+        ;   V = R ) ).
+%% the arguments: each as its parts (a struct in pieces is several), and the plain type of each part
 ir_args_([], _, [], []).
-ir_args_([A|As], [param(PT, _)|Ps], [Part|Parts], [PL|PLs]) :- !,
-    ir_expr(A, V0, T0), ir_convert(V0, T0, PT, V), ir_type(PT, PL), atomic_list_concat([PL, ' ', V], Part), ir_args_(As, Ps, Parts, PLs).
-ir_args_([A|As], [], [Part|Parts], PLs) :-                    % the variadic tail: default promotions
-    ir_expr(A, V0, T0), ir_promote_arg(V0, T0, V, T), ir_type(T, LL), atomic_list_concat([LL, ' ', V], Part), ir_args_(As, [], Parts, PLs).
+ir_args_([A|As], [param(PT0, _)|Ps], Parts, PLLs) :- !,
+    ir_param_abi(PT0, PT, Abi), ir_expr(A, V0, T0), ( Abi == scalar -> ir_convert(V0, T0, PT, V) ; V = V0 ),
+    ir_arg_parts(Abi, PT, V, P1, L1), ir_args_(As, Ps, P2, L2), append(P1, P2, Parts), append(L1, L2, PLLs).
+ir_args_([A|As], [], Parts, PLLs) :-                    % the variadic tail: default promotions
+    ir_expr(A, V0, T0), ir_promote_arg(V0, T0, V, T), ir_abi(T, Abi),
+    ir_arg_parts(Abi, T, V, P1, L1), ir_args_(As, [], P2, L2), append(P1, P2, Parts), append(L1, L2, PLLs).
+ir_arg_parts(scalar, T, V, [Part], [LL]) :- ir_type(T, LL), atomic_list_concat([LL, ' ', V], Part).
+ir_arg_parts(direct(Pcs), T, V, Parts, LLs) :- ir_type(T, LL), ir_tmp(LL, Tmp), ir_ins(['store ', LL, ' ', V, ', ptr ', Tmp]), ir_piece_loads(Pcs, Tmp, Parts, LLs).
+ir_arg_parts(memory(LL, A), _, V, [Part], [ptr]) :- ir_tmp(LL, Tmp), ir_ins(['store ', LL, ' ', V, ', ptr ', Tmp]), atomic_list_concat(['ptr byval(', LL, ') align ', A, ' ', Tmp], Part).
+ir_arg_parts(indirect(LL, _), _, V, [Part], [ptr]) :- ir_tmp(LL, Tmp), ir_ins(['store ', LL, ' ', V, ', ptr ', Tmp]), atomic_list_concat(['ptr ', Tmp], Part).
+ir_piece_loads([], _, [], []).
+ir_piece_loads([piece(P, Off)|Ps], Tmp, [Part|Parts], [P|LLs]) :- ir_load_at(P, Tmp, Off, V), atomic_list_concat([P, ' ', V], Part), ir_piece_loads(Ps, Tmp, Parts, LLs).
 ir_promote_arg(V0, T0, V, T) :-
     ( ccl_resolve_type(T0, base(_, S)), memberchk(float, S) -> T = base([], [double]), ir_convert(V0, T0, T, V)
     ; ir_is_int(T0), ccl_int_rank(T0, R, _), R < 3 -> ir_int(T), ir_convert(V0, T0, T, V)
@@ -420,9 +536,12 @@ ir_stmt(for(L, Init, C, Step, S)) :- !, ir_line(L),
     ir_block(LE), ir_run_defers(1), ir_env_pop.
 ir_stmt(return(L)) :- !, ir_line(L), ir_run_defers(all), ir_end(['ret void']).
 ir_stmt(return(L, E)) :- !, ir_line(L),
-    nb_getval('$ir_ret', RT), ir_expr(E, V0, T0),
-    ( ccl_resolve_type(RT, base(_, [void])) -> ir_run_defers(all), ir_end(['ret void'])
-    ; ir_convert(V0, T0, RT, V), ir_run_defers(all), ir_type(RT, LL), ir_end(['ret ', LL, ' ', V]) ).
+    nb_getval('$ir_ret', RT), nb_getval('$ir_ret_abi', Abi), ir_expr(E, V0, T0),
+    (   ccl_resolve_type(RT, base(_, [void])) -> ir_run_defers(all), ir_end(['ret void'])
+    ;   Abi = direct(Pcs) -> ir_type(RT, LL), ir_pieces_type(Pcs, CL), ir_tmp(LL, Tmp), ir_ins(['store ', LL, ' ', V0, ', ptr ', Tmp]),
+            ir_fresh(C), ir_ins([C, ' = load ', CL, ', ptr ', Tmp]), ir_run_defers(all), ir_end(['ret ', CL, ' ', C])
+    ;   ( Abi = memory(_, _) ; Abi = indirect(_, _) ) -> ir_type(RT, LL), ir_ins(['store ', LL, ' ', V0, ', ptr %agg.result']), ir_run_defers(all), ir_end(['ret void'])
+    ;   ir_convert(V0, T0, RT, V), ir_run_defers(all), ir_type(RT, LL), ir_end(['ret ', LL, ' ', V]) ).
 ir_stmt(break(L)) :- !, ir_line(L), ir_loop_top(LE, _, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LE]).
 ir_stmt(continue(L)) :- !, ir_line(L), ir_continue_target(LC, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LC]).
 ir_stmt(goto(Ln, L)) :- !, ir_line(Ln), atom_concat('L.', L, LL), ir_end(['br label %', LL]).
@@ -486,12 +605,16 @@ ir_item(_).
 ir_function(Sto, Ret, Name, Params, Var, Body, Text) :-
     nb_setval('$ir_fn', Name), nb_setval('$ir_line', 0), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no),
     nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_ret', Ret), nb_setval('$ir_reg', 0),
+    ir_abi(Ret, RetAbi), nb_setval('$ir_ret_abi', RetAbi),
     ccl_scope_push,
-    ir_params(Params, 0, Sigs, Stores), ir_join(Sigs, ', ', SigTxt),
+    ir_params(Params, 0, Sigs0, Stores),
+    (   RetAbi = scalar -> ir_type(Ret, RL), Sigs = Sigs0
+    ;   RetAbi = direct(Pcs) -> ir_pieces_type(Pcs, RL), Sigs = Sigs0
+    ;   ir_sret_attr(RetAbi, SA), atom_concat(SA, ' %agg.result', S0), RL = void, Sigs = [S0|Sigs0] ),
+    ir_join(Sigs, ', ', SigTxt),
     ( Var == true -> ( Sigs == [] -> Sig = '...' ; atom_concat(SigTxt, ', ...', Sig) ) ; Sig = SigTxt ),
     ir_run_lines(Stores),
     ir_stmt(Body),
-    ir_type(Ret, RL),
     ( ir_terminated(yes) -> true
     ; RL == void -> ir_end(['ret void'])
     ; Name == main -> ir_end(['ret i32 0'])
@@ -502,18 +625,33 @@ ir_function(Sto, Ret, Name, Params, Var, Body, Text) :-
     atomic_list_concat([Link, RL, ' @', Name, '(', Sig, ') {'], Head),
     append([Head, 'entry:'|As], B, Lines0), append(Lines0, ['}', ''], Lines),
     ir_join(Lines, '\n', Text).
+%% the parameters: a scalar is stored to its alloca; a struct in pieces arrives
+%% as one register per piece, stored into an alloca of the struct; a struct
+%% in memory (byval) or by a pointer to a copy is used where it is
 ir_params([], _, [], []).
-ir_params([param(T, N)|Ps], I, [Sig|Sigs], Stores) :-
-    ir_type(T, LL0), ccl_resolve_type(T, T1),
-    ( T1 = arr(_, E) -> PT = ptr([], E), LL = ptr ; PT = T, LL = LL0 ),
+ir_params([param(T, N)|Ps], I, Sigs, Stores) :-
+    ir_param_abi(T, PT, Abi),
     ( N == anon -> atomic_list_concat(['%p', I], R) ; atomic_list_concat(['%', N], R) ),
-    atomic_list_concat([LL, ' ', R], Sig),
-    ( N == anon -> Stores = Stores1
-    ; atomic_list_concat(['%', N, '.addr'], Addr), Stores = [alloca(Addr, LL), store(LL, R, Addr), local(N, PT, Addr)|Stores1] ),
-    I1 is I + 1, ir_params(Ps, I1, Sigs, Stores1).
+    ir_param_sig(Abi, PT, N, R, Sigs0, Stores0),
+    I1 is I + 1, ir_params(Ps, I1, Sigs1, Stores1), append(Sigs0, Sigs1, Sigs), append(Stores0, Stores1, Stores).
+ir_param_sig(scalar, PT, N, R, [Sig], Stores) :-
+    ir_type(PT, LL), atomic_list_concat([LL, ' ', R], Sig),
+    ( N == anon -> Stores = [] ; atom_concat(R, '.addr', Addr), Stores = [alloca(Addr, LL), store(LL, R, Addr), local(N, PT, Addr)] ).
+ir_param_sig(direct(Pcs), PT, N, R, Sigs, Stores) :-
+    ir_type(PT, LL), ir_piece_sigs(Pcs, R, 0, Sigs, Pieces),
+    ( N == anon -> Stores = [] ; atom_concat(R, '.addr', Addr), ir_piece_stores(Pieces, Addr, St1), append(St1, [local(N, PT, Addr)], St2), Stores = [alloca_al(Addr, LL, 16)|St2] ).
+ir_param_sig(memory(LL, A), PT, N, R, [Sig], Stores) :- atomic_list_concat(['ptr byval(', LL, ') align ', A, ' ', R], Sig), ( N == anon -> Stores = [] ; Stores = [local(N, PT, R)] ).
+ir_param_sig(indirect(_, _), PT, N, R, [Sig], Stores) :- atomic_list_concat(['ptr ', R], Sig), ( N == anon -> Stores = [] ; Stores = [local(N, PT, R)] ).
+ir_piece_sigs([], _, _, [], []).
+ir_piece_sigs([piece(P, Off)|Ps], R, J, [Sig|Sigs], [pc(P, Reg, Off)|Pcs]) :-
+    atomic_list_concat([R, '.', J], Reg), atomic_list_concat([P, ' ', Reg], Sig), J1 is J + 1, ir_piece_sigs(Ps, R, J1, Sigs, Pcs).
+ir_piece_stores([], _, []).
+ir_piece_stores([pc(P, Reg, Off)|Pcs], Addr, [store_at(P, Reg, Addr, Off)|Ss]) :- ir_piece_stores(Pcs, Addr, Ss).
 ir_run_lines([]).
 ir_run_lines([alloca(A, LL)|T]) :- ir_alloca(A, LL), ir_run_lines(T).
+ir_run_lines([alloca_al(A, LL, Al)|T]) :- ir_alloca_aligned(A, LL, Al), ir_run_lines(T).
 ir_run_lines([store(LL, R, A)|T]) :- ir_ins(['store ', LL, ' ', R, ', ptr ', A]), ir_run_lines(T).
+ir_run_lines([store_at(PL, R, A, Off)|T]) :- ir_store_at(PL, R, A, Off), ir_run_lines(T).
 ir_run_lines([local(N, T0, A)|T]) :- ir_local(N, T0, A), ir_run_lines(T).
 
 ir_globals([], _).
@@ -569,12 +707,10 @@ ir_declares([], _, []).
 ir_declares([N-_|Es], Ds, Decls) :- memberchk(N, Ds), !, ir_declares(Es, Ds, Decls).
 ir_declares([N-T|Es], Ds, [D|Decls]) :-
     ccl_resolve_type(T, T1),
-    (   T1 = fn(RT, Ps, Var) -> ir_type(RT, RL), ir_param_lls(Ps, PLs), ( Var == true -> append(PLs, ['...'], PLs1) ; PLs1 = PLs ), ir_join(PLs1, ', ', PL),
+    (   T1 = fn(RT, Ps, Var) -> ir_fn_sig(RT, Ps, Var, RL, _, PLs), ir_join(PLs, ', ', PL),
             atomic_list_concat(['declare ', RL, ' @', N, '(', PL, ')'], D)
     ;   ir_type(T, LL), atomic_list_concat(['@', N, ' = external global ', LL], D) ),
     ir_declares(Es, Ds, Decls).
-ir_param_lls([], []).
-ir_param_lls([param(T, _)|Ps], [LL|LLs]) :- ccl_resolve_type(T, T1), ( T1 = arr(_, _) -> LL = ptr ; ir_type(T, LL) ), ir_param_lls(Ps, LLs).
 %% joins go through codes: atomic_list_concat/2 dies silently past ~8 KB
 %% (a cocolog finding), atom_codes/2 takes hundreds of KB
 ir_join(Xs, Sep, A) :- atom_codes(Sep, SC), ir_join_codes(Xs, SC, Cs), atom_codes(A, Cs).

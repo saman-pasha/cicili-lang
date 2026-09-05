@@ -243,6 +243,22 @@ its members. Externals used get `declare` lines from their prototypes.
 An anonymous struct's name lives in `'$ir_anons'`, not in `'$ir_structs'`
 where a name means "defined". Not lowered yet: bitfields, unions' members, static locals, VLAs, `_Complex`,
 `long double` (as double) -- each `error(not_lowered(What), where(F))`.
+**Structs by value cross a call as the platform ABI has it** (M3):
+`ir_abi/2` classifies a struct -- `scalar`, `direct([piece(LL, Off)...])`,
+`memory(LL, Align)` (SysV byval / sret), `indirect(LL, Align)` (AAPCS64's
+pointer to a copy) -- from its leaves (`ir_leaves/3`: every scalar at its
+byte offset); SysV: over 16 bytes memory, else each eightbyte INTEGER
+(`iN`, N the bytes it holds) when any integer or pointer lies in it, else
+`double`, `float` or `<2 x float>`; AAPCS64: over 16 indirect, an HFA
+`[k x float|double]`, else `i64` or `[2 x i64]`. `ir_fn_sig/6` spells a
+signature from it, used alike by a define (`ir_params/4`: pieces stored
+into an over-aligned alloca, byval and indirect used in place), a call
+(`ir_call_/6`, `ir_arg_parts/5`: the value stored to a temporary and
+loaded back as pieces; an sret temporary first; a direct return stored
+and reloaded as the struct) and a declare. The host decides (`uname -m`,
+`'$ir_arch'`). Proven on x86-64 against clang-built code both ways
+(`test/driver.sh`, `test/c/link/abi_*`; `abi_libc.c` through `div`/`ldiv`);
+the arm64 side is written, not proven.
 
 ## How the safe part is checked
 
@@ -267,6 +283,26 @@ borrow) is `N-borrow(P)`; `ck_consume` turns every `borrow(P)` into
 assigning a borrow from something else unbinds it. Every statement node
 carries its line first (`ccl_add_lines/3` gives a macro's short forms the
 call's line), `ck_line/1` keeps it, `ck_short/2` names the form without it.
+**Owners inside structs (M3 complete):** an owner is a KEY, a name or a
+path atom (`'p->name'`, `'c.name'`, `'c.inner.name'`, `ck_path/2`); a
+variable's own fields (`ck_var_fields/3`: an own pointer to a struct opens
+`->`, a struct by value `.`, a member held by value recurses, an own
+pointer member is one key and stops) are declared with it, the base at the
+frame's head so a leak names it first. States: live, null (a null constant
+assigned; free, move and overwrite are fine), unset (no value yet, or a
+field of a struct from malloc), moved, partial. `ck_consume/6` takes a
+`How`: free demands the fields consumed (`owner_leaked` on the field),
+move demands them complete (`owner_unset`, `use_after_move`) and moves
+them along; `ck_into_own/6` is every own slot's assignment (an owner moved
+in with its fields transferred, `ck_transfer/5`; null; fresh; a borrow
+refused, `borrow_stored`), `ck_into_plain/4` every plain slot's (an owner
+or a borrow refused, `owner_stored`/`borrow_stored`); `ck_fill/6` a struct
+by value receiving a whole value (fields moved from a struct, item by item
+from an initializer through `ck_init_slots/5`, all live from a call). The
+checker now declares every local in the symbol table (`ccl_declare/2`,
+scopes pushed per block), so `ccl_type_of/2` types a slot and `ck_is_local/1`
+tells a global from a local. Fixtures: `own_fields.c` runs, seven `safe/`
+programs are refused.
 
 ## How the LLVM module is written (the Cicili module pattern)
 

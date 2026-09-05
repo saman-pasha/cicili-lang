@@ -21,16 +21,20 @@ what runs today.
   compiled by the system `clang` (which consumes textual IR and drives the
   LLVM backend, no LLVM install) to a native binary that exits 42. GREEN.
 * **M3 -- the safe part.** `own` pointers are linear, `move` hands them
-  on, a borrow dangles when its owner is consumed and may not escape, and
-  use after move, the double free, a leak on any path, a move inside a
-  loop, a dangling borrow are compile errors naming the statement's line.
-  GREEN: the owners programs run, fourteen programs are refused each with
+  on, a borrow dangles when its owner is consumed and may not escape, a
+  struct's own fields are owners that go with it, a borrow or an owner
+  stored where the check cannot follow it is refused, and use after move,
+  the double free, a leak on any path, a move inside a loop, a dangling
+  borrow are compile errors naming the statement's line.
+  GREEN: the owners programs run, twenty-two programs are refused each with
   its error.
 * **M2 -- the lowering.** `cicili_ir/2`, `cicili_compile/3`, `cicili_link/3`:
   C11's core -- every type but bitfields and unions, every statement and
-  operator, calls and variadic calls, structs by value and by pointer,
-  `defer` -- lowered to LLVM IR and run. `test/compile.sh`: eleven programs
-  built, run and checked, GREEN.
+  operator, calls and variadic calls, structs by pointer and by value --
+  across a call as the platform ABI has it, the same pieces, `byval` and
+  `sret` clang uses, proven against clang-built code both ways --
+  `defer` -- lowered to LLVM IR and run. `test/compile.sh`: fourteen
+  programs built, run and checked, GREEN.
 * **M1 -- the reader.** `cicili_ast(+File, -AST)` reads a C file whole into an
   AST, through a DCG; each `#include` is found on the toolchain's path and
   read too; the knowledge base remembers every file by its modification
@@ -313,33 +317,53 @@ consumed exactly once on every path, by `free(p)` or `fclose(p)`, by
 `move(p)` into another owner or as an argument, by `return p`, or by
 passing it to a function whose parameter is `own`; a `defer(p) { free(p); }`
 consumes it at the scope's exit, on every path, as it is lowered. A consumed
-owner may own again by assignment. `cicili_ir` checks this before lowering
-anything, flow-sensitively, and refuses with `error(ownership(Kind, Name,
-Form), where(Function, line(L)))`, the form named:
+owner may own again by assignment; one declared without a value, or given a
+null, holds nothing yet and may be given something. `cicili_ir` checks this
+before lowering anything, flow-sensitively, and refuses with
+`error(ownership(Kind, Name, Form), where(Function, line(L)))`, the form
+named:
 
 | refused as | when |
 |---|---|
 | `use_after_move` | a consumed owner is read, passed, or freed again (the double free) |
+| `owner_unset` | an owner is read, passed, freed or moved before it was given anything |
 | `borrow_after_move` | a borrow -- a plain pointer that took its value from an owner -- is used after the owner was consumed |
 | `borrow_escapes` | a borrow is returned from the function, whose owner is consumed by then |
-| `owner_leaked` | an owner is live, on any path, at its scope's end or at a `return` |
+| `borrow_stored` | a borrow is stored where the check cannot follow it: a plain struct field, an element, a global, through a pointer, or into an own slot |
+| `owner_stored` | an owner's pointer is stored into a plain slot, where its ownership would be lost |
+| `owner_leaked` | an owner is live, on any path, at its scope's end or at a `return`; or a field, when its struct is freed |
 | `move_in_loop` | an owner from outside a loop is consumed inside it and not re-owned |
 | `move_of_non_owner` | `move(x)` of something not declared `own` |
 | `owner_overwritten` | assignment to a live owner, which would leak what it held |
 | `goto_with_owners` | a `goto` in a function that has owners, not followed yet |
 
+**A struct's own fields are owners too**, named by their path: `p->name`
+under an own pointer, `c.name` in a struct held by value, `c.inner.name`
+through a member held by value. They go with the struct: freeing it demands
+its fields consumed first (else the field leaks), moving it -- to an own
+parameter, into another owner, by `return` -- demands them complete, live or
+null, and moves them along; a struct copied by value moves its fields into
+the copy; `move(p->name)` takes a field out. An own pointer from `malloc`
+has unset fields, to be given something before the struct is returned; one
+from any other call is complete. What a plain pointer to a struct reaches is
+C's, not tracked.
+
 A **borrow** is a plain pointer whose value came from an owner: `char *q =
-p`, `q = p + 1`, `&p[i]`, `&p->x`, or another borrow. It is bound to the
-owner: the moment the owner is consumed the borrow dangles and a use of it
-is refused, and a borrow may not be returned; assigning it from something
-else unbinds it. Every error names the statement's line.
+p`, `q = p + 1`, `&p[i]`, `&p->x`, `a->name`, or another borrow. It is
+bound to the owner: the moment the owner is consumed the borrow dangles and
+a use of it is refused, and a borrow may not be returned; assigning it from
+something else unbinds it. A borrow, or an owner's pointer, may only be held
+by a local plain pointer: stored into a plain field, an element, a global or
+through a pointer it could not be followed, so that is refused; an own slot
+receives an owner (moved in), a null, or a fresh value, never a borrow.
+Every error names the statement's line.
 
 `test/c/run/owners.c` does all of it and runs, `own_struct.c` with a struct
 on the heap (an `own point *` parameter takes the struct over, a `const
-point *` one only looks), `borrows.c` with borrows; the programs under
-`test/c/safe/` are each refused with the error their `.expect` names.
-Not tracked yet: owners inside structs, owners through function pointers,
-borrows stored into structs or globals.
+point *` one only looks), `own_fields.c` with owners inside structs,
+`borrows.c` with borrows; the programs under `test/c/safe/` are each
+refused with the error their `.expect` names. Not tracked: owners through
+function pointers, a borrow passed to a function.
 
 ## `format`, `print`, `println`: global macros
 

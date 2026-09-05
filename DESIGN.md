@@ -103,16 +103,24 @@ it is done (see below); the checker and the lowering take the AST from here.
   LLVM, `library(ccl_llvm)`, a cocolog module over `llvm-c` (parse, verify,
   target, passes, object), with `clang -c -x ir` as the door where the
   module is not built.
-* **M3 — structs and the safe part. DONE, to its stated edge.** Structs, scopes and `defer`
+* **M3 — structs and the safe part. DONE.** Structs, scopes and `defer`
   lower (M2); the first ownership check is in: `own` pointers are linear,
   `move` hands them on, and use after move, the double free, a leak on any
   path, a move in a loop, an overwritten owner are compile errors naming
   the form (`library(ccl_check)`, run first by `cicili_ir`); borrows -- a
   plain pointer copied from an owner -- dangle when the owner is consumed
   and may not escape; every statement carries its line, so the place is
-  the statement's. Beyond the edge, for later: owners inside structs,
-  borrows stored into structs or globals, the platform ABI for structs by
-  value. **`defer` is decided (owner):** scope-bound, like
+  the statement's. Owners inside structs: an own field is an owner named by
+  its path (`p->name`, `c.name`), going with its struct -- consumed before
+  the struct is freed, complete when it is moved, moved into a copy; a
+  borrow or an owner's pointer stored into a plain field, an element, a
+  global or through a pointer is refused, since the check could not follow
+  it. Structs by value cross a call as the platform ABI has it: SysV
+  x86-64's eightbytes, byval and sret, proven against clang-built code in
+  both directions (`test/c/link/abi_*`); AAPCS64's i64 pairs, HFAs and
+  indirect copies are written on the same classification and unproven, no
+  arm64 being at hand. Left for later: owners through function pointers, a
+  borrow handed to a function. **`defer` is decided (owner):** scope-bound, like
   Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
   each scope a cleanup block running its defers last-first and branching
   to the enclosing scope's; a `return`, `break`, `continue` or `goto` out
