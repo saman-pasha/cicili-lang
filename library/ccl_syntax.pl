@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(20).
+ccl_reader_version(21).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -105,12 +105,27 @@ ccl_block_comment(L, L) --> [].                    % an unterminated comment end
 
 %% a token, and the line after it
 %% 35 is #, 34 is ", 39 is ', 92 is \ -- numbers, because 0'" and 0'' read badly
+ccl_token(L0, L, tok(cocolog, Text, L0)) --> [35], ccl_pp_line(L0, L1, Cs), { ccl_trim(Cs, T), atom_codes(cocolog, T) }, !,   % #cocolog ... #end: the lines between, raw
+    ccl_cocolog_body(L1, L, Body), { atom_codes(Text, Body) }.
 ccl_token(L0, L, tok(pp, Text, L0)) --> [35], !, ccl_pp_line(L0, L, Cs), { atom_codes(Text, [35|Cs]) }.
 ccl_token(L, L, tok(str, S, L))     --> [34], !, ccl_str_body(S).
 ccl_token(L, L, tok(chr, C, L))     --> [39], !, ccl_chr_body(C), [39].
 ccl_token(L, L, T)                  --> ccl_number(L, T), !.
 ccl_token(L, L, T)                  --> ccl_word(L, T), !.
 ccl_token(L, L, tok(p, P, L))       --> ccl_punct(P).
+
+%% the body of a #cocolog block: every line up to the `#end' line (or the end
+%% of the file), as it stands -- Prolog, not C, so no continuation, no comment
+ccl_cocolog_body(L0, L, Body) --> ccl_line_codes(Cs, NL), { ( NL == yes -> L1 is L0 + 1 ; L1 = L0 ) }, ccl_cocolog_rest(Cs, NL, L1, L, Body).
+ccl_cocolog_rest(Cs, _, L, L, []) --> { ccl_trim(Cs, T), atom_codes('#end', T) }, !.
+ccl_cocolog_rest(Cs, no, L, L, Cs) --> !.                                  % the file ended inside the block
+ccl_cocolog_rest(Cs, yes, L0, L, Body) --> ccl_cocolog_body(L0, L, Rest), { append(Cs, [10|Rest], Body) }.
+ccl_line_codes([], yes) --> [10], !.
+ccl_line_codes([C|Cs], NL) --> [C], !, ccl_line_codes(Cs, NL).
+ccl_line_codes([], no) --> [].
+ccl_trim(Cs, T) :- ccl_drop_ws(Cs, Cs1), reverse(Cs1, R), ccl_drop_ws(R, R1), reverse(R1, T).
+ccl_drop_ws([C|Cs], T) :- ( C =:= 32 ; C =:= 9 ; C =:= 13 ), !, ccl_drop_ws(Cs, T).
+ccl_drop_ws(Cs, Cs).
 
 %% a preprocessor line runs to the end of the line, a backslash continuing it
 ccl_pp_line(L0, L, [])     --> [C], { C =:= 10 }, !, { L is L0 + 1 }.
@@ -478,6 +493,7 @@ ccl_external(Env, Env, D) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E
 %% a macro call at file scope: name(args) with an optional `;', its result an item (or items)
 ccl_external(Env, Env, Item) --> ccl_id(N), ccl_peek(p, '('), { ccl_macro_name(N) }, ccl_p('('), ccl_args(As), ccl_p(')'), { length(As, K), ccl_is_macro(N, K) }, !,
     ( ccl_p(';'), ! ; [] ), { ccl_expand_macro(N, As, Item) }.
+ccl_external(Env, Env, cocolog(L, Text)) --> [tok(cocolog, Text, L)], !, { ccl_cocolog_block(L, Text) }.   % its predicates are macros from here
 ccl_external(Env, Env, directive(L, Text)) --> [tok(pp, Text, L)], !.
 ccl_external(Env, Env, empty) --> ccl_p(';'), !.
 ccl_external(Env, Env, static_assert(L, E, Msg)) --> ccl_line(L), ccl_kw('_Static_assert'), !, ccl_p('('), ccl_cond_expr(E), ( ccl_p(','), ccl_primary(Msg), ! ; { Msg = none } ), ccl_p(')'), ccl_p(';').

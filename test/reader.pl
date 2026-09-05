@@ -310,13 +310,18 @@ k70 :- check('cicili_ast/2 makes that a syntax error naming the line, and where 
 k71 :- check('a lexical error names its line too',
     ( c('lex.c', P), catch(cicili_ast(P, _), error(syntax_error(cicili_ast(_, lexical, line(L))), _), true), L =:= 2 )).
 
-k72 :- check('the tie operator <*>: on a member, a result, a parameter, a local, and after :=',
+k73 :- check('the tie operator <*>: on a member, a result, a parameter, a local, and after :=',
     ( unit('tie.c', unit(Is)),
       member(declare(_, base(_, [struct(list, Ms)])), Is), member(member(ptr([tie(head)|_], _), cur, none), Ms),
       member(declaration(_, _, _, [var(find, fn(ptr([tie(head)|_], _), _, _), none)]), Is),
       member(function(_, _, _, f, [param(_, head), param(ptr([tie(head)|_], _), cur)], _, block(B)), Is),
       member(declaration(_, _, _, [var(b, base([tie(a)|_], [double]), float(_))]), B),
       member(declaration(_, _, _, [var(c, base([tie(b)|_], [int]), id(a))]), B) )).
+
+k74 :- check('#cocolog ... #end defines macros in place: a clause, a rule, a DCG rule, and the block stays an item',
+    ( unit('cocolog.c', unit(Is)), member(cocolog(2, _), Is),
+      fn_body('cocolog.c', f, B), member(return(_, bin('+', bin('*', id(a), int(2)), bin('*', id(a), id(a)))), B),
+      fn_body('cocolog.c', g, B2), member(expr(_, call(id(puts), [str(S)])), B2), atom_codes(A, S), A == 'hi bob' )).
 
 t_checks :-
     section('hello.c, whole'),
@@ -409,7 +414,9 @@ t_checks :-
     k67,
     k68,
     section('the tie operator'),
-    k72,
+    k73,
+    section('a #cocolog block'),
+    k74,
     section('where it stops'),
     k69,
     k70,

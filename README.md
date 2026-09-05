@@ -256,6 +256,25 @@ safe/macro_double_free.c:3: error: use after move of 'p' in call(id(free),[id(p)
 safe/macro_double_free.c:3: note: expanded from macro 'freeit' on id(p)
 ```
 
+**`#cocolog` ... `#end` writes the macro file in place.** The lines between
+are cocolog, not C -- clauses, rules, DCG rules -- loaded and registered
+exactly as `#include "m.pl"` would load them, so every predicate they
+define is a macro from that line on; the block stays in the AST as
+`cocolog(Line, Text)`, which the check and the lowering pass over.
+
+```c
+#cocolog
+twice(X, bin('*', X, int(2))).
+sum(R) --> [A], sum_rest(A, R).
+sum_rest(A, R) --> [B], !, sum_rest(bin('+', A, B), R).
+sum_rest(A, A) --> [].
+#end
+int main(void) { printf("%d %d\n", twice(21), sum(1, 2, 3, 4)); return 0; }   /* 42 10 */
+```
+
+A block that reaches the end of the file without `#end` ends there.
+`test/c/run/cocolog.c` runs it.
+
 ## `:=` declares by inference
 
 `name := expr;` declares `name` with the type of `expr`, inferred by the
@@ -488,18 +507,49 @@ value; and an own pointer sits nowhere its owner cannot be named, not
 behind a plain pointer, not in an array without a constant bound, not as
 an array parameter. Refused as `own_unbounded`, `own_array_by_value`,
 `own_array_untagged`, `array_unset`. A struct with an own array cannot be
-cloned either.
+cloned either. One bound more the check can name: a struct's last member
+may be `own node *C[nc]` with `nc` an earlier integer member of the same
+struct -- a flexible array the developer allocates room for and counts,
+`calloc(1, sizeof(node) + k * sizeof(node *))`, `x->nc = k` -- and the
+drain loops to `nc`. A leaf of a tree is then allocated without children
+at all, 56 bytes, while an inner node has its slots in place: BTreeSet's
+layout without its unsafe cast. `test/c/run/flex.c` runs it.
 
-`test/c/run/btree.c` is the ownership test case: a B-tree whose every
-node owns its children through `own node *C[4]` and the root belongs to
-the tree; walks and searches borrow, a search's result is tied to the
+**Beating BTreeSet.** `bench/btree/run.sh` builds the same B-tree three
+ways -- cicili `-O3`, the same algorithm in plain C for clang `-O3`, and
+Rust's `BTreeSet` -- at BTreeSet's fanout, eleven keys per node, and runs
+a million distinct keys inserted in a pseudo-random order, a million
+searched with half present, half of the keys deleted, a million searched
+again, the rest deleted. On an i9-9880H, the minimum of eleven interleaved
+rounds, in ms:
+
+| | insert | search | delete half | search again | delete the rest |
+|---|---|---|---|---|---|
+| cicili `-O3` | 94 | 90 | 62 | 92 | 66 |
+| clang `-O3`, the same tree in C | 92 | 91 | 60 | 98 | 67 |
+| Rust `BTreeSet` | 107 | 96 | 60 | 95 | 63 |
+
+The node holds its keys in one cache line and its children in the bounded
+own array, the keys are scanned without a branch where a key is placed,
+every address is `inbounds` and every signed add `nsw`; deletion takes the
+key out of its leaf and fixes only a node left short on the way back up,
+as BTreeSet does. Insert and search are won, deletion is a tie.
+
+`test/c/run/btree.c` and `btree_del.c` are the ownership test case: a
+B-tree whose every node owns its children through an own array, fixed in
+the first, bounded by the node's count in the second, and the root belongs
+to the tree; walks and searches borrow, a search's result is tied to the
 tree it came from, a parameter is tied to an earlier one, a full node is
-split by moving its upper children into a new owner, and freeing the root
-drains the whole tree, every node freed exactly once (`leaks` finds none).
-`slots.c` does the same with a local array. One shape the tree taught:
-surgery on a struct's own fields and elements is done in a function that
-takes the struct as a parameter, since its fields are keys there and a
-local borrow's are not. Diagnostics, errors and warnings alike, are on stderr, as clang's;
+split by moving its upper children into a new owner, a merge moves a
+sibling's children over and frees it, a rotation moves one child across,
+the root shrinks to its only child, and freeing the root drains whatever
+is left, every node freed exactly once (`leaks` finds none, and the
+degree-2 fixture's output is the sanitized C mirror's). `slots.c` does the
+same with a local array. One shape the tree taught: an element is moved
+OUT of a struct only through a name the check has a key for, a parameter
+or an own local, never a local borrow, so a merge takes the node that goes
+into an own local first and the rotations take both siblings as
+parameters. Diagnostics, errors and warnings alike, are on stderr, as clang's;
 `cicili -v`'s lines and `cicili: ok` on stdout.
 
 ## `format`, `print`, `println`: global macros

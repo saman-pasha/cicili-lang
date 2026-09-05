@@ -142,8 +142,13 @@ it is done (see below); the checker and the lowering take the AST from here.
   lowering keeps with generated drains -- at the holder's free, at a
   local's scope end, at an overwrite -- and the check completes: no borrow
   stored, zeroed at birth, behind an own pointer in a tagged struct, an own
-  pointer nowhere its owner cannot be named. `test/c/run/btree.c`, a
-  B-tree on such an array, is the ownership test case.
+  pointer nowhere its owner cannot be named; a struct's last member may be
+  bounded by an earlier member instead, `own node *C[nc]`, a flexible
+  array the drain loops to. `test/c/run/btree.c` and `btree_del.c`, a
+  B-tree on such an array with insertion and deletion, are the ownership
+  test case, and `bench/btree/` the proof that the language costs nothing:
+  the same tree beats Rust's `BTreeSet` at its own fanout on insert and
+  search and ties it on deletion.
   **`defer` is decided (owner):** scope-bound, like
   Cicili's `cleanup`, `defer(a, b) { free(a); }`, lowered the static way --
   each scope a cleanup block running its defers last-first and branching

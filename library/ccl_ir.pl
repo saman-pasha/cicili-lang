@@ -44,7 +44,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(6).
+ccl_lowering_version(8).
 
 ccl_ir_units(Units, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units),                     % the symbol table, once
@@ -130,8 +130,7 @@ ir_type_(base(_, S), LL) :- !, ir_base(S, LL).
 ir_type_(ptr(_, _), ptr) :- !.
 ir_type_(block(_, _), ptr) :- !.
 ir_type_(fn(_, _, _), ptr) :- !.
-ir_type_(arr(int(N), E), LL) :- !, ir_type(E, EL), atomic_list_concat(['[', N, ' x ', EL, ']'], LL).
-ir_type_(arr(_, _), ptr) :- !.
+ir_type_(arr(NE, E), LL) :- !, ir_type(E, EL), ( ccl_const_eval(NE, N) -> true ; N = 0 ), atomic_list_concat(['[', N, ' x ', EL, ']'], LL).   % a flexible member: [0 x T]
 ir_type_(T, _) :- ir_fail(type(T)).
 ir_base(S, void) :- memberchk(void, S), !.
 ir_base(S, double) :- memberchk(double, S), !.
@@ -542,13 +541,17 @@ ir_drain_function(Tag, Ms, function(0, static, base([], [void]), D, [param(ptr([
 ir_array_loops([], _, _, []).
 ir_array_loops([member(MT, F, _)|Ms], Base, How, Loops) :-
     ( How == arrow -> P = arrow(Base, F) ; P = member(Base, F) ),
-    (   F \== anon, ck_own_array_type(MT) -> ir_drain_loop(P, MT, Loop), Loops = [Loop|Loops1]
+    (   F \== anon, ck_own_array_type(MT) -> ir_array_bound(MT, Base, How, Bound), ir_drain_loop(P, MT, Bound, Loop), Loops = [Loop|Loops1]
     ;   F \== anon, ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ck_has_own_array(MT1) -> ccl_members_of(MT1, Sub), ir_array_loops(Sub, P, member, L0), append(L0, Loops1, Loops)
     ;   Loops = Loops1 ),
     ir_array_loops(Ms, Base, How, Loops1).
-%% for (int i = 0; i < N; i++) if (a[i]) { ccl_drain_T(a[i]); free(a[i]); }
-ir_drain_loop(Path, T, for(0, decl(base([], [int]), [var(I, base([], [int]), int(0))]), bin('<', id(I), int(N)), postinc(id(I)), if(0, Elem, block(Calls), none))) :-
-    ccl_resolve_type(T, arr(NE, ET)), ck_const(NE, N), ccl_gensym(i, I), Elem = index(Path, id(I)),
+%% the bound of an own array member: its constant, or the sibling field it names (`own T *a[n]')
+ir_array_bound(MT, Base, How, Bound) :-
+    ccl_resolve_type(MT, arr(NE, _)),
+    ( ck_const(NE, N) -> Bound = int(N) ; NE = id(B), ( How == arrow -> Bound = arrow(Base, B) ; Bound = member(Base, B) ) ).
+%% for (int i = 0; i < Bound; i++) if (a[i]) { ccl_drain_T(a[i]); free(a[i]); }
+ir_drain_loop(Path, T, Bound, for(0, decl(base([], [int]), [var(I, base([], [int]), int(0))]), bin('<', id(I), Bound), postinc(id(I)), if(0, Elem, block(Calls), none))) :-
+    ccl_resolve_type(T, arr(_, ET)), ccl_gensym(i, I), Elem = index(Path, id(I)),
     (   ccl_resolve_type(ET, ptr(_, PT)), ir_needs_drain(PT), ir_drain_name(PT, D) -> Calls = [expr(0, call(id(D), [Elem])), expr(0, drain_free(Elem))]
     ;   Calls = [expr(0, drain_free(Elem))] ).
 %% free(p) of a struct with an own array: the drain first
@@ -579,7 +582,7 @@ ir_elem_assign(L, R, stmt_expr(block([declaration(0, none, Base, [var(P, ptr([],
 %% a local own array: drained at every exit of its scope, as a defer
 ir_array_defers([], _).
 ir_array_defers([var(N, T, _)|Vs], Sto) :-
-    ( Sto \== extern, ck_own_array_type(T) -> ir_drain_loop(id(N), T, Loop), ir_defer_push(block([Loop])) ; true ),
+    ( Sto \== extern, ck_own_array_type(T) -> ccl_resolve_type(T, arr(NE, _)), ck_const(NE, K), ir_drain_loop(id(N), T, int(K), Loop), ir_defer_push(block([Loop])) ; true ),
     ir_array_defers(Vs, Sto).
 
 %% ---- calls ------------------------------------------------------------------------------

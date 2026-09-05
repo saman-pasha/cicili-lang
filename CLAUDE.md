@@ -49,7 +49,7 @@ module/ccl_llvm.cicili   the embedded LLVM: a cocolog module in Cicili over llvm
 module/build-llvm.sh     LLVM=… sh module/build-llvm.sh  ->  library/ccl_llvm.so (Homebrew's LLVM)
 proof/forty2.ll, run.sh  M0: LLVM IR through clang to a native binary, exit 42
 test/config.sh           the neighbours and the library path, sourced by every gate
-test/reader.pl           the reader's gate: a cocolog program, one clause per check (72),
+test/reader.pl           the reader's gate: a cocolog program, one clause per check (74),
                          one process over one fresh store, every header parsed once
 test/reader.sh           runs it, and adds the check only a second process can make
 test/c/                  the gate's fixtures: hello.c, rich.c, the macro, :=, pattern,
@@ -200,6 +200,20 @@ named defer without a block stays a call; the node is
 `defer(Line, [id(V) …], block(...))`. It runs at every exit of its scope,
 LIFO, over the variables' values at that moment.
 
+**`#cocolog` ... `#end` is a macro file in place** (owner's rule): the
+lexer, on a `#` line whose text is `cocolog`, takes every line up to the
+`#end` line (or the file's end) raw into one `tok(cocolog, Text, L)`
+(`ccl_cocolog_body//3`); the parser's `ccl_external` makes it the item
+`cocolog(L, Text)` and calls `ccl_cocolog_block/2` (in `ccl_include`),
+which writes the text to `tmp_file(cocolog)-L.pl` and runs
+`ccl_load_macros/2` on it, the same door as `#include "m.pl"`: the heads
+found by `ccl_pl_clauses/2`, `ensure_loaded/1`, the registry
+`'$ccl_macros'`. A macro's error names that temporary file. The item
+carries the text into the store (over the clause budget the file stays
+uncached); on a cache hit nothing is re-loaded, the expansion having
+happened when the unit was read. Two `k72` clauses had hidden the tie
+check in `test/reader.pl` -- one clause per check, one NUMBER per check.
+
 **`x <*> y` is the tie operator** (owner's rule, and the spelling): x lives
 within y. The lexer has `<*>` as a punctuator (no C has it: `<*>` needs the
 `>` right after the `*`); `ccl_tie//2` reads it after a declarator in
@@ -277,8 +291,18 @@ where a name means "defined". Not lowered yet: VLAs, `_Complex`, `long double` (
 Every address is `getelementptr inbounds` and signed integer arithmetic
 is `nsw` (C's undefined behaviours, past the object and signed overflow),
 so LLVM widens loop counters and drops the sign extensions before an
-index: a third of a B-tree's search time, measured by `bench/btree/run.sh`
-(cicili -O3, clang -O3 on the same algorithm, Rust's BTreeSet).
+index: a quarter of a B-tree's insert time, measured by
+`bench/btree/run.sh` (cicili -O3, clang -O3 on the same algorithm, Rust's
+BTreeSet at its own fanout of eleven keys). With the node's children in a
+bounded own array -- a 56-byte leaf, no cast -- a branchless key scan
+where a key is placed, and deletion that fixes only a node left short on
+the way back up, cicili beats BTreeSet on insert and search and ties it
+on deletion (owner's goal, 2026-09-05, a million keys, min of 11:
+94/90/62/92/66 ms against 107/96/60/95/63 for insert, search, delete
+half, search again, delete the rest). Two throwaway experiments showed
+the element moves' null test and the drain before free cost nothing
+measurable; the run-to-run noise on this machine is up to a fifth, so
+only interleaved minimums mean anything.
 **Unions, bitfields, static locals** (M2b's gaps, closed): a struct's LLVM
 shape comes from its C layout (`ccl_members_layout/4` in `ccl_infer`: SysV
 packing, `lay(Name, T, ByteOff, none | bits(BitOff, Width, UnitBytes))`;
@@ -459,9 +483,20 @@ node for a free past the drain); `a[i] = R` becomes `({ T **p = &a[i]; T
 `move(a[i])` loads then stores null (`ir_own_elem/1`); an element handed
 to a consumer is wrapped in `move` first (`ir_moved_args/3` over
 `ck_consumes`); a local own array registers its drain loop as a defer
-(`ir_array_defers/2`). `btree.c` on `own node *C[4]` is the ownership
-test case (`leaks` finds none), `slots.c` a local array; four `safe/`
-programs are refused; `tie.c` and `clone.c` run, eight `safe/tie_*.c`
+(`ir_array_defers/2`). A struct's LAST member may be bounded by an
+earlier integer member, `own node *C[nc]` (`ck_members_ok/3`: the
+sibling in Seen, integer, last; else `own_unbounded`): a flexible member
+of no bytes (`ccl_size_align(arr(_, E), 0, A)`, `ir_type_` gives `[0 x
+T]`), the drain's bound `arrow(x, nc)` from `ir_array_bound/4`; the
+developer allocates `sizeof(node) + k * sizeof(node *)` and sets `nc`.
+An array's bound is any constant expression (`ccl_const_eval/2`: a
+literal, an enumerator, arithmetic), in the layout, the LLVM type and the
+check alike, so `enum { MAXK = 11 }; int key[MAXK];` sizes as C does.
+`btree.c` on `own node *C[4]` and `btree_del.c` on `own node *C[nc]`
+with deletion (minimum degree 2, the expectation made by the C mirror
+under AddressSanitizer) are the ownership test case (`leaks` finds none),
+`slots.c` a local array, `flex.c` the bounded one; five `safe/` programs
+are refused; `tie.c` and `clone.c` run, eight `safe/tie_*.c`
 are refused.
 
 ## How the LLVM module is written (the Cicili module pattern)

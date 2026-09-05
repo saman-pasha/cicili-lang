@@ -116,7 +116,11 @@
 %% own its elements twice), in a struct with a tag (`own_array_untagged': the
 %% drain is a function named by it); and an own pointer sits nowhere else --
 %% behind a plain pointer, in an array with no constant bound, as an array
-%% parameter -- `own_unbounded'.
+%% parameter -- `own_unbounded'. One more bound the check can name: a struct's
+%% LAST member may be `own T *a[n]' with n an earlier integer member of the
+%% same struct, a flexible array the developer allocates room for and counts
+%% (`calloc(1, sizeof(struct s) + k * sizeof(T *))', `s->n = k'); the drain
+%% loops to n. A wrong n is the developer's, as a wrong index is.
 %%
 %% A function's result may be tied to a static local of its own or to a global
 %% (`<*> table'): the caller's variable is then a borrow of static storage,
@@ -259,8 +263,7 @@ ck_set_fields_([K-S|Ps], Mode, St0, St) :-
 %% `own node *c[4]': the key is the array's (a local's name, a field's path,
 %% listed in '$ck_arrays'), its state `array'; an element is index(Path, _)
 ck_own_array_type(T) :- ccl_resolve_type(T, arr(_, ET)), ck_own_type(ET), !.
-ck_const(int(N), N) :- !.
-ck_const(id(E), N) :- ccl_enum_value(E, N), !.
+ck_const(E, N) :- ccl_const_eval(E, N), !.                          % a literal, an enumerator, a constant expression
 ck_note_array(K) :- nb_getval('$ck_arrays', As), ( memberchk(K, As) -> true ; nb_setval('$ck_arrays', [K|As]) ).
 ck_is_array_key(K) :- nb_getval('$ck_arrays', As), memberchk(K, As).
 ck_own_elem(index(A, _), K) :- ck_path(A, K), ck_is_array_key(K).
@@ -287,13 +290,16 @@ ck_array_struct_ok(T, N, Form) :-
     ccl_resolve_type(T, T1),
     (   ck_has_own_array(T1)
     ->  ( T1 = base(_, [struct(anon, _)]) -> ck_fail(own_array_untagged, N, Form) ; true ),
-        ccl_members_of(T1, Ms), ck_members_ok(Ms, Form)
+        ccl_members_of(T1, Ms), ck_members_ok(Ms, [], Form)
     ;   true ).
-ck_members_ok([], _).
-ck_members_ok([member(MT, F, _)|Ms], Form) :-
-    ck_bounds_ok(MT, F, Form),
+%% a member's bound: a constant, or -- for the last member -- an earlier integer member
+ck_members_ok([], _, _).
+ck_members_ok([member(MT, F, _)|Ms], Seen, Form) :-
+    (   ccl_resolve_type(MT, arr(NE, ET)), ck_own_type(ET), \+ ck_const(NE, _)
+    ->  ( NE = id(B), memberchk(B-BT, Seen), ccl_is_integer(BT), Ms == [] -> true ; ck_fail(own_unbounded, F, Form) )
+    ;   ck_bounds_ok(MT, F, Form) ),
     ( ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]) -> ck_array_struct_ok(MT1, F, Form) ; true ),
-    ck_members_ok(Ms, Form).
+    ck_members_ok(Ms, [F-MT|Seen], Form).
 ck_has_own_array(T) :-
     ccl_members_of(T, Ms), member(member(MT, _, _), Ms),
     ( ck_own_array_type(MT) -> true ; ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ck_has_own_array(MT1) ), !.

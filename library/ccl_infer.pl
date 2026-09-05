@@ -167,7 +167,7 @@ ccl_size_of(T, N) :- ccl_resolve_type(T, T1), ccl_size_align(T1, N, _).
 ccl_size_align(ptr(_, _), 8, 8) :- !.
 ccl_size_align(block(_, _), 8, 8) :- !.
 ccl_size_align(fn(_, _, _), 8, 8) :- !.
-ccl_size_align(arr(int(K), E), N, A) :- !, ccl_size_align(E, EN, A), N is K * EN.
+ccl_size_align(arr(NE, E), N, A) :- !, ccl_size_align(E, EN, A), ( ccl_const_eval(NE, K) -> N is K * EN ; N = 0 ).   % a flexible member, `T a[]' or `own T *a[n]': no bytes of its own
 ccl_size_align(base(_, S), N, A) :- ccl_basic_size(S, N), !, A = N.
 ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N, A).
 ccl_size_align(base(_, [union(_, Ms)]), N, A) :- Ms \== none, !, ccl_union_layout(Ms, 0, 1, N, A).

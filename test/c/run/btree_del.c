@@ -1,16 +1,14 @@
-/* the B-tree of test/c/run/btree_del.c at minimum degree 6 (up to 11 keys,
-   12 children per node -- BTreeSet's), as a benchmark: N distinct keys
-   inserted in a pseudo-random order, N searched (half present), half of them
-   deleted, N searched again, the rest deleted. Built by cicili -O3. A node's
-   children are an own array bounded by its `nc', the last member: a leaf is
-   allocated without it, 56 bytes, one cache line; an inner node has its slots
-   in place. Every child is an own array element: a merge moves them out of
-   the node that goes and frees it, the generated drain finding nothing left. */
+/* the B-tree of bench/btree at minimum degree 2 (one to three keys, two to
+   four children per node), with deletion, as the ownership test case: every
+   node owns its children through an own array bounded by its `nc'; a split
+   moves the upper children into a new owner, a merge moves a sibling's
+   children over and frees it, a rotation moves one child across, the root
+   shrinks to its only child; freeing the root drains whatever is left. At
+   this degree every rotation and merge fires on two dozen keys. */
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
-enum { T = 6, MINK = 5, MAXK = 11, MAXC = 12 };             /* the minimum degree: MINK..MAXK keys, up to MAXC children */
+enum { T = 2, MINK = 1, MAXK = 3, MAXC = 4 };
 typedef struct node node;
 struct node { int n; int key[MAXK]; int nc; own node *C[nc]; };   /* nc: 0 in a leaf, MAXC in an inner node */
 typedef struct tree { own node *root; } tree;
@@ -143,28 +141,23 @@ static void remove_key(tree *t, int k) {
         free(old);
     }
 }
-static int key_of(int i) { return (int) ((unsigned) i * (unsigned) 2654435761); }
-static long now_ms(void) { return (long) (clock() / 1000); }   /* CPU time; the run is one thread */
+static void walk(node *x) { for (int i = 0; i < x->n; i++) { if (x->nc) walk(x->C[i]); printf("%d ", x->key[i]); } if (x->nc) walk(x->C[x->n]); }
+static int count(node *x) { int c = x->n; if (x->nc) for (int i = 0; i <= x->n; i++) c += count(x->C[i]); return c; }
+static int height(node *x) { int h = 1; while (x->nc) { x = x->C[0]; h++; } return h; }
 
-int main(int argc, char **argv) {
-    int n = argc > 1 ? atoi(argv[1]) : 1000000;
+int main(void) {
     tree t;
     t.root = new_leaf();
-    long t0 = now_ms();
-    for (int i = 0; i < n; i++) insert(&t, key_of(i));
-    long t1 = now_ms();
-    int found = 0;
-    for (int i = n / 2; i < n / 2 + n; i++) found += contains(t.root, key_of(i));
-    long t2 = now_ms();
-    for (int i = 0; i < n; i += 2) remove_key(&t, key_of(i));       /* half of the keys */
-    long t3 = now_ms();
-    int left = 0;
-    for (int i = 0; i < n; i++) left += contains(t.root, key_of(i));
-    long t4 = now_ms();
-    for (int i = 1; i < n; i += 2) remove_key(&t, key_of(i));       /* the rest */
-    long t5 = now_ms();
-    int end = t.root->n + t.root->nc;
+    int keys[24] = { 12, 5, 19, 3, 8, 15, 22, 1, 4, 6, 9, 13, 17, 20, 24, 2, 7, 10, 11, 14, 16, 18, 21, 23 };
+    for (int i = 0; i < 24; i++) insert(&t, keys[i]);
+    printf("n %d h %d: ", count(t.root), height(t.root)); walk(t.root); printf("\n");
+    int gone[6] = { 12, 1, 24, 8, 15, 19 };                 /* a root key, both ends, inner keys: predecessors, rotations, merges */
+    for (int i = 0; i < 6; i++) {
+        remove_key(&t, gone[i]);
+        printf("-%d n %d h %d: ", gone[i], count(t.root), height(t.root)); walk(t.root); printf("\n");
+    }
+    for (int k = 1; k <= 24; k++) remove_key(&t, k);        /* all, the gone ones again: absent, unharmed */
+    printf("empty %d %d\n", t.root->n, t.root->nc);
     free(t.root);
-    printf("cicili -O3   insert %ld  search %ld  del-half %ld  srch-half %ld  del-rest %ld ms  found %d left %d end %d\n", t1 - t0, t2 - t1, t3 - t2, t4 - t3, t5 - t4, found, left, end);
     return 0;
 }

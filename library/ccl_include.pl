@@ -221,6 +221,15 @@ ccl_include(Spec, R) :-
 %% an expression, as a statement (a statement term is unwrapped), or at file
 %% scope; a list result is spliced in. The predicates a file defines are
 %% what current_predicate/1 gains by loading it.
+%% `#cocolog ... #end' in a C file (owner's rule): the lines between are a
+%% macro file written in place -- to a temporary .pl, loaded and registered
+%% like `#include "m.pl"', so every predicate they define is a macro from
+%% that line on; the block stays in the AST as cocolog(Line, Text), which
+%% the check and the lowering pass over (the expansion already happened)
+ccl_cocolog_block(L, Text) :-
+    tmp_file(cocolog, P0), atomic_list_concat([P0, '-', L, '.pl'], P),
+    atom_codes(Text, Cs), write_file_from_codes(P, Cs),
+    ccl_load_macros(P, _).
 ccl_load_macros(Path, Preds) :- ccl_macro_loaded(Path, Preds), !, ccl_register_macros(Preds).
 ccl_load_macros(Path, Preds) :-
     read_file_to_codes(Path, Codes),
