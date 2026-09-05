@@ -7,3 +7,10 @@ COCOLOG=${COCOLOG:-$HOME/Projects/GitHub/cocolog}
 C="$COCOLOG/cocolog"
 COCOLOG_LIBRARY="$ROOT/library${COCOLOG_LIBRARY:+:$COCOLOG_LIBRARY}"
 export COCOLOG_LIBRARY CICILI COCOLOG
+
+# the knowledge base every gate uses: the user's, ~/.cicili/KB, so the system
+# headers are read once, the first run being the initialization phase, and
+# served as static data to every later run (owner's rule); a gate that wants
+# a fresh one sets CICILI_KB itself
+export CICILI_KB="${CICILI_KB:-$HOME/.cicili/KB}"
+mkdir -p "$CICILI_KB"

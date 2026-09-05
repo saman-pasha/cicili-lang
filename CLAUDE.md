@@ -38,7 +38,9 @@ test/c/safe/             programs the check must REFUSE, each with the error its
 bin/cicili               the command: clang's arguments, one cocolog run over ./KB (ccl_drive/2)
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, and diagnostics in clang's shape
 test/driver.sh           the command's gate; test/c/link and test/c/inc its fixtures
-test/compile.sh          the compiler's gate: every test/c/run/*.c built and run, its output checked
+test/compile.pl          the compiler's gate: ONE process builds every test/c/run/*.c to a binary
+                         and checks every test/c/safe/*.c is refused, over the user's store
+test/compile.sh          runs it, then runs each binary and compares with NAME.expect
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh  ->  library/cicili.so
 module/ccl_llvm.cicili   the embedded LLVM: a cocolog module in Cicili over llvm-c; parse,
                          verify, target, passes, object (ccl_llvm_compile/3, ccl_llvm_check/2)
@@ -69,7 +71,7 @@ sh proof/run.sh
 learn): `-c -S -emit-llvm -fsyntax-only -o -O0..-Oz -I -l -L -shared -v
 --version -ast-dump`; `-g -D -W -f -std` are accepted and ignored for now.
 It builds one Prolog options list and runs `ccl_drive/2` in one cocolog
-process over `./KB` (`$CICILI_KB`, or `--no-kb` for `--local`); the run ends
+process over `~/.cicili/KB` (`$CICILI_KB`, or `--no-kb` for `--local`); the run ends
 `cicili: ok` or `cicili: N error(s)`, which the shell turns into the exit
 status. A diagnostic is `file:line: error: what` (`dr_diag/3`, one clause per
 error term; `once/1` around the report, since the callers' recovery fails
@@ -138,6 +140,15 @@ postfix grammar; a statement-shaped R is unwrapped by `ccl_stmt_of/2`; a
 list R is `'$splice'/1`, spliced by `ccl_splice/3` in blocks and at file
 scope; a file-scope call `name(args);` is its own `ccl_external` clause). A
 DCG rule `name(R) --> …` is `dcg(name)`: called as `phrase(name(R), Args)`.
+An error in a macro carries both places: `here(File, Line, in_macro(Pred,
+MacroFile))` on `macro_failed/2` and `macro_error/3` (`ccl_macro_file/2`
+finds the file from `'$ccl_macro_files'`); every successful expansion is
+`expansion(Line, Name, Args)` in `'$ccl_expansions'`, and the unit ends with
+`'$expansions'(List)` when there were any, which the driver reads
+(`dr_remember_expansions/1`) to add `note: expanded from macro` under a
+diagnostic on that line. The command's output filter passes `: note: `
+lines; `ccl_drive/2` is `once/1`, since cocolog's query loop asks for a
+second answer and a stray choicepoint reprints everything.
 The file is loaded with `ensure_loaded/1` (a reload replaces; under the
 store its clauses stay in the process) and its heads are found by splitting
 its text into clauses and `term_to_atom/2` on each (`ccl_pl_clauses/2`),
@@ -201,11 +212,15 @@ is how `s := format(...)` is a `char *`.
 it stored as `ref(Path, How)` and re-linked on load through
 `ccl_include_read/2`; `ccl_kb_cached/3` checks `time_file/2`,
 `ccl_reader_version/1`, every dep's remembered key, and the item count.
-Both predicates are declared dynamic by `ccl_kb_ready/0`. A bare `--embed` is `./KB` in the working directory -- the
-per-project store. BUMP `ccl_reader_version/1` whenever the grammar
-changes, or a partial read from an older grammar stays cached. The reader
-gate is one process over one fresh `--embed`, so every header is parsed
-once; `test/reader.sh` then asks a second process for what the first read.
+Both predicates are declared dynamic by `ccl_kb_ready/0`. **The store is the user's, `~/.cicili/KB`** (`$CICILI_KB`; owner's rule,
+final after two turns: not per working directory): the first call is the
+initialization phase, reading the C standard library, the OS's deep headers
+and POSIX once, ~90 s; every later call, in any project, is served from the
+store as static data, the gates included -- `test/config.sh` exports
+`CICILI_KB=$HOME/.cicili/KB` and every gate runs over it. BUMP `ccl_reader_version/1` whenever the
+grammar changes, or a partial read from an older grammar stays cached (and
+expect that one re-read). `test/reader.sh` runs the checks in one process,
+then asks a second process for what the first read.
 
 ## How the lowering is implemented
 
@@ -290,6 +305,11 @@ module (a segfault that looked like the error path's). The build mirrors `module
   8 KB** (no error term; a later message may show garbage), while
   `atom_codes/2` takes hundreds of KB: anything long is joined as codes
   (`ir_join/3`) and made an atom once.
+* **`cocolog run FILE goal` under `--embed` consults FILE INTO the store**:
+  its clauses persist, and a second program's `main` meets the first's. A
+  gate program is loaded with `ensure_loaded/1` from a `query`, whose
+  clauses are not stored, and its entry point has a name of its own
+  (`reader_main`, `compile_main`).
 * **An unset global throws** (`nb_getval/2`: existence_error), so a global
   is read through `ccl_global/3` or a `once(catch(...))`.
 * cocolog has `abolish/1`, `clause/2` on consulted clauses and `retract/1`

@@ -38,6 +38,7 @@
 %%                                             which is typedef struct name { members } name;
 %%   declare(Line, Base)                       `struct s { ... };' and the like
 %%   empty                                     a stray `;'
+%%   '$expansions'([expansion(Line, Macro, Args) ...])   last, when macros expanded: where
 %% Types:  base(Quals, Specs) where Specs is the specifier list as written
 %%           ([int], [unsigned, long], [struct(Name, Members)], [enum(N, Es)],
 %%            [typedef(Name)], [typeof(ExprOrType)] ...); Quals from const volatile restrict _Atomic
@@ -73,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(17).
+ccl_reader_version(18).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -192,7 +193,12 @@ ccl_one_char(0':, ':').  ccl_one_char(0';, ';').  ccl_one_char(0'=, '=').  ccl_o
 
 %% ---- the parser: a DCG over tokens -----------------------------------------
 
-ccl_unit(Tokens, unit(Items), Rest) :- ccl_seed_typedefs(Env), nb_setval('$ccl_env', Env), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []), ccl_standard_macros, ccl_scope_init, phrase(ccl_externals(Env, Items), Tokens, Rest).
+ccl_unit(Tokens, unit(Items), Rest) :-
+    ccl_seed_typedefs(Env), nb_setval('$ccl_env', Env), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []), nb_setval('$ccl_expansions', []),
+    ccl_standard_macros, ccl_scope_init,
+    phrase(ccl_externals(Env, Items0), Tokens, Rest),
+    nb_getval('$ccl_expansions', Es0),
+    ( Es0 == [] -> Items = Items0 ; reverse(Es0, Es), append(Items0, ['$expansions'(Es)], Items) ).
 
 %% ---- name := expr ---------------------------------------------------------------
 %% The type is ccl_type_of/2's (library(ccl_infer)) over the scope as it stands:
@@ -374,12 +380,22 @@ ccl_is_macro(N, K) :- once(catch(nb_getval('$ccl_macros', Ms), _, fail)), ( K1 i
 ccl_macro_name(N) :- once(catch(nb_getval('$ccl_macros', Ms), _, fail)), memberchk(macro(N, _, _), Ms).
 %% a plain macro name/K+1 is called pred(A1..AK, R); a DCG macro name//1 is
 %% phrase(pred(R), [A1..AK]): the arguments are the list it parses
+%% An error in a macro names both places: where the macro was called in the
+%% C file (here(File, Line, ...)) and where it went wrong inside the macro
+%% (in_macro(Pred, MacroFile), and the Prolog error itself). An expansion
+%% that succeeds is recorded -- expansion(Line, Name, Args) -- and the unit
+%% carries them as its last item, '$expansions'(List), so a later refusal of
+%% what a macro produced can say so (the driver's `note: expanded from macro').
 ccl_expand_macro(N, As, R) :-
     nb_getval('$ccl_macros', Ms), length(As, K), K1 is K + 1,
     ( memberchk(macro(N, P, K1), Ms) -> append(As, [R0], Args), G =.. [P|Args] ; memberchk(macro(N, P, dcg), Ms), G = phrase(N1, As), N1 =.. [P, R0] ),
-    (   catch(G, E, ( E = error(macro_error(_, here(_, _)), _) -> throw(E) ; throw(error(macro_error(N, As, E), _)) ))
-    ->  ccl_here(_, L), ( is_list(R0) -> ccl_add_lines(L, '$splice'(R0), R) ; ccl_add_lines(L, R0, R) )
-    ;   throw(error(macro_failed(N, As), _)) ).
+    ccl_here(File, L), ccl_macro_file(P, MF),
+    (   catch(G, E, ( E = error(macro_error(_, here(_, _)), _) -> throw(E) ; throw(error(macro_error(N, As, E), here(File, L, in_macro(P, MF)))) ))
+    ->  ( is_list(R0) -> ccl_add_lines(L, '$splice'(R0), R) ; ccl_add_lines(L, R0, R) ),
+        ccl_note_expansion(L, N, As)
+    ;   throw(error(macro_failed(N, As), here(File, L, in_macro(P, MF)))) ).
+ccl_macro_file(P, File) :- ( once(catch(nb_getval('$ccl_macro_files', L), _, fail)), member(File-Preds, L), memberchk(macro(_, P, _), Preds) -> true ; File = unknown ).
+ccl_note_expansion(L, N, As) :- ( once(catch(nb_getval('$ccl_expansions', Es), _, fail)) -> true ; Es = [] ), nb_setval('$ccl_expansions', [expansion(L, N, As)|Es]).
 ccl_call_or_macro(id(move), [E], move(E)) :- !.                      % the safe part: ownership leaves E
 ccl_call_or_macro(id(N), As, R) :- length(As, K), ccl_is_macro(N, K), !, ccl_expand_macro(N, As, R).
 ccl_call_or_macro(F, As, call(F, As)).

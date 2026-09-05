@@ -156,12 +156,14 @@ ccl_with_file(File, Goal) :-
     ( catch(Goal, E, (ccl_restore_globals(Saved), throw(E)))
     -> ccl_restore_globals(Saved)
     ;  ccl_restore_globals(Saved), fail ).
-ccl_save_globals(g(F, E, Far, M, Sc, Td, Tg, En)) :-
+ccl_save_globals(g(F, E, Far, M, Sc, Td, Tg, En, Ex)) :-
     ccl_global('$ccl_file', F, none), ccl_global('$ccl_env', E, []), ccl_global('$ccl_far', Far, 0), ccl_global('$ccl_macros', M, []),
-    ccl_global('$ccl_scope', Sc, [[]]), ccl_global('$ccl_typedefs', Td, []), ccl_global('$ccl_tags', Tg, []), ccl_global('$ccl_enums', En, []).
-ccl_restore_globals(g(F, E, Far, M, Sc, Td, Tg, En)) :-
+    ccl_global('$ccl_scope', Sc, [[]]), ccl_global('$ccl_typedefs', Td, []), ccl_global('$ccl_tags', Tg, []), ccl_global('$ccl_enums', En, []),
+    ccl_global('$ccl_expansions', Ex, []).
+ccl_restore_globals(g(F, E, Far, M, Sc, Td, Tg, En, Ex)) :-
     nb_setval('$ccl_file', F), nb_setval('$ccl_env', E), nb_setval('$ccl_far', Far), nb_setval('$ccl_macros', M),
-    nb_setval('$ccl_scope', Sc), nb_setval('$ccl_typedefs', Td), nb_setval('$ccl_tags', Tg), nb_setval('$ccl_enums', En).
+    nb_setval('$ccl_scope', Sc), nb_setval('$ccl_typedefs', Td), nb_setval('$ccl_tags', Tg), nb_setval('$ccl_enums', En),
+    nb_setval('$ccl_expansions', Ex).
 ccl_global(K, V, D) :- ( catch(nb_getval(K, V0), _, fail), V0 \== '$unset' -> V = V0 ; V = D ).
 
 %% ---- the directive's text -----------------------------------------------------

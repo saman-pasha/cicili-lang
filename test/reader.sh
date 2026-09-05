@@ -14,14 +14,16 @@ D=$(mktemp -d "${TMPDIR:-/tmp}/cicili-reader-XXXXXX")
 trap 'rm -rf "$D"' EXIT
 export CCL_TEST_ROOT="$ROOT" CCL_TEST_TMP="$D"
 
-out=$("$C" --embed "$D/kb" run "$ROOT/test/reader.pl" main 2>&1)
+# the store is the user's (test/config.sh): the headers were read once, by whoever came first
+# ensure_loaded from a query, never `run FILE goal': under a store `run' consults the program INTO it
+out=$("$C" --embed "$CICILI_KB" query "ensure_loaded('$ROOT/test/reader.pl'), reader_main" 2>&1)
 echo "$out" | grep -a "^ok\|^FAIL\|^--\|^SKIP\|^     \|^GREEN\|^RED\|ERROR" || echo "$out" | tail -5
 failures=$(echo "$out" | grep -ac "^FAIL")
 echo "$out" | grep -aq "^GREEN\|^RED" || { echo "RED: the gate did not finish"; exit 1; }
 
 echo "-- a later process, the same store"
 s=$(date +%s)
-got=$("$C" --embed "$D/kb" query "use_module(library(cicili)), ccl_kb_ready, '\$ccl_ast'(P, _, meta(included(_), _, _)), sub_atom(P, _, _, 0, '/stdio.h'), cicili_ast('$ROOT/test/c/hello.c', U), ccl_declares(U, printf, _), write(answer(yes)), nl" 2>&1 | grep -aoE 'answer\(.*\)' | head -1)
+got=$("$C" --embed "$CICILI_KB" query "use_module(library(cicili)), ccl_kb_ready, '\$ccl_ast'(P, _, meta(included(_), _, _)), sub_atom(P, _, _, 0, '/stdio.h'), cicili_ast('$ROOT/test/c/hello.c', U), ccl_declares(U, printf, _), write(answer(yes)), nl" 2>&1 | grep -aoE 'answer\(.*\)' | head -1)
 t=$(( $(date +%s) - s ))
 # a fresh parse of hello.c and its 99 headers takes about 90 s; from the store, with the
 # symbol table rebuilt, a few seconds

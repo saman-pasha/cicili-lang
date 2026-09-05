@@ -53,9 +53,12 @@ cicili -I include prog.c           cicili -ast-dump prog.c           cicili --ve
 
 `--version` prints the version, which every commit raises, and the back
 end's. A diagnostic is `file:line: error: what`, the exit status 1 when there is
-one; the knowledge base is `./KB` in the working directory, or `$CICILI_KB`,
-so headers are parsed once per project (`--no-kb` keeps everything in
-memory). `test/driver.sh` is its gate.
+one. The knowledge base is `~/.cicili/KB`, the user's (or `$CICILI_KB`;
+`--no-kb` keeps everything in memory): the first call is the initialization
+phase, reading the C standard library, the OS's and POSIX's headers
+**once**; every later call, in any project, the tests included, is served
+from it as static data, until the SDK or the reader's grammar changes.
+`test/driver.sh` is its gate.
 
 ## The compiler, in four predicates
 
@@ -159,10 +162,12 @@ anywhere under a unit -- `printf` under `<stdio.h>`, `malloc` under
 kept in the store keyed by its modification time and the reader's version,
 one clause per top-level item, so under `--embed` it is there for the next
 process and is loaded from there instead of re-read while the file's time
-is unchanged and every header under it is at its remembered time. Run cocolog with the project's store -- a bare `--embed` opens
-`./KB` in the working directory -- and each system header is parsed once
-per project; the reader's version is part of the key, so a better grammar
-re-reads what an older one left partial.
+is unchanged and every header under it is at its remembered time. The
+store is the user's, `~/.cicili/KB`: the first call is the initialization
+phase, when the system headers -- the C standard library, the OS's,
+POSIX's -- are parsed once; every later run, in any project, is served from
+it, the gates included; the reader's version is part of the key, so a
+better grammar re-reads what an older one left partial.
 
 Otherwise the preprocessor is not expanded: any other `#` line is kept
 whole as `directive(Line, Text)`, and a typedef name from a header the
@@ -210,9 +215,24 @@ parser is, `ccl_macro_error/1` stops the read with a message. In the gate,
 and a member, and `size(p)` of a struct of an int and a double is 16.
 
 The include node is `include(Line, local('m.pl'), macros(Path,
-[macro(square, square, 2), macro(sum, sum, dcg) …]))`, the macro file is a dependency of the includer's
-cached read, and a macro that fails or throws stops the read with
-`macro_failed(Name, Args)` or `macro_error(Name, Args, Error)`.
+[macro(square, square, 2), macro(sum, sum, dcg) …]))`, and the macro file
+is a dependency of the includer's cached read.
+
+**An error in a macro names both places.** A macro that fails or throws
+stops the read with `error(macro_failed(Name, Args) | macro_error(Name,
+Args, Error), here(File, Line, in_macro(Pred, MacroFile)))`: where it was
+called, and where it went wrong; the command prints the error at the call
+site and a note with the macro, its file and its arguments, the Prolog
+error said plainly (`the macro calls no_such_predicate/1, which does not
+exist`). And every expansion is recorded in the unit, `'$expansions'([
+expansion(Line, Name, Args) …])` as its last item, so when the ownership
+check or the lowering refuses something a macro produced, the diagnostic
+on that line carries `note: expanded from macro`:
+
+```
+safe/macro_double_free.c:3: error: use after move of 'p' in call(id(free),[id(p)]) (function main)
+safe/macro_double_free.c:3: note: expanded from macro 'freeit' on id(p)
+```
 
 ## `:=` declares by inference
 
@@ -363,7 +383,8 @@ library/ccl_check.pl     the safe part: the ownership check cicili_ir runs first
 library/ccl_driver.pl    what the cicili command does; bin/cicili reads the arguments
 test/driver.sh           the command's gate
 module/ccl_llvm.cicili   the embedded LLVM, a cocolog module over llvm-c (module/build-llvm.sh)
-test/compile.sh          the compiler's gate: test/c/run/*.c built, run, checked
+test/compile.pl, .sh     the compiler's gate: one process builds test/c/run/*.c and refuses
+                         test/c/safe/*.c; the shell runs the binaries and compares
 library/cicili.so        built output; never committed (library/*.pl is)
 module/build.sh          CICILI=… COCOLOG=… sh module/build.sh
 proof/                   M0: LLVM IR to a native binary, and the script that proves it

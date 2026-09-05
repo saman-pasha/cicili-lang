@@ -8,15 +8,18 @@
 #   cicili -I include -I ../h prog.c                   cicili -ast-dump prog.c
 #   cicili --version                                   cicili -v ... (say each step)
 #
-# The knowledge base is ./KB in the working directory -- headers are parsed
-# once per project -- or $CICILI_KB; --no-kb keeps everything in memory.
+# The knowledge base is ~/.cicili/KB, the user's (or $CICILI_KB): the first
+# call is the initialization phase, reading the C standard library, the OS's
+# and POSIX's headers once; every later call, in any project, the tests
+# included, is served from it as static data, until the SDK or the reader's
+# grammar changes. --no-kb keeps everything in memory.
 # Diagnostics are file:line: error: what, the exit status 1 when any.
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/.." && pwd)
 COCOLOG=${COCOLOG:-$HOME/Projects/GitHub/cocolog}
 if [ -x "$COCOLOG/cocolog" ]; then C="$COCOLOG/cocolog"; elif command -v cocolog >/dev/null 2>&1; then C=$(command -v cocolog); else echo "cicili: no cocolog (set COCOLOG)" >&2; exit 1; fi
 export COCOLOG_LIBRARY="$ROOT/library${COCOLOG_LIBRARY:+:$COCOLOG_LIBRARY}"
-KB=${CICILI_KB:-./KB}
+KB=${CICILI_KB:-$HOME/.cicili/KB}
 store="--embed $KB"
 inputs=""; opts=""; out=""; opt=""; verbose=""
 need() { [ $# -ge 2 ] || { echo "cicili: error: argument to '$1' is missing" >&2; exit 1; }; }
@@ -50,7 +53,7 @@ done
 inputs="[${inputs%,}]"; opts="[${opts%,}]"
 case "$store" in --embed*) mkdir -p "$KB" ;; esac
 res=$("$C" $store query "use_module(library(cicili)), ccl_drive($inputs, $opts)" 2>&1)
-printf '%s\n' "$res" | grep -a ": error: \|^cicili: \|^unit(" | grep -av "^cicili: ok$"
+printf '%s\n' "$res" | grep -a ": error: \|: note: \|^cicili: \|^unit(" | grep -av "^cicili: ok$"
 printf '%s\n' "$res" | grep -aq "^cicili: ok$" && exit 0
 printf '%s\n' "$res" | grep -aq "^cicili: [0-9]* error" || { printf '%s\n' "$res" | grep -a "ERROR\|error" | head -3 | sed 's/^/cicili: /'; }
 exit 1

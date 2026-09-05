@@ -17,7 +17,8 @@
 
 :- use_module(library(process)).
 
-ccl_drive(Inputs, Options) :-
+ccl_drive(Inputs, Options) :- once(dr_drive(Inputs, Options)).          % one answer: the query loop would re-run a second
+dr_drive(Inputs, Options) :-
     nb_setval('$dr_errors', 0),
     forall(member(include(D), Options), assertz(ccl_include_dir(D))),
     ( memberchk(opt(O), Options) -> Flags = [O] ; Flags = ['-O0'] ),
@@ -47,9 +48,10 @@ dr_ext(F, E) :- atom_concat('.', E, Dot), sub_atom(F, _, _, 0, Dot).
 
 %% a .c: read (headers, macros, := ...), the safe part, the IR, then what the options ask
 dr_c(F, Options, Flags, Objs, Objs1) :-
-    dr_say(['read ', F]),
+    dr_say(['read ', F]), nb_setval('$dr_expansions', []),
     (   catch(cicili_ast(F, AST), E1, (dr_report(F, E1), fail))
-    ->  (   memberchk(ast, Options) -> writeq(AST), nl, Objs = Objs1
+    ->  dr_remember_expansions(AST),
+        (   memberchk(ast, Options) -> writeq(AST), nl, Objs = Objs1
         ;   dr_say(['check and lower ', F]),
             (   catch(cicili_ir([AST], IR), E2, (dr_report(F, E2), fail))
             ->  dr_emit(F, IR, Options, Flags, Objs, Objs1)
@@ -73,6 +75,17 @@ dr_out(F, _, Ext, Out) :-
 dr_basename(F, B) :- atom_codes(F, Cs), dr_after_slash(Cs, Bs), atom_codes(B, Bs).
 dr_after_slash(Cs, Bs) :- ( append(_, [0'/|R], Cs), \+ memberchk(0'/, R) -> Bs = R ; Bs = Cs ).
 
+%% the unit's expansions, for the note under a diagnostic on an expanded line
+dr_remember_expansions(unit(Is)) :- !, ( append(_, ['$expansions'(Es)], Is) -> nb_setval('$dr_expansions', Es) ; nb_setval('$dr_expansions', []) ).
+dr_remember_expansions(_).
+dr_note_expansion(F, L) :-
+    ( nb_getval('$dr_expansions', Es), member(expansion(L, N, As), Es)
+    -> write(F), write(':'), write(L), write(': note: expanded from macro \''), write(N), write('\' on '), dr_args(As), nl
+    ; true ).
+dr_args([]).
+dr_args([A]) :- !, writeq(A).
+dr_args([A|As]) :- writeq(A), write(', '), dr_args(As).
+
 %% ---- diagnostics, clang's shape ---------------------------------------------------------
 %% once: the callers' recovery fails after reporting, and must not report twice
 dr_report(F, error(E, W)) :- !, once(dr_diag(F, E, W)).
@@ -82,8 +95,13 @@ dr_diag(_, syntax_error(cicili_ast(File, lexical, line(L))), _) :- !, dr_error(F
 dr_diag(F, cannot_infer(N, E), here(_, L)) :- !, dr_error(F, L, ['cannot infer the type of ', N, ' from ', E]).
 dr_diag(F, no_member(What, T), here(_, L)) :- !, dr_error(F, L, ['no member ', What, ' in ', T]).
 dr_diag(F, macro_error(M, here(_, L)), _) :- !, dr_error(F, L, ['macro: ', M]).
-dr_diag(F, macro_error(N, As, E), _) :- !, dr_error(F, 0, ['macro ', N, ' on ', As, ' threw ', E]).
-dr_diag(F, macro_failed(N, As), _) :- !, dr_error(F, 0, ['macro ', N, ' failed on ', As]).
+%% an error inside a macro: the call site, then where it went wrong in the macro
+dr_diag(F, macro_error(N, As, E), here(_, L, in_macro(P, MF))) :- !,
+    dr_prolog_error(E, Text), dr_error(F, L, ['in the expansion of macro \'', N, '\': ', Text]), dr_note_macro(F, L, P, MF, As).
+dr_diag(F, macro_failed(N, As), here(_, L, in_macro(P, MF))) :- !,
+    dr_error(F, L, ['macro \'', N, '\' failed: no result for these arguments']), dr_note_macro(F, L, P, MF, As).
+dr_diag(F, macro_error(N, As, E), _) :- !, dr_prolog_error(E, Text), dr_error(F, 0, ['in the expansion of macro \'', N, '\' on ', As, ': ', Text]).
+dr_diag(F, macro_failed(N, As), _) :- !, dr_error(F, 0, ['macro \'', N, '\' failed on ', As]).
 dr_diag(F, ownership(Kind, N, Form), where(Fn, line(L))) :- !, dr_kind(Kind, Text), dr_error(F, L, [Text, ' ''', N, ''' in ', Form, ' (function ', Fn, ')']).
 dr_diag(F, not_lowered(What), where(Fn, line(L))) :- !, dr_error(F, L, ['not lowered yet: ', What, ' (function ', Fn, ')']).
 dr_diag(F, compile_failed(Msg), _) :- !, dr_error(F, 0, ['LLVM: ', Msg]).
@@ -101,7 +119,20 @@ dr_kind(goto_with_owners, 'goto in a function with owners, at label') :- !.
 dr_kind(K, K).
 dr_error(F, L, Parts) :-
     nb_getval('$dr_errors', N), N1 is N + 1, nb_setval('$dr_errors', N1),
-    write(F), ( L > 0 -> write(':'), write(L) ; true ), write(': error: '), dr_write(Parts), nl.
+    write(F), ( L > 0 -> write(':'), write(L) ; true ), write(': error: '), dr_write(Parts), nl,
+    ( L > 0 -> dr_note_expansion(F, L) ; true ).
+dr_note_macro(F, L, P, MF, As) :-
+    write(F), write(':'), write(L), write(': note: the macro is '), write(P), write(' in '), write(MF), write(', called on '), dr_args(As), nl.
+%% a Prolog error, said plainly
+dr_prolog_error(error(existence_error(procedure, PI), _), T) :- !, dr_join(['the macro calls ', PI, ', which does not exist'], T).
+dr_prolog_error(error(type_error(Ty, C), _), T) :- !, dr_join(['expected a ', Ty, ', got ', C], T).
+dr_prolog_error(error(instantiation_error, _), T) :- !, T = 'an argument was left unbound'.
+dr_prolog_error(error(macro_error(M, _), _), T) :- !, dr_join(['the macro said: ', M], T).
+dr_prolog_error(error(E, _), T) :- !, dr_join(['it threw ', E], T).
+dr_prolog_error(E, T) :- dr_join(['it threw ', E], T).
+dr_join(Parts, A) :- dr_join_codes(Parts, Cs), atom_codes(A, Cs).
+dr_join_codes([], []).
+dr_join_codes([P|Ps], Cs) :- ( atom(P) -> atom_codes(P, C) ; term_to_atom(P, A), atom_codes(A, C) ), dr_join_codes(Ps, Cs1), append(C, Cs1, Cs).
 dr_write([]).
 dr_write([P|Ps]) :- ( atomic(P) -> write(P) ; writeq(P) ), dr_write(Ps).
 dr_say(Parts) :- ( nb_getval('$dr_verbose', yes) -> write('cicili: '), dr_write(Parts), nl ; true ).

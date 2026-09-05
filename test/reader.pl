@@ -5,13 +5,14 @@
 %% cache). Each check prints `ok   Name' or `FAIL Name'; the last line is
 %% GREEN or RED.
 %%
-%%   CCL_TEST_ROOT=<this repo> cocolog --embed <a fresh store> run test/reader.pl main
+%%   CCL_TEST_ROOT=<this repo> cocolog --embed <the store> query "ensure_loaded('test/reader.pl'), reader_main"
+%% (never `run test/reader.pl main': under a store, `run' consults the program into it)
 
 :- use_module(library(cicili)).
 :- use_module(library(os)).
 :- use_module(library(process)).
 
-main :-
+reader_main :-
     setup,
     t_checks, t_real,
     nb_getval('$t_fails', N),
@@ -149,6 +150,12 @@ k28 :- check('a macro that fails stops the read with its name and arguments',
 
 k29 :- check('a macro that throws reports the macro, its arguments and the ball',
     ( c('throwing_macro.c', P), catch(cicili_ast(P, _), error(E, _), true), E == macro_error(bang, [int(1)], oops) )).
+
+k79 :- check('a unit that expanded macros ends with what expanded where: swap(a, b) at line 12',
+    ( unit('uses_macros.c', unit(Is)), append(_, ['$expansions'(Es)], Is), memberchk(expansion(12, swap, [id(a), id(b)]), Es) )).
+
+k80 :- check('an error inside a macro names the call site and the macro: file, line 2, bang in throws.pl',
+    ( c('throwing_macro.c', P), c('throws.pl', M), catch(cicili_ast(P, _), error(macro_error(bang, [int(1)], oops), here(P, 2, in_macro(bang, M))), true) )).
 
 k30 :- check('n := 42; is an int declaration with that initializer',
     ( fn_body('walrus.c', f, B), member(declaration(4, none, base([], [int]), [var(n, base([], [int]), int(42))]), B) )).
@@ -337,6 +344,8 @@ t_checks :-
     k27,
     k28,
     k29,
+    k79,
+    k80,
     section(':= declares by inference'),
     k30,
     k31,

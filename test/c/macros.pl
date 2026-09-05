@@ -8,3 +8,5 @@ sum_rest(A, A) --> [].
 typename(X, str(Codes)) :- ccl_type_of(X, T), term_to_atom(T, A), atom_codes(A, Codes).
 size(X, int(N)) :- ccl_type_of(X, T), ccl_size_of(T, N).
 boom(_, _) :- fail.
+freeit(P, expr(call(id(free), [P]))).
+calls_missing(_, R) :- no_such_predicate(R).
