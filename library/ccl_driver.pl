@@ -52,11 +52,62 @@ dr_c(F, Options, Flags, Objs, Objs1) :-
     (   catch(cicili_ast(F, AST), E1, (dr_report(F, E1), fail))
     ->  dr_remember_expansions(AST),
         (   memberchk(ast, Options) -> writeq(AST), nl, Objs = Objs1
-        ;   dr_say(['check and lower ', F]),
-            (   catch(cicili_ir([AST], IR), E2, (dr_report(F, E2), fail))
+        ;   (   catch(dr_ir(F, AST, IR), E2, (dr_report(F, E2), fail))
             ->  dr_emit(F, IR, Options, Flags, Objs, Objs1)
             ;   Objs = Objs1 ) )
     ;   Objs = Objs1 ).
+
+%% ---- the IR beside the units in the store (M4) ----------------------------------------
+%% A unit's IR is kept under a predicate of its own, '$ccl_ir:<Path>'(Index,
+%% Chunk) -- chunks of 3500 characters, well under the store's clause budget
+%% once quoted -- with '$ccl_irmeta'(Path, Signature, Count) as the index. The
+%% signature folds into one number everything the IR came from: the unit's key
+%% (its time and the reader's version), the key of every unit and macro file
+%% its AST reaches, the lowering's version and the host. A file whose signature
+%% matches is served: not read again for its check and lowering, the check
+%% having passed when the IR was made. A file whose check fails stores nothing.
+dr_ir(F, AST, IR) :-
+    dr_ir_ready, dr_ir_sig(F, AST, Sig),
+    (   dr_ir_cached(F, Sig, IR0) -> dr_say(['served ', F, ' from the store']), IR = IR0
+    ;   dr_say(['check and lower ', F]), cicili_ir([AST], IR), dr_ir_remember(F, Sig, IR) ).
+dr_ir_ready :- ccl_kb_ready, dynamic('$ccl_irmeta'/3).                % cheap; an unset global would throw
+dr_ir_pred(F, P) :- atom_concat('$ccl_ir:', F, P), dynamic(P/2).
+dr_ir_sig(F, AST, Sig) :-
+    ccl_lowering_version(LV), ir_arch_init, ir_arch(Arch),
+    dr_unit_deps(AST, Ds0), sort(Ds0, Ds),
+    findall(P-K, ( member(P, [F|Ds]), ( ccl_kb_key(P, K) -> true ; K = none ) ), Keys),
+    term_to_atom(sig(LV, Arch, Keys), A), atom_codes(A, Cs), dr_fold(Cs, 7, 131, S1), dr_fold(Cs, 13, 137, S2), Sig = S1-S2.
+%% two folds under 2^31 (cocolog's arithmetic is not exact past 2^52), a pair for 62 bits
+dr_fold([], S, _, S).
+dr_fold([C|Cs], S0, M, S) :- S1 is (S0 * M + C) mod 2147483647, dr_fold(Cs, S1, M, S).
+%% every file an AST reaches: the headers read into it, at any depth, and the macro files
+dr_unit_deps(unit(Is), Ds) :- !, dr_items_deps(Is, Ds).
+dr_unit_deps(partial(U, _, _), Ds) :- !, dr_unit_deps(U, Ds).
+dr_unit_deps(_, []).
+dr_items_deps([], []).
+dr_items_deps([include(_, _, file(P, _, U))|Is], [P|Ds]) :- !, dr_unit_deps(U, D1), dr_items_deps(Is, D2), append(D1, D2, Ds).
+dr_items_deps([include(_, _, macros(P, _))|Is], [P|Ds]) :- !, dr_items_deps(Is, Ds).
+dr_items_deps([_|Is], Ds) :- dr_items_deps(Is, Ds).
+dr_ir_cached(F, Sig, IR) :-
+    '$ccl_irmeta'(F, Sig, N), dr_ir_pred(F, P),
+    findall(I-C, ( T =.. [P, I, C], call(T) ), Pairs), length(Pairs, N),
+    sort(Pairs, Sorted), dr_ir_join(Sorted, Codes), atom_codes(IR, Codes).
+dr_ir_join([], []).
+dr_ir_join([_-C|T], Codes) :- atom_codes(C, Cs), dr_ir_join(T, Rest), append(Cs, Rest, Codes).
+dr_ir_remember(F, Sig, IR) :-
+    dr_ir_forget(F), dr_ir_pred(F, P),
+    atom_codes(IR, Codes), dr_chunks(Codes, Chunks),
+    (   catch(dr_ir_store(Chunks, P, 0, N), error(resource_error(clause_length), _), fail)
+    ->  assertz('$ccl_irmeta'(F, Sig, N))
+    ;   dr_ir_forget(F) ).
+dr_ir_forget(F) :- retractall('$ccl_irmeta'(F, _, _)), dr_ir_pred(F, P), T =.. [P, _, _], retractall(T).
+dr_ir_store([], _, N, N).
+dr_ir_store([C|Cs], P, I, N) :- T =.. [P, I, C], assertz(T), I1 is I + 1, dr_ir_store(Cs, P, I1, N).
+dr_chunks([], []) :- !.
+dr_chunks(Codes, [A|As]) :- dr_take(3500, Codes, Head, Tail), atom_codes(A, Head), dr_chunks(Tail, As).
+dr_take(0, T, [], T) :- !.
+dr_take(_, [], [], []) :- !.
+dr_take(K, [C|Cs], [C|H], T) :- K1 is K - 1, dr_take(K1, Cs, H, T).
 dr_ll(F, Options, Flags, Objs, Objs1) :-
     read_file_to_codes(F, Cs), atom_codes(IR, Cs), dr_emit(F, IR, Options, Flags, Objs, Objs1).
 dr_emit(F, IR, Options, Flags, Objs, Objs1) :-

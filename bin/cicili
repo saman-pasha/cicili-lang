@@ -26,7 +26,7 @@ store="--embed $KB"
 # a retracted row -- a store grown fat slows every predicate's first call --
 # so a new version starts a new store. test/config.sh is this function's twin.
 kb_prepare() {
-  v=$(sed -n 's/^ccl_reader_version(\([0-9]*\))\..*/\1/p' "$ROOT/library/ccl_syntax.pl" | head -1)
+  v="$(sed -n 's/^ccl_reader_version(\([0-9]*\))\..*/\1/p' "$ROOT/library/ccl_syntax.pl" | head -1).$(sed -n 's/^ccl_lowering_version(\([0-9]*\))\..*/\1/p' "$ROOT/library/ccl_ir.pl" | head -1)"
   stamp="$1.version"
   [ -f "$1/data.bin" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$v" ] && rm -rf "$1"
   mkdir -p "$1"; [ "$(cat "$stamp" 2>/dev/null)" = "$v" ] || echo "$v" > "$stamp"

@@ -34,7 +34,13 @@ check "-ast-dump prints the unit" "$("$CICILI" -ast-dump "$R/run/forty2.c" | gre
 check "an unknown argument is an error, as clang says it" "$("$CICILI" --frobnicate x.c 2>&1)" "cicili: error: unknown argument: '--frobnicate'"
 check "no input files is an error" "$("$CICILI" -c 2>&1)" "cicili: error: no input files"
 check "a syntax error names the file and the line" "$(printf 'int f(void) { return ; ; }\nint h( { }\n' > bad.c; "$CICILI" -c bad.c 2>&1 | head -1)" "bad.c:2: error: syntax error: could not read this item (gave up near line 2)"
-# the store: hello.c and its headers are there by now; a build of it is seconds, not the ninety of a first read
+# the store: hello.c and its headers are there by now; a build of it is seconds, not the forty of a first read
 s1=$(date +%s); "$CICILI" "$R/run/hello.c" -o hello2 >/dev/null; t_second=$(( $(date +%s) - s1 ))
-check "the store: a build of hello.c after the first is served from it, under 30 s ($t_second s)" "$( [ "$t_second" -lt 30 ] && echo served || echo "slow")" "served"
+check "the store: a build of hello.c after the first is served from it, under 10 s ($t_second s)" "$( [ "$t_second" -lt 10 ] && echo served || echo "slow")" "served"
+# the IR beside the units: a rebuild of two files after one changed redoes that one, the other's IR served
+cp "$R/link/main.c" "$R/link/lib.c" "$R/link/lib.h" . && "$CICILI" main.c lib.c -o two >/dev/null 2>&1
+second=$("$CICILI" -v main.c lib.c -o two 2>&1 | grep -c "served .* from the store")
+touch -t 203001010000 lib.c
+third=$("$CICILI" -v main.c lib.c -o two 2>&1 | grep -ao "served main.c\|check and lower lib.c" | tr '\n' ' ')
+check "the store: a rebuild after one file changed redoes one file, the other's IR served" "$second-$third" "2-served main.c check and lower lib.c "
 if [ "$failures" -eq 0 ]; then echo "GREEN: driver"; else echo "RED: $failures failure(s)"; exit 1; fi

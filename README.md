@@ -37,6 +37,11 @@ what runs today.
   `sret` clang uses, proven against clang-built code both ways --
   `defer` -- lowered to LLVM IR and run. `test/compile.sh`: eighteen
   programs built, run and checked, GREEN.
+* **M4 -- the cache.** Every file read whole is in the user's store,
+  `~/.cicili/KB`, keyed by its time and the reader's version, and so is
+  the IR of every file built, keyed by everything it came from; a rebuild
+  that touches one file checks and lowers that one and serves the rest.
+  GREEN: `test/driver.sh` builds two files, touches one, sees one redone.
 * **M1 -- the reader.** `cicili_ast(+File, -AST)` reads a C file whole into an
   AST, through a DCG; each `#include` is found on the toolchain's path and
   read too; the knowledge base remembers every file by its modification
@@ -65,8 +70,13 @@ phase, reading the C standard library, the OS's and POSIX's headers
 **once**; every later call, in any project, the tests included, is served
 from it as static data, until the SDK or the reader's grammar changes. A
 grammar change starts a new store (`KB.version` beside it names the
-reader's version): every row of the old one is dead, and the store keeps
-what is retracted. `test/driver.sh` is its gate.
+reader's and the lowering's versions): every row of the old one is dead,
+and the store keeps what is retracted. The IR of every file built joins
+the store beside its unit, under a signature of everything it came from
+(the file, every header and macro file it reached, the lowering's version,
+the host), so a rebuild that touches one file checks and lowers that one
+and serves the others: `cicili -v` says `served main.c from the store`.
+`test/driver.sh` is its gate.
 
 ## The compiler, in four predicates
 

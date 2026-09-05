@@ -137,14 +137,19 @@ it is done (see below); the checker and the lowering take the AST from here.
   cleanup attribute means in Cicili's emitted C. Go's accumulating defer
   would need a runtime list and is not this; `longjmp` skips defers, as it
   skips destructors, and the checker will call that unsafe.
-* **M4 — the cache. STARTED at the reader.** Every file read whole -- the
-  source and every header under it -- is in the store as
-  `'$ccl_ast'(Path, key(MTime, ReaderVersion), …)` and loaded from there
-  while the file's time is unchanged (`library(ccl_include)`); the store
-  is the user's, `~/.cicili/KB`, stamped with the reader's version and
-  started afresh when that changes. The checked AST and the emitted IR
-  join it when they exist, so a rebuild that touches one file redoes one
-  file. The store's own costs are cocolog's: every predicate's first call
+* **M4 — the cache. DONE.** Every file read whole -- the source and every
+  header under it -- is in the store as `'$ccl_ast'(Path, key(MTime,
+  ReaderVersion), …)` and loaded from there while the file's time is
+  unchanged (`library(ccl_include)`); the store is the user's,
+  `~/.cicili/KB`, stamped with the reader's and the lowering's versions
+  and started afresh when either changes. The IR of every file built joins
+  it beside the unit, under a signature of everything it came from -- the
+  file's key, the key of every header and macro file its AST reaches, the
+  lowering's version, the host -- so a rebuild that touches one file
+  checks and lowers that one and serves the others' IR, the check having
+  passed when it was made (`library(ccl_driver)`, `dr_ir/3`; the gate
+  builds two files, touches one, and sees one redone). The store's own
+  costs are cocolog's: every predicate's first call
   under `--embed` probed the store in proportion to its bytes (fixed in
   cocolog 1.2.2 by indexing the string keys), and a process that writes a
   predicate still grows the store by that predicate's whole row count,

@@ -37,7 +37,8 @@ library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, else clang -c -x i
 library/ccl_check.pl     the safe part: owners (own), move, the flow walk; run first by cicili_ir
 test/c/safe/             programs the check must REFUSE, each with the error its .expect names
 bin/cicili               the command: clang's arguments, one cocolog run over ./KB (ccl_drive/2)
-library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, and diagnostics in clang's shape
+library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
+                         and the IR cache (dr_ir/3: a file's IR beside its unit in the store)
 test/driver.sh           the command's gate; test/c/link and test/c/inc its fixtures
 test/compile.pl          the compiler's gate: ONE process builds every test/c/run/*.c to a binary
                          and checks every test/c/safe/*.c is refused, over the user's store
@@ -224,6 +225,18 @@ store as static data, the gates included -- `test/config.sh` exports
 grammar changes, or a partial read from an older grammar stays cached (and
 expect that one re-read). `test/reader.sh` runs the checks in one process,
 then asks a second process for what the first read.
+**The IR joins the store beside the unit (M4):** the driver's `dr_ir/3`
+keeps a built file's IR as `'$ccl_ir:<Path>'(Index, Chunk)` -- chunks of
+3500 characters, under the clause budget once quoted -- with
+`'$ccl_irmeta'(Path, Signature, Count)` the index; the signature folds
+(`dr_fold/4`, two folds under 2^31 as a pair: cocolog's arithmetic is not
+exact past 2^52) the file's key, the key of every header and macro file
+its AST reaches (`dr_unit_deps/2`), `ccl_lowering_version/1` and the
+host's arch. A match is served (`cicili -v`: `served F from the store`),
+the check having passed when the IR was made; a refused file stores
+nothing. BUMP `ccl_lowering_version/1` (in `ccl_ir.pl`) whenever the check
+or the lowering changes what it emits; `KB.version` is
+`Reader.Lowering`, and a change of either starts the store afresh.
 
 ## How the lowering is implemented
 
