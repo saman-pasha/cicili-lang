@@ -37,6 +37,18 @@ what runs today.
   `sret` clang uses, proven against clang-built code both ways --
   `defer` -- lowered to LLVM IR and run. `test/compile.sh`: eighteen
   programs built, run and checked, GREEN.
+* **M6 -- the check and the lowering of the C++ forms, in steps. The
+  first step DONE: C++ that is C with names.** A namespace flattens to
+  its bare names, `extern "C"` is what every name has, `using` is
+  nothing, `bool` is a byte and `nullptr` C's null, `static_cast` and a
+  functional cast are casts, `enum class` an enum with scoped
+  enumerators, a range-for over an array the `for` it stands for; a
+  reference is a pointer bound once -- the check sees a borrow (a
+  parameter's, an element's, a local's address), the lowering loads
+  through it and passes and returns the address; `new` is malloc and
+  `delete` free, an owner to the check. `test/cpp.sh`: two programs
+  built through `cicili++`, run and checked; classes, templates,
+  lambdas and try are refused by name until their step. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -95,9 +107,12 @@ and serves the others: `cicili -v` says `served main.c from the store`.
 same arguments, every input read as C++, the link through `c++`. M5 is the
 reader: a C++ file is read whole, `-ast-dump` shows it, `-fsyntax-only`
 says nothing when it reads, and a C++ file that is C builds; the check and
-the lowering of the C++ forms are M6, so a file using them is refused at
-the first form the lowering does not have. What is read, each with its AST
-node:
+the lowering of the C++ forms are M6, in steps: the first, the forms that
+are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
+the casts, `enum class`, range-for, `new` and `delete`), builds and runs,
+and a file using a later step's form -- a class with members, a template,
+a lambda, `try` -- is refused at that form by its name. What is read, each
+with its AST node:
 
 | C++ | AST |
 |---|---|

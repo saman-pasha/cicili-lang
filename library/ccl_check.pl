@@ -143,8 +143,9 @@ ck_items([function(L, _, Ret, Name, Params, _, Body)|Is]) :- !, ck_function(L, R
 ck_items([_|Is]) :- ck_items(Is).
 
 %% ---- state: frames of Key-State, innermost first; with each frame its defers ----------
-ck_function(L, Ret, Name, Params, Body) :-
-    nb_setval('$ck_fn', Name), nb_setval('$ck_line', L), nb_setval('$ck_loops', []), nb_setval('$ck_ties', []), nb_setval('$ck_statics', []), nb_setval('$ck_arrays', []),
+ck_function(L, Ret, Name, Params0, Body) :-
+    ck_ref_params(Params0, Params),                                      % C++: a reference parameter is a borrow, as a pointer is
+    nb_setval('$ck_fn', Name), nb_setval('$ck_ret', Ret), nb_setval('$ck_line', L), nb_setval('$ck_loops', []), nb_setval('$ck_ties', []), nb_setval('$ck_statics', []), nb_setval('$ck_arrays', []),
     nb_setval('$ck_arrlocals', []), ck_note_arrparams(Params),
     ccl_scope_push, ccl_declare_params(Params),
     ck_param_names(Params, Names), nb_setval('$ck_params', Names),
@@ -370,6 +371,34 @@ ck_null(id('NULL')).
 ck_null(cast(ptr(_, base(_, [void])), int(0))).                                  % NULL expanded: ((void *)0)
 ck_null(int(0)).
 ck_null(cast(_, E)) :- ck_null(E).
+ck_null(nullptr).                                                                % C++
+ck_null(ccast(_, _, E)) :- ck_null(E).
+%% C++ (M6): the check sees a reference as the pointer it is -- a parameter a
+%% borrow, a local bound to an lvalue a borrow of its address (an anchor, an
+%% array's element); one bound to a call's result is not followed (no state)
+%% The reference names of the function are '$ck_refs': a use of one as a
+%% place is a use of what it refers to (`x = v' stores through, `&x' is the
+%% pointer held), never a rebinding of the pointer.
+ck_ref_params(Ps0, Ps) :- ck_ref_params_(Ps0, Ps, Names), nb_setval('$ck_refs', Names).
+ck_ref_params_([], [], []).
+ck_ref_params_([param(T0, N)|Ps], [param(T, N)|Ps1], Ns) :- !, ck_ref_as_ptr(T0, T), ( T \== T0 -> Ns = [N|Ns1] ; Ns = Ns1 ), ck_ref_params_(Ps, Ps1, Ns1).
+ck_ref_params_([P|Ps], [P|Ps1], Ns) :- ck_ref_params_(Ps, Ps1, Ns).
+ck_ref_as_ptr(ref(Q, T), ptr(Q, T)) :- !.
+ck_ref_as_ptr(rref(Q, T), ptr(Q, T)) :- !.
+ck_ref_as_ptr(T, T).
+ck_ref_decl(N, T0, Init0, T, Init) :-
+    (   ck_ref_as_ptr(T0, T), T \== T0
+    ->  nb_getval('$ck_refs', Rs), nb_setval('$ck_refs', [N|Rs]),
+        ( ck_lvalue_form(Init0) -> Init = addr(Init0) ; Init = none )
+    ;   T = T0, Init = Init0,
+        ( nb_getval('$ck_refs', Rs), memberchk(N, Rs) -> ccl_delete_one(Rs, N, Rs1), nb_setval('$ck_refs', Rs1) ; true ) ).
+ck_is_ref(N) :- nb_getval('$ck_refs', Rs), memberchk(N, Rs).
+ck_lvalue_form(id(_)).
+ck_lvalue_form(scoped(_, _)).
+ck_lvalue_form(index(_, _)).
+ck_lvalue_form(member(_, _)).
+ck_lvalue_form(arrow(_, _)).
+ck_lvalue_form(deref(_)).
 %% a value that lives as long as the program: a string literal, a global's
 %% address, a global array or function used as a pointer
 ck_static_value(str(_)) :- !.
@@ -474,7 +503,7 @@ ck_insert_at([F|Frs], I, P, [F|Frs1]) :- I1 is I - 1, ck_insert_at(Frs, I1, P, F
 %% as a pointer: the local's storage is what is pointed to, so it is anchored
 %% before the expression is read, and the pointer is a borrow of it
 ck_anchor_addrs(E, St, St) :- \+ compound(E), !.
-ck_anchor_addrs(addr(E), St0, St) :- !, ( ck_storage_base(E, N) -> ck_anchor_local(N, St0, St1) ; St1 = St0 ), ck_anchor_addrs(E, St1, St).
+ck_anchor_addrs(addr(E), St0, St) :- !, ( ck_storage_base(E, N), \+ ck_is_ref(N) -> ck_anchor_local(N, St0, St1) ; St1 = St0 ), ck_anchor_addrs(E, St1, St).
 ck_anchor_addrs(id(N), St0, St) :- !, ( ck_arrlocal(N), ck_local_type(N, T), ccl_resolve_type(T, arr(_, _)) -> ck_anchor_local(N, St0, St) ; St = St0 ).
 %% the names declared with an array type in this function, so the walk over
 %% every expression asks the scope only of those (every id cost a lookup and
@@ -555,6 +584,8 @@ ck_tied_state(St, R, S) :-
 %% a cast, the address of an element or a member, another borrow
 %% (an anchored plain variable's VALUE borrows nothing -- only its address does,
 %% and a local array's value, which is its address)
+ck_borrows_from(scoped(_, N), St, P) :- !, ck_borrows_from(id(N), St, P).        % C++ (M6): a qualified name is its bare name
+ck_borrows_from(ccast(_, _, E), St, P) :- !, ck_borrows_from(E, St, P).
 ck_borrows_from(id(N), St, P) :- ck_state(St, N, S), !, ( S == anchor -> ck_local_type(N, T), ccl_resolve_type(T, arr(_, _)), P = N ; ck_borrow_source(N, S, P) ).
 ck_borrows_from(member(E, F), St, P) :- ck_path(member(E, F), K), ck_state(St, K, S), !, ck_borrow_source(K, S, P).
 ck_borrows_from(arrow(E, F), St, P) :- ck_path(arrow(E, F), K), ck_state(St, K, S), !, ck_borrow_source(K, S, P).
@@ -563,6 +594,8 @@ ck_borrows_from(cast(_, A), St, P) :- !, ck_borrows_from(A, St, P).
 ck_borrows_from(addr(index(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
 ck_borrows_from(addr(member(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
 ck_borrows_from(addr(arrow(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
+ck_borrows_from(addr(id(N)), St, P) :- ck_is_ref(N), !, ck_state(St, N, S), ck_borrow_source(N, S, P).   % C++: &x of a reference is the pointer held
+ck_borrows_from(id(N), St, P) :- ck_is_ref(N), !, ck_local_type(N, ptr(_, RT)), ck_carries_type(RT), ck_state(St, N, S), ck_borrow_source(N, S, P).   % its value: what it refers to
 ck_borrows_from(addr(id(N)), St, P) :- !, ck_state(St, N, S), ( S == anchor -> P = N ; ck_borrow_source(N, S, P) ).   % of an anchored local, an owner's slot
 %% what a borrowed pointer reaches -- a member, an element, what it points to -- is borrowed from the same
 ck_borrows_from(arrow(E, _), St, P) :- !, ck_borrows_from(E, St, P).
@@ -588,7 +621,12 @@ ck_borrow_source(K, S, P) :- ( ck_owner_state(S) -> P = K ; memberchk(S, [anchor
 %% or a global may leave, and with a result tie only what lies within it
 ck_no_escape(E, St) :-
     nb_getval('$ck_ret_tie', RT),
-    (   ck_owner_path(St, E, K) -> ( ck_tied_to(K, R) -> ck_ret_tied(St, R, RT, K, E) ; true )
+    (   nb_getval('$ck_ret', Ret), ck_ref_as_ptr(Ret, RP), RP \== Ret                 % C++: a reference result is a pointer out
+    ->  (   E = id(N), ck_is_ref(N) -> ( ck_state(St, N, borrow(P)) -> ck_ret_borrow(St, P, RT, N, borrowed_from(P)) ; true )
+        ;   ck_lvalue_form(E), ck_storage_base(E, B), ck_is_local(B), \+ ck_is_ref(B), nb_getval('$ck_params', Ps), \+ memberchk(B, Ps) -> ck_fail(borrow_escapes, B, reference_to_local(E))
+        ;   true )
+    ;   E = id(N), ck_is_ref(N) -> true                                                % a value out of the referent
+    ;   ck_owner_path(St, E, K) -> ( ck_tied_to(K, R) -> ck_ret_tied(St, R, RT, K, E) ; true )
     ;   E = id(N), ck_state(St, N, dangling(P)) -> ck_fail(borrow_after_move, N, borrowed_from(P))
     ;   E = id(N), ck_state(St, N, borrow(P)) -> ( ck_local_type(N, T), ck_carries_type(T) -> ck_ret_borrow(St, P, RT, N, borrowed_from(P)) ; true )
     ;   ccl_type_of(E, T), ck_carries_type(T), ck_borrows_from(E, St, P) -> ck_ret_borrow(St, P, RT, P, E)
@@ -664,6 +702,9 @@ ck_set_null(E, St0, St) :-
     ;   St = St0 ).
 ck_stmt(while(L, C, S), St0, St) :- !, ck_line(L), ck_expr(C, St0, St1), ck_loop(S, St1, St2), ck_expr(C, St2, St).
 ck_stmt(do(L, S, C), St0, St) :- !, ck_line(L), ck_loop(S, St0, St1), ck_expr(C, St1, St).
+ck_stmt(for_each(L, D, R, S), St0, St) :- !, ck_line(L),                        % C++: a range-for over an array is the for it stands for
+    ( ccl_for_each_as_for(for_each(L, D, R, S), For) -> ck_stmt(For, St0, St) ; ck_fail(not_checked, range_for, for_each(L, D, R, S)) ).
+ck_stmt(using(_, _), St, St) :- !.
 ck_stmt(for(L, Init, C, Step, S), St0, St) :- !, ck_line(L),
     ccl_scope_push, ck_push(St0, St1),
     ( Init = decl(_, Vs) -> ck_decls(Vs, St1, St2) ; Init == none -> St2 = St1 ; ck_anchor_addrs(Init, St1, St1a), ck_expr(Init, St1a, St2) ),
@@ -684,7 +725,7 @@ ck_stmt(switch(L, E, S), St0, St) :- !, ck_line(L),
     ck_scope_end(St5, St), ccl_scope_pop.
 ck_stmt(case(_, _, S), St0, St) :- !, ck_stmt(S, St0, St).
 ck_stmt(default(_, S), St0, St) :- !, ck_stmt(S, St0, St).
-ck_stmt(S, _, _) :- ck_fail(not_checked, S, S).
+ck_stmt(S, _, _) :- functor(S, F, _), nb_getval('$ck_fn', Fn), nb_getval('$ck_line', L), throw(error(not_lowered(F), where(Fn, line(L)))).   % a form of C++'s later steps
 ck_stmts([], St, St).
 ck_stmts([S|Ss], St0, St) :- ck_stmt(S, St0, St1), ck_stmts(Ss, St1, St).
 
@@ -702,7 +743,8 @@ ck_has_default(Is) :- member(case(_, _, S), Is), ck_has_default([S]), !.
 %% declared with them; then the variable's own tie; a plain pointer given an
 %% owner's value is a borrow, given a value with no owner behind it a warning
 ck_decls([], St, St).
-ck_decls([var(N, T, Init)|Vs], St0, St) :-
+ck_decls([var(N, T0, Init0)|Vs], St0, St) :-
+    ck_ref_decl(N, T0, Init0, T, Init),
     ccl_declare(N, T), ck_note_arrlocal(N, T), ck_type_rules(N, T, var(N, Init)),
     ck_var_fields(N, T, Fs), ck_states(Fs, unset, FOs),
     ck_declare_all(St0, FOs, St1), ck_field_ties(N, T, St1, St2, Ts), ck_anchor_addrs(Init, St2, St3),
@@ -973,6 +1015,12 @@ ck_unary_shape(deref(E), E). ck_unary_shape(cast(_, E), E). ck_unary_shape(posti
 ck_unary_shape(preinc(E), E). ck_unary_shape(predec(E), E).
 ck_expr(move(E), St0, St) :- ck_own_elem(E, K), !, ck_expr(E, St0, St1), ck_dangle(St1, K, St).   % an element out: the array's borrows dangle
 ck_expr(move(E), St0, St) :- !, ( ck_owner_path(St0, E, K) -> ck_base_use(E, St0, St1), ck_consume(K, move, move(E), St1, St, _) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
+ck_expr(scoped(_, N), St0, St) :- !, ck_expr(id(N), St0, St).                  % C++ (M6)
+ck_expr(ccast(_, _, E), St0, St) :- !, ck_expr(E, St0, St).
+ck_expr(new(_, Args), St0, St) :- !, ck_exprs(Args, St0, St).
+ck_expr(new_array(_, N), St0, St) :- !, ck_expr(N, St0, St).
+ck_expr(delete(E), St0, St) :- !, ck_expr(call(id(free), [E]), St0, St).
+ck_expr(delete_array(E), St0, St) :- !, ck_expr(call(id(free), [E]), St0, St).
 ck_expr(call(id(F), Args), St0, St) :- !, ck_args(Args, id(F), St0, St).
 ck_expr(call(F, Args), St0, St) :- !,
     ck_expr(F, St0, St1),
@@ -982,6 +1030,7 @@ ck_fn_params(T, Ps) :- ccl_resolve_type(T, T1), ( T1 = fn(_, Ps, _) -> true ; T1
 %% assignment: to an owner or an own field; to a struct by value with own fields;
 %% to a tied slot; to a local plain pointer (a borrow, or not); to any other
 %% place, by its type
+ck_expr(assign(Op, id(N), R), St0, St) :- ck_is_ref(N), !, ck_expr(assign(Op, deref(id(N)), R), St0, St).   % C++: through the reference
 ck_expr(assign('=', L, R), St0, St) :- ck_owner_path(St0, L, K), !,
     ck_base_use(L, St0, St1), ck_into_own(K, R, assign('=', L, R), St1, St, _).
 ck_expr(assign('=', L, R), St0, St) :- ck_path(L, K), ck_by_value(L), ck_own_under(St0, K, [_|_]), !,

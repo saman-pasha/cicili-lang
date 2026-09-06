@@ -214,6 +214,22 @@ it is done (see below); the checker and the lowering take the AST from here.
   thousands of lines and are a one-time cost per project through the cache.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
+* **M6 — the check and the lowering of the C++ forms, IN STEPS: the
+  first DONE.** The forms that are C with names: a namespace flattened
+  to its bare names, `extern "C"`, `using`, `bool`, `nullptr`, the casts,
+  `enum class`, a range-for over an array as the `for` it stands for, a
+  reference as a pointer bound once (a borrow to the check, an address
+  loaded through by the lowering), `new` and `delete` as `malloc` and
+  `free` under the ownership check; two programs built through
+  `cicili++`, run and checked in `test/cpp.sh`, and every later form --
+  a class with members, a template, a lambda, `try` -- refused by name.
+  The steps to come, each with a program that runs: classes (data
+  members, methods as functions over `this`, constructors at the
+  declaration and destructors as the scope's defers, inheritance as the
+  first member, `virtual` through a table), templates (instantiated on
+  use, function and class), lambdas (a struct of captures and a
+  function), exceptions last, if at all, since the safe part has no
+  unwinding to offer.
 * **Later — the objects layer's fate (below)**, and, on the LLVM module
   already here, ORC JIT: a macro running C at compile time.
 

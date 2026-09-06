@@ -358,6 +358,7 @@ ccl_collect_item(declaration(_, _, Base, Vs), D0, D, T, T, G0, G, E0, E) :- !,
     ccl_collect_type(Base, G0, G1, E0, E1), ccl_collect_vars(Vs, D0, D, G1, G, E1, E).
 ccl_collect_item(typedef(_, Vs), D, D, T0, T, G0, G, E0, E) :- !, ccl_collect_typedefs(Vs, T0, T, G0, G, E0, E).
 ccl_collect_item(declare(_, Base), D, D, T, T, G0, G, E0, E) :- !, ccl_collect_type(Base, G0, G, E0, E).
+ccl_collect_item(function(_, _, _, Name, _, _, _), D, D, T, T, G, G, E, E) :- \+ atom(Name), !.   % C++: a method defined out of its class
 ccl_collect_item(function(_, _, Ret, Name, Ps, V, _), [Name-fn(Ret, Ps, V)|D], D, T, T, G0, G, E0, E) :- !,
     ccl_collect_type(Ret, G0, G1, E0, E1), ccl_collect_params(Ps, G1, G, E1, E).
 ccl_collect_item(extern_c(_, Is), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_items(Is, D0, D, T0, T, G0, G, E0, E).      % C++: what the block declares
@@ -371,6 +372,7 @@ ccl_collect_unit(summary(F), D0, D, T0, T, G0, G, E0, E) :- !,                  
     ccl_note_templates(Tmpls), ccl_add_envs(Names).
 ccl_collect_unit(_, D, D, T, T, G, G, E, E).
 ccl_collect_vars([], D, D, G, G, E, E).
+ccl_collect_vars([var(N, _, _)|Vs], D0, D, G0, G, E0, E) :- \+ atom(N), !, ccl_collect_vars(Vs, D0, D, G0, G, E0, E).   % C++: a member defined out of its class (Counter::made), the class step's
 ccl_collect_vars([var(N, Ty, _)|Vs], [N-Ty|D0], D, G0, G, E0, E) :- ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_vars(Vs, D0, D, G1, G, E1, E).
 ccl_collect_typedefs([], T, T, G, G, E, E).
 ccl_collect_typedefs([var(N, Ty, _)|Vs], [N-Ty|T0], T, G0, G, E0, E) :- ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_typedefs(Vs, T0, T, G1, G, E1, E).
@@ -391,6 +393,7 @@ ccl_collect_spec(class(_, Tag, _, Ms), G0, G, E0, E) :- !, ( Tag == anon -> G1 =
 ccl_collect_spec(struct(Tag, Ms), G0, G, E0, E) :- Ms \== none, !, ( Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).
 ccl_collect_spec(union(Tag, Ms), G0, G, E0, E) :- Ms \== none, !, ( Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).
 ccl_collect_spec(enum(Tag, Es), G0, G, E0, E) :- Es \== none, !, ( Tag == anon -> G = G0 ; G0 = [Tag-Es|G] ), ccl_collect_enumerators(Es, 0, [], E0, E).
+ccl_collect_spec(enum_class(Tag, Es), [Tag-Es|G], G, E0, E) :- Es \== none, !, ccl_collect_enumerators(Es, 0, [], E0, E).   % C++
 ccl_collect_spec(_, G, G, E, E).
 ccl_collect_members([], G, G, E, E).
 ccl_collect_members([member(Ty, _, _)|Ms], G0, G, E0, E) :- !, ccl_collect_type(Ty, G0, G1, E0, E1), ccl_collect_members(Ms, G1, G, E1, E).
@@ -411,6 +414,7 @@ ccl_const_eval_in(Ex, _, V) :- ccl_const_eval(Ex, V).
 ccl_note_item(declaration(_, _, Base, Ds)) :- !, ccl_note_tags(Base), ccl_declare_vars(Ds).
 ccl_note_item(typedef(_, Ds)) :- !, ccl_note_typedefs(Ds).
 ccl_note_item(declare(_, Base)) :- !, ccl_note_tags(Base).
+ccl_note_item(function(_, _, _, Name, _, _, _)) :- \+ atom(Name), !.
 ccl_note_item(function(_, _, Ret, Name, Ps, V, _)) :- !, ccl_note_tags(Ret), ccl_note_params(Ps), ccl_declare(Name, fn(Ret, Ps, V)).
 ccl_note_item(namespace(_, _, Is)) :- !, ccl_note_each(Is).
 ccl_note_item(extern_c(_, Is)) :- !, ccl_note_each(Is).
@@ -419,6 +423,7 @@ ccl_note_each([]).
 ccl_note_each([I|Is]) :- ccl_note_item(I), ccl_note_each(Is).
 ccl_note_item(_).
 ccl_declare_vars([]).
+ccl_declare_vars([var(N, _, _)|Ds]) :- \+ atom(N), !, ccl_declare_vars(Ds).
 ccl_declare_vars([var(N, T, _)|Ds]) :- ccl_note_tags(T), ccl_declare(N, T), ccl_declare_vars(Ds).
 ccl_note_typedefs([]).
 ccl_note_typedefs([var(N, T, _)|Ds]) :- ccl_note_tags(T), ccl_note_typedef(N, T), ccl_note_typedefs(Ds).

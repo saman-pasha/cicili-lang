@@ -105,9 +105,15 @@ ccl_resolve_type(base(Q, S), T) :- !, ccl_resolve_base(S, Q, T).
 ccl_resolve_type(T, T).
 ccl_resolve_base([S|Ss], Q, base(Q, [S|Ss])) :- atom(S), !.                      % a plain specifier list, the common case: one try
 ccl_resolve_base([typedef(N)], Q, T) :- ccl_cached_named('$ccl_r:', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
+ccl_resolve_base([typedef(N)], Q, T) :- ccl_lang(cpp), ccl_tag(N, Ms), !, ccl_tag_type(N, Ms, Q, T).   % C++: a tag's name is a type name
 ccl_resolve_base([struct(Tag, none)], Q, base(Q, [struct(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base([union(Tag, none)], Q, base(Q, [union(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base(S, Q, base(Q, S)).
+%% what a C++ tag's name stands for, told by its members' shape: enumerators,
+%% plain members (a struct), or a class's (a constructor, a method, a label)
+ccl_tag_type(N, [enumerator(_, _)|_], Q, base(Q, [enum(N, Ms)])) :- !, ccl_tag(N, Ms).
+ccl_tag_type(N, Ms, Q, base(Q, [class(class, N, [], Ms)])) :- member(M, Ms), M \= member(_, _, _), !.
+ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms)])).
 ccl_resolve_typedef(N, T) :- ccl_typedef_of(N, T0), ccl_resolve_type(T0, T).
 ccl_add_quals([], T, T) :- !.
 ccl_add_quals(Q, base(Q0, S), base(Q1, S)) :- !, append(Q, Q0, Q1).
@@ -123,7 +129,7 @@ ccl_is_pointer(T) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, _) ; T1 = arr(_, _) 
 ccl_is_float(T) :- ccl_resolve_type(T, base(_, S)), ( memberchk(double, S) ; memberchk(float, S) ; memberchk('_Float16', S) ), !.
 ccl_is_integer(T) :- ccl_resolve_type(T, base(_, S)), \+ memberchk(double, S), \+ memberchk(float, S), \+ memberchk(void, S),
     ( memberchk(int, S) ; memberchk(char, S) ; memberchk(short, S) ; memberchk(long, S) ; memberchk(signed, S)
-    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; S = [enum(_, _)] ), !.
+    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; S = [enum(_, _)] ; S = [enum_class(_, _)] ), !.
 ccl_is_arith(T) :- ( ccl_is_integer(T) ; ccl_is_float(T) ), !.
 
 %% integer rank and signedness, for the usual arithmetic conversions
@@ -131,7 +137,7 @@ ccl_int_rank(T, Rank, Unsigned) :-
     ccl_resolve_type(T, base(_, S)),
     ( memberchk(unsigned, S) -> Unsigned = true ; Unsigned = false ),
     ( ccl_count(long, S, 2) -> Rank = 5 ; memberchk(long, S) -> Rank = 4 ; memberchk(short, S) -> Rank = 2
-    ; memberchk(char, S) -> Rank = 1 ; memberchk('_Bool', S) -> Rank = 0 ; Rank = 3 ).
+    ; memberchk(char, S) -> Rank = 1 ; memberchk('_Bool', S) -> Rank = 0 ; memberchk(bool, S) -> Rank = 0 ; Rank = 3 ).
 ccl_count(_, [], 0).
 ccl_count(X, [Y|T], N) :- ccl_count(X, T, N0), ( X == Y -> N is N0 + 1 ; N = N0 ).
 ccl_promote(T, P) :- ( ccl_int_rank(T, R, _), R < 3 -> P = base([], [int]) ; P = T ).
@@ -152,16 +158,24 @@ ccl_type_of(nullptr, ptr([], base([], [void]))) :- !.
 ccl_type_of(float(_), base([], [double])) :- !.
 ccl_type_of(chr(_), base([], [int])) :- !.
 ccl_type_of(str(_), ptr([], base([], [char]))) :- !.
-ccl_type_of(id(N), T) :- !, ( ccl_declared(N, T0) -> T = T0 ; T = unknown ).
+ccl_type_of(id(N), T) :- !, ( ccl_declared(N, T0) -> ccl_unref(T0, T) ; T = unknown ).
 ccl_type_of(call(F, _), T) :- !,
-    (   F = id(N), ccl_declared(N, fn(R, _, _)) -> T = R
+    (   F = id(N), ccl_declared(N, fn(R, _, _)) -> ccl_unref(R, T)
     ;   ccl_type_of(F, FT), ccl_resolve_type(FT, FT1),
-        ( FT1 = fn(R, _, _) -> T = R ; FT1 = ptr(_, fn(R, _, _)) -> T = R ; FT1 = block(_, fn(R, _, _)) -> T = R ; T = unknown ) ).
-ccl_type_of(member(E, N), T) :- !, ccl_type_of(E, ET), ( ccl_member_type(ET, N, T0) -> T = T0 ; T = unknown ).
+        ( FT1 = fn(R, _, _) -> ccl_unref(R, T) ; FT1 = ptr(_, fn(R, _, _)) -> ccl_unref(R, T) ; FT1 = block(_, fn(R, _, _)) -> ccl_unref(R, T) ; T = unknown ) ).
+ccl_type_of(member(E, N), T) :- !, ccl_type_of(E, ET), ( ccl_member_type(ET, N, T0) -> ccl_unref(T0, T) ; T = unknown ).
 ccl_type_of(arrow(E, N), T) :- !, ccl_type_of(E, ET), ccl_resolve_type(ET, ET1),
-    ( ( ET1 = ptr(_, ST) ; ET1 = arr(_, ST) ), ccl_member_type(ST, N, T0) -> T = T0 ; T = unknown ).
-ccl_type_of(index(A, _), T) :- !, ccl_type_of(A, AT), ccl_resolve_type(AT, AT1), ( ( AT1 = ptr(_, T0) ; AT1 = arr(_, T0) ) -> T = T0 ; T = unknown ).
-ccl_type_of(deref(E), T) :- !, ccl_type_of(E, ET), ccl_resolve_type(ET, ET1), ( ( ET1 = ptr(_, T0) ; ET1 = arr(_, T0) ) -> T = T0 ; T = unknown ).
+    ( ( ET1 = ptr(_, ST) ; ET1 = arr(_, ST) ), ccl_member_type(ST, N, T0) -> ccl_unref(T0, T) ; T = unknown ).
+ccl_type_of(index(A, _), T) :- !, ccl_type_of(A, AT), ccl_resolve_type(AT, AT1), ( ( AT1 = ptr(_, T0) ; AT1 = arr(_, T0) ) -> ccl_unref(T0, T) ; T = unknown ).
+ccl_type_of(deref(E), T) :- !, ccl_type_of(E, ET), ccl_resolve_type(ET, ET1), ( ( ET1 = ptr(_, T0) ; ET1 = arr(_, T0) ) -> ccl_unref(T0, T) ; T = unknown ).
+%% C++ (M6): a reference is the thing it refers to wherever a value is asked;
+%% a qualified name is its bare name (a namespace flattens); the casts, new
+ccl_type_of(scoped(_, N), T) :- !, ccl_type_of(id(N), T).
+ccl_type_of(ccast(_, T, _), T) :- !.
+ccl_type_of(new(T, _), ptr([], T)) :- !.
+ccl_type_of(new_array(T, _), ptr([], T)) :- !.
+ccl_type_of(delete(_), base([], [void])) :- !.
+ccl_type_of(delete_array(_), base([], [void])) :- !.
 ccl_type_of(addr(E), T) :- !, ccl_type_of(E, ET), ( ET == unknown -> T = unknown ; T = ptr([], ET) ).
 ccl_type_of(neg(E), T) :- !, ccl_type_of(E, ET), ccl_promoted_or_unknown(ET, T).
 ccl_type_of(pos(E), T) :- !, ccl_type_of(E, ET), ccl_promoted_or_unknown(ET, T).
@@ -194,6 +208,22 @@ ccl_type_of(bin(Op, A, B), T) :- !,
     ;   ccl_is_arith(AT), ccl_is_arith(BT) -> ccl_usual(AT, BT, T)
     ;   T = unknown ).
 ccl_type_of(_, unknown).
+ccl_unref(ref(_, T), T) :- !.
+ccl_unref(rref(_, T), T) :- !.
+ccl_unref(T, T).
+%% a range-for over an array as the for it is: `for (T x : xs) S' is
+%% `for (int i = 0; i < N; i++) { T x = xs[i]; S }', an `auto &' binding a
+%% reference to the element; the check and the lowering both walk the for
+ccl_for_each_as_for(for_each(L, var(N, T, none), Range, S),
+                    for(L, decl(base([], [int]), [var(I, base([], [int]), int(0))]), bin('<', id(I), NE), postinc(id(I)),
+                        block([declaration(L, none, ET, [var(N, T1, index(Range, id(I)))]), S]))) :-
+    ccl_type_of(Range, RT), ccl_resolve_type(RT, arr(NE, ET)),
+    ccl_gensym('$i', I), ccl_range_var_type(T, ET, T1).
+ccl_range_var_type(base(_, [auto]), ET, ET) :- !.
+ccl_range_var_type(ref(Q, base(_, [auto])), ET, ref(Q, ET)) :- !.
+ccl_range_var_type(rref(Q, base(_, [auto])), ET, ref(Q, ET)) :- !.
+ccl_range_var_type(ptr(Q, base(_, [auto])), ET, T) :- !, ( ccl_resolve_type(ET, ptr(_, _)) -> T = ET ; T = ptr(Q, ET) ).
+ccl_range_var_type(T, _, T).
 ccl_promoted_or_unknown(ET, T) :- ( ccl_is_integer(ET) -> ccl_promote(ET, T) ; ccl_is_float(ET) -> T = ET ; T = unknown ).
 %% an array decays to a pointer to its element, a function to a pointer to
 %% itself; anything else keeps its name (a typedef stays a typedef)
@@ -209,8 +239,11 @@ ccl_size_align(base(_, S), N, A) :- ccl_basic_size(S, N), !, A = N.
 ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N, A).
 ccl_size_align(base(_, [union(_, Ms)]), N, A) :- Ms \== none, !, ccl_union_layout(Ms, 0, 1, N, A).
 ccl_size_align(base(_, [enum(_, _)]), 4, 4) :- !.
+ccl_size_align(base(_, [enum_class(_, _)]), 4, 4) :- !.
+ccl_size_align(ref(_, _), 8, 8) :- !.                                            % C++: a reference is a pointer in memory
+ccl_size_align(rref(_, _), 8, 8) :- !.
 ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; memberchk('_Float16', S) -> N = 2 ; ccl_count(long, S, 2) -> N = 8
-    ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1
+    ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1 ; memberchk(bool, S) -> N = 1
     ; memberchk(int, S) -> N = 4 ; memberchk(unsigned, S) -> N = 4 ; memberchk(signed, S) -> N = 4 ; memberchk(void, S) -> N = 1 ; fail ).
 ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).
 %% ccl_members_layout(+Members, -Lays, -Size, -Align): where every member lies --

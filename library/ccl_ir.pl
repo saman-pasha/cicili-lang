@@ -48,12 +48,18 @@ ccl_lowering_version(8).
 
 ccl_ir_units(Units, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units),                     % the symbol table, once
+    ( ccl_lang(cpp) -> ir_cpp_prelude ; true ),                          % C++: new and delete are malloc and free
     ccl_check_noted(Units),                                             % the safe part first: a violation is a compile error
     nb_setval('$ir_fdefs', []), nb_setval('$ir_gdefs', []),
     ir_drain_functions(Drains), ccl_items_note(Drains),                 % one drain per struct with an own array (below)
     ir_units(Units), ir_items(Drains),
     ir_assemble(IR).
 
+%% C++ (M6): `new T' is malloc(sizeof(T)) and `delete p' free(p) -- declared
+%% here when the file did not, so the check consumes at a delete as at a free
+ir_cpp_prelude :-
+    ( ccl_gdeclared(malloc, _) -> true ; ccl_gdeclare([malloc-fn(ptr([], base([], [void])), [param(base([], [unsigned, long]), size)], false)]) ),
+    ( ccl_gdeclared(free, _) -> true ; ccl_gdeclare([free-fn(base([], [void]), [param(ptr([], base([], [void])), p)], false)]) ).
 ir_note_units([]).
 ir_note_units([unit(Is)|Us]) :- ccl_items_note(Is), ir_note_units(Us).
 
@@ -130,6 +136,8 @@ ir_type(T, LL) :- ccl_cached('$ir_tcache', T, LL, ir_type_nocache(T, LL)).      
 ir_type_nocache(T, LL) :- ccl_resolve_type(T, T1), ir_type_(T1, LL).
 ir_type_(base(_, S), LL) :- !, ir_base(S, LL).
 ir_type_(ptr(_, _), ptr) :- !.
+ir_type_(ref(_, _), ptr) :- !.                                           % C++: a reference is a pointer in memory
+ir_type_(rref(_, _), ptr) :- !.
 ir_type_(block(_, _), ptr) :- !.
 ir_type_(fn(_, _, _), ptr) :- !.
 ir_type_(arr(NE, E), LL) :- !, ir_type(E, EL), ( ccl_const_eval(NE, N) -> true ; N = 0 ), atomic_list_concat(['[', N, ' x ', EL, ']'], LL).   % a flexible member: [0 x T]
@@ -138,11 +146,14 @@ ir_base(S, void) :- memberchk(void, S), !.
 ir_base(S, double) :- memberchk(double, S), !.
 ir_base(S, float) :- memberchk(float, S), !.
 ir_base(S, half) :- memberchk('_Float16', S), !.
-ir_base(S, i8) :- ( memberchk(char, S) ; memberchk('_Bool', S) ), !.
+ir_base(S, i8) :- ( memberchk(char, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ), !.   % C++'s bool: a byte in memory, as clang has it
 ir_base(S, i16) :- memberchk(short, S), !.
 ir_base(S, i64) :- memberchk(long, S), !.
 ir_base(S, i32) :- ( memberchk(int, S) ; memberchk(unsigned, S) ; memberchk(signed, S) ), !.
 ir_base([enum(_, _)], i32) :- !.
+ir_base([enum_class(_, _)], i32) :- !.
+ir_base([class(_, N, _, _)], _) :- !, ir_fail(class(N)).                 % M6's next step
+ir_base(S, _) :- memberchk(auto, S), !, ir_fail(auto).
 ir_base([struct(Tag, Ms)], LL) :- !, ir_struct(Tag, Ms, LL).
 %% a union is a scalar of its alignment (so it lies where C puts it) padded
 %% to its size; every member is read and written at its address
@@ -353,7 +364,8 @@ ir_zero(LL, Z) :- ( LL == ptr -> Z = null ; ( LL == double ; LL == float ) -> Z 
 ir_convert(V, From, To, V1) :- ir_type(From, FL), ir_type(To, TL), ir_convert(V, From, FL, To, TL, V1).
 %% with both LLVM types in hand (the value's travels with it, the target's the caller has)
 ir_convert(V, From, FL, To, TL, V1) :-
-    (   FL == TL -> V1 = V
+    (   ir_is_bool(To), \+ ir_is_bool(From) -> ir_to_bool(V, From, FL, V1)   % C++: a bool is 0 or 1, whatever came
+    ;   FL == TL -> V1 = V
     ;   ir_fp_ll(FL), ir_fp_ll(TL) -> ( ir_fp_wider(TL, FL) -> Op = fpext ; Op = fptrunc ), ir_op1(Op, FL, V, TL, V1)
     ;   ir_fp_ll(FL) -> ( ir_signed(To) -> Op = fptosi ; Op = fptoui ), ir_op1(Op, FL, V, TL, V1)
     ;   ir_fp_ll(TL) -> ( ir_signed(From) -> Op = sitofp ; Op = uitofp ), ir_op1(Op, FL, V, TL, V1)
@@ -364,9 +376,22 @@ ir_convert(V, From, FL, To, TL, V1) :-
     ;   ir_signed(From) -> ir_op1(sext, FL, V, TL, V1)
     ;   ir_op1(zext, FL, V, TL, V1) ).
 ir_isfn(T) :- ccl_resolve_type(T, fn(_, _, _)).
+ir_is_bool(T) :- ccl_resolve_type(T, base(_, S)), memberchk(bool, S), !.
+ir_to_bool(V, From, FL, V1) :-
+    ir_fresh(C),
+    (   ir_fp_ll(FL) -> ir_ins([C, ' = fcmp une ', FL, ' ', V, ', 0.0'])
+    ;   ( FL == ptr ; ir_isfn(From) ) -> ir_ins([C, ' = icmp ne ptr ', V, ', null'])
+    ;   ir_ins([C, ' = icmp ne ', FL, ' ', V, ', 0']) ),
+    ir_fresh(V1), ir_ins([V1, ' = zext i1 ', C, ' to i8']).
 ir_op1(Op, FL, V, TL, R) :- ir_fresh(R), ir_ins([R, ' = ', Op, ' ', FL, ' ', V, ' to ', TL]).
 ir_bits(LL, N) :- atom_concat(i, A, LL), atom_codes(A, Cs), catch(number_codes(N, Cs), _, fail), !.
 %% a value as a condition (i1)
+%% `new T' is malloc(sizeof(T)); `new T(v)' for a scalar T stores v into it; a
+%% class with a constructor is the next step
+ir_new(T, [], cast(ptr([], T), call(id(malloc), [sizeof_type(T)]))) :- !.
+ir_new(T, [A], stmt_expr(block([declaration(0, none, T, [var(P, ptr([], T), cast(ptr([], T), call(id(malloc), [sizeof_type(T)])))]), expr(0, assign('=', deref(id(P)), A)), expr(0, id(P))]))) :-
+    ccl_resolve_type(T, T1), \+ T1 = base(_, [struct(_, _)]), \+ T1 = base(_, [class(_, _, _, _)]), !, ccl_gensym('$new', P).
+ir_new(T, _, _) :- ir_fail(new_with_constructor(T)).
 ir_cond(E, C) :- ir_cmp_op(E, _), !, ir_expr_i1(E, C).
 ir_cond(E, C) :-
     ir_expr(E, V, _, LL),
@@ -414,14 +439,31 @@ ir_expr(chr(C), C, T, i32) :- !, ir_int(T).
 ir_expr(str(S), Ref, ptr([], base([], [char])), ptr) :- !, ir_string(S, Ref).
 ir_expr(id(N), V, T, i32) :- ccl_enum_value(N, V), !, ir_int(T).          % an enumerator is its value
 ir_expr(id(N), V, T, LL) :- !,
-    ( ir_lookup(N, loc(Addr, T0)) -> true ; ir_fail(undeclared(N)) ),
+    ( ir_lookup(N, loc(Addr0, T00)) -> true ; ir_fail(undeclared(N)) ),
+    ir_ref_slot(Addr0, T00, Addr, T0),
     ccl_resolve_type(T0, T1),
     (   T1 = arr(_, E) -> V = Addr, T = ptr([], E), LL = ptr
     ;   T1 = fn(_, _, _) -> V = Addr, T = ptr([], T0), LL = ptr
     ;   ir_type(T1, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', Addr]), T = T1 ).
 ir_expr(call(F, Args), V, RT, LL) :- !,
     ir_moved_args(F, Args, Args1),
-    ( F = id(free), Args1 = [E], ir_drain_free(E, S) -> ir_expr(S, V, RT, LL) ; ir_call(F, Args1, V, RT), ir_type(RT, LL) ).
+    (   F = id(free), Args1 = [E], ir_drain_free(E, S) -> ir_expr(S, V, RT, LL)
+    ;   ir_call(F, Args1, V0, RT0),
+        (   ( RT0 = ref(_, RT1) ; RT0 = rref(_, RT1) ) -> ccl_resolve_type(RT1, RT), ir_type(RT, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', V0])   % C++: a reference result is what it refers to
+        ;   V = V0, RT = RT0, ir_type(RT, LL) ) ).
+%% C++ (M6): the forms that are C with names
+ir_expr(bool(true), 1, base([], [bool]), i8) :- !.
+ir_expr(bool(false), 0, base([], [bool]), i8) :- !.
+ir_expr(nullptr, null, ptr([], base([], [void])), ptr) :- !.
+ir_expr(scoped(_, N), V, T, LL) :- !, ir_expr(id(N), V, T, LL).
+ir_expr(ccast(_, T, E), V, T1, LL) :- !, ir_expr(cast(T, E), V, T1, LL).
+ir_expr(new(T, Args), V, T1, LL) :- !, ir_new(T, Args, E), ir_expr(E, V, T1, LL).
+ir_expr(new_array(T, N), V, T1, LL) :- !,
+    ir_expr(cast(ptr([], T), call(id(malloc), [bin('*', cast(base([], [unsigned, long]), N), sizeof_type(T))])), V, T1, LL).
+ir_expr(delete(E), V, T, LL) :- !, ir_expr(call(id(free), [E]), V, T, LL).
+ir_expr(delete_array(E), V, T, LL) :- !, ir_expr(call(id(free), [E]), V, T, LL).
+ir_expr(lambda(_, _, _, _), _, _, _) :- !, ir_fail(lambda).
+ir_expr(throw(_), _, _, _) :- !, ir_fail(throw).
 ir_expr(drain_free(E), V, RT, LL) :- !, ir_call(id(free), [E], V, RT), ir_type(RT, LL).          % the lowering's own free, past the drain
 ir_expr(assign('=', L, R), V, LT, LL) :- ir_own_elem(L), !, ir_elem_assign(L, R, S), ir_expr(S, V, LT, LL).   % an own array's element: the old one freed
 ir_expr(assign('=', L, R), V, LT, LL) :- !,
@@ -631,6 +673,8 @@ ir_call_(Callee, RT, Ps, Var, Args, V) :-
         ;   V = R ) ).
 %% the arguments: each as its parts (a struct in pieces is several), and the plain type of each part
 ir_args_([], _, [], []).
+ir_args_([A|As], [param(PT0, _)|Ps], Parts, PLLs) :- ( PT0 = ref(_, _) ; PT0 = rref(_, _) ), !,   % C++: a reference parameter takes the argument's address
+    ir_ref_of(A, V), atomic_list_concat(['ptr ', V], P1), ir_args_(As, Ps, P2, PLLs2), Parts = [P1|P2], PLLs = [ptr|PLLs2].
 ir_args_([A|As], [param(PT0, _)|Ps], Parts, PLLs) :- !,
     ir_param_abi(PT0, PT, Abi), ir_expr(A, V0, T0, L0), ( Abi == scalar -> ir_type(PT, PL), ir_convert(V0, T0, L0, PT, PL, V) ; V = V0 ),
     ir_arg_parts(Abi, PT, V, P1, L1), ir_args_(As, Ps, P2, L2), append(P1, P2, Parts), append(L1, L2, PLLs).
@@ -651,7 +695,24 @@ ir_promote_arg(V0, T0, V, T) :-
 %% ---- lvalues: an address and the C type there --------------------------------------------
 %% ir_lval(+E, -Slot, -T, -LL): the slot, the C type there (resolved) and its LLVM type
 ir_lval(E, Slot, T) :- ir_lval(E, Slot, T, _).
-ir_lval(id(N), Addr, T, LL) :- !, ( ir_lookup(N, loc(Addr, T0)) -> true ; ir_fail(undeclared(N)) ), ccl_resolve_type(T0, T), ir_type(T, LL).
+ir_lval(id(N), Addr, T, LL) :- !, ( ir_lookup(N, loc(Addr0, T00)) -> true ; ir_fail(undeclared(N)) ), ir_ref_slot(Addr0, T00, Addr, T0), ccl_resolve_type(T0, T), ir_type(T, LL).
+ir_lval(scoped(_, N), Addr, T, LL) :- !, ir_lval(id(N), Addr, T, LL).
+ir_lval(call(F, Args), Addr, T, LL) :- !,                                 % C++: a call's reference result is a place
+    ir_call(F, Args, Addr, RT), ( ( RT = ref(_, T0) ; RT = rref(_, T0) ) -> ccl_resolve_type(T0, T), ir_type(T, LL) ; ir_fail(lvalue(call(F, Args))) ).
+%% C++ (M6): a reference's slot holds the address of what it refers to, so a
+%% use of the name loads that address first and goes on as the referent
+ir_ref_slot(A0, T0, A, T) :- ( T0 = ref(_, T) ; T0 = rref(_, T) ), !, ir_fresh(A), ir_ins([A, ' = load ptr, ptr ', A0]).
+ir_ref_slot(A, T, A, T).
+%% what a reference is bound to: an lvalue's address, or a call's reference result as it is
+ir_ref_of(E, P) :- ir_lvalue_form(E), !, ir_lval(E, P, _, _).
+ir_ref_of(call(F, Args), P) :- !, ir_call(F, Args, P, RT), ( ( RT = ref(_, _) ; RT = rref(_, _) ) -> true ; ir_fail(reference_to_value(call(F, Args))) ).
+ir_ref_of(E, _) :- ir_fail(reference_to_value(E)).
+ir_lvalue_form(id(_)).
+ir_lvalue_form(scoped(_, _)).
+ir_lvalue_form(index(_, _)).
+ir_lvalue_form(member(_, _)).
+ir_lvalue_form(arrow(_, _)).
+ir_lvalue_form(deref(_)).
 ir_lval(deref(E), Addr, T, LL) :- !, ir_expr(E, Addr, PT, _), ir_elem(PT, T), ir_type(T, LL).
 ir_lval(index(A, I), Addr, T, LL) :- !,
     ir_expr(A, P, PT, _), ir_elem(PT, T), ir_type(T, LL), ir_expr(I, IV, IT, IL), ir_convert(IV, IT, IL, base([], [long]), i64, I1),
@@ -719,6 +780,9 @@ ir_stmt(while(L, C, S)) :- !, ir_line(L),
 ir_stmt(do(L, S, C)) :- !, ir_line(L),
     ir_label(LB), ir_label(LC), ir_label(LE), ir_block(LB), ir_loop_push(LE, LC), ir_stmt(S), ir_loop_pop,
     ir_block(LC), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LB, ', label %', LE]), ir_block(LE).
+ir_stmt(for_each(L, D, R, S)) :- !, ( ccl_for_each_as_for(for_each(L, D, R, S), For) -> ir_stmt(For) ; ir_fail(range_for_over_non_array) ).   % C++ (M6)
+ir_stmt(using(_, _)) :- !.
+ir_stmt(try(_, _, _)) :- !, ir_fail(try).
 ir_stmt(for(L, Init, C, Step, S)) :- !, ir_line(L),
     ir_env_push,
     ( Init = decl(_, Vs) -> ir_locals(Vs, none) ; Init == none -> true ; ir_expr(Init, _, _) ),
@@ -728,6 +792,8 @@ ir_stmt(for(L, Init, C, Step, S)) :- !, ir_line(L),
     ir_block(LS), ( Step == none -> true ; ir_expr(Step, _, _) ), ir_end(['br label %', LC]),
     ir_block(LE), ir_run_defers(1), ir_env_pop.
 ir_stmt(return(L)) :- !, ir_line(L), ir_run_defers(all), ir_end(['ret void']).
+ir_stmt(return(L, E)) :- nb_getval('$ir_ret', RT), ( RT = ref(_, _) ; RT = rref(_, _) ), !, ir_line(L),   % C++: a reference result is the address
+    ir_ref_of(E, P), ir_run_defers(all), ir_end(['ret ptr ', P]).
 ir_stmt(return(L, E)) :- !, ir_line(L),
     nb_getval('$ir_ret', RT), nb_getval('$ir_ret_abi', Abi), ir_expr(E, V0, T0, L0),
     (   ccl_resolve_type(RT, base(_, [void])) -> ir_run_defers(all), ir_end(['ret void'])
@@ -756,7 +822,11 @@ ir_stmt(S) :- ir_fail(stmt(S)).
 ir_locals([], _).
 ir_locals([var(N, T, Init)|Vs], Sto) :-
     ccl_resolve_type(T, T1),
-    (   T1 = fn(_, _, _) -> ir_note_extern(N, T)                         % a local prototype
+    (   ( T1 = ref(_, _) ; T1 = rref(_, _) )                             % C++: a reference, bound once to an address
+    ->  nb_getval('$ir_reg', K), K1 is K + 1, nb_setval('$ir_reg', K1), atomic_list_concat(['%', N, '.', K1], Addr),
+        ir_alloca_typed(Addr, T1), ir_local(N, T1, Addr),
+        ( Init == none -> ir_fail(reference_unbound(N)) ; ir_ref_of(Init, P), ir_ins(['store ptr ', P, ', ptr ', Addr]) )
+    ;   T1 = fn(_, _, _) -> ir_note_extern(N, T)                         % a local prototype
     ;   Sto == extern -> ir_note_extern(N, T)
     ;   ir_sized_type(T, T1, Init, ST),                                     % int xs[] = {...}: sized by its initializer
         nb_getval('$ir_reg', K), K1 is K + 1, nb_setval('$ir_reg', K1), atomic_list_concat(['%', N, '.', K1], Addr),
@@ -797,11 +867,23 @@ ir_switch_body([default(_, S)|Is], Cases, D) :- !, ir_block(D), ir_switch_body([
 ir_switch_body([S|Is], Cases, D) :- ir_stmt(S), ir_switch_body(Is, Cases, D).
 
 %% ---- functions and globals -------------------------------------------------------------------
+ir_item(function(_, _, _, operator(Op), _, _, _)) :- !, ir_fail(operator(Op)).                     % C++: the class step's
+ir_item(function(_, _, _, Name, _, _, _)) :- \+ atom(Name), !, ir_fail(member_of_class(Name)).
+ir_item(dtor_def(_, _, _, _)) :- !, ir_fail(destructor).
+ir_item(declaration(_, _, _, Vs)) :- member(var(N, _, _), Vs), \+ atom(N), !, ir_fail(member_of_class(N)).
+ir_item(declare(_, base(_, [class(_, N, _, _)]))) :- !, ir_fail(class(N)).
+ir_item(ctor(_, _, _, _, _)) :- !, ir_fail(constructor).
+ir_item(dtor(_, _, _)) :- !, ir_fail(destructor).
+ir_item(method(_, _, _, N, _, _, _)) :- !, ir_fail(method(N)).
 ir_item(function(_, Sto, Ret, Name, Params, Var, Body)) :- !,
     ir_function(Sto, Ret, Name, Params, Var, Body, Text),
     nb_getval('$ir_fdefs', Fs), nb_setval('$ir_fdefs', [Text|Fs]),
     nb_getval('$ir_defined', Ds), nb_setval('$ir_defined', [Name|Ds]).
 ir_item(declaration(_, Sto, _, Vs)) :- !, ir_globals(Vs, Sto).
+ir_item(extern_c(_, Is)) :- !, ir_items(Is).                              % C++ (M6): C linkage is what every name has
+ir_item(namespace(_, _, Is)) :- !, ir_items(Is).                          % a namespace flattens to bare names (the symbol table's view too)
+ir_item(using(_, _)) :- !.
+ir_item(template(_, _, _)) :- !, ir_fail(template).
 ir_item(_).
 
 ir_function(Sto, Ret, Name, Params, Var, Body, Text) :-
@@ -873,6 +955,9 @@ ir_sized_type(_, arr(none, E), str(S), arr(int(K), E)) :- !, length(S, K0), K is
 ir_sized_type(T, _, _, T).
 ir_gconst(none, T, Z) :- !, ir_type(T, LL), ir_zero(LL, Z).
 ir_gconst(int(N), _, N) :- !.
+ir_gconst(bool(true), _, 1) :- !.                                         % C++
+ir_gconst(bool(false), _, 0) :- !.
+ir_gconst(nullptr, _, null) :- !.
 ir_gconst(neg(int(N)), _, M) :- !, M is -N.
 ir_gconst(chr(C), _, C) :- !.
 ir_gconst(float(F), T, A) :- !, ( ccl_resolve_type(T, base(_, S)), memberchk(float, S) -> ir_fail(float_global) ; ir_double(F, A) ).

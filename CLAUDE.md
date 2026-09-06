@@ -368,6 +368,61 @@ and the lowering), `dr_items_deps` (the IR signature). The driver reads
 `-fsyntax-only` in cpp mode (M6's), and `ccl_link` uses `c++`. `cicili++`
 runs `--no-kb`: see the findings.
 
+**M6, the check and the lowering of the C++ forms, in steps; the first
+(0.32): C++ that is C with names.** A namespace FLATTENS to bare names
+(the noters already did so: `namespace`, `extern_c` items are their
+items; `ir_item` walks them; `using` is nothing; `scoped(_, N)` in an
+expression is `id(N)` in the check, the inference and the lowering;
+two namespaces declaring one name collide, unhandled). `bool` is a byte
+(`ir_base`, `ccl_basic_size`, rank 0), a conversion TO bool an `icmp ne`
++ `zext` (`ir_to_bool`, first in `ir_convert/6`), `bool(true)` /
+`nullptr` constants and global initializers; `ccast(_, T, E)` is
+`cast(T, E)`; `enum_class(Tag, Es)` an enum (`ir_base`, the bulk noter's
+`ccl_collect_spec` collects it -- it did not, and `Color c` failed as
+`typedef('Color')`), and a C++ TAG's name resolves as a type
+(`ccl_resolve_base([typedef(N)])` in cpp mode through `ccl_tag_type/4`,
+told by the members' shape: enumerators, plain members, a class's).
+`for_each(L, Decl, Range, S)` over an ARRAY is rewritten ONCE for both
+passes, `ccl_for_each_as_for/2` in `ccl_infer`: `for (int i = 0; i < N;
+i++) { T x = xs[i]; S }`, an `auto &` a `ref` to the element; a range
+that is not an array is `range_for_over_non_array`. **A reference is a
+pointer bound once:** the reader gives `ref(Q, T)` / `rref(Q, T)`;
+`ccl_type_of` DECAYS it (`ccl_unref/2` in the id, call, member, arrow,
+index, deref clauses), `ir_type_` makes it `ptr`, a local's slot holds
+the address (`ir_locals`: `ir_ref_of/2` of the initializer -- an lvalue
+form's address, or a call's reference result as it is), a use of the name
+loads that address first (`ir_ref_slot/4` in `ir_expr(id)` and
+`ir_lval(id)`), a reference parameter takes the argument's address
+(`ir_args_`), a reference result returns one (`ir_stmt(return)`,
+`ir_lval(call)` for `alias(y) = ...`) and is loaded through where a value
+is asked (`ir_expr(call)`). The CHECK sees the pointer: `ck_ref_params/2`
+and `ck_ref_decl/5` map `ref` to `ptr` -- a parameter a borrow, a local
+bound to an lvalue a borrow of its address (`addr(Init)`: an anchor, an
+array's element), one bound to a call not followed -- and keep the
+function's reference names in `'$ck_refs'`, since a use of such a name
+is a use of the referent: `x = v` is `*x = v` (the assign clause first),
+`&x` the pointer held, the value borrows only when the referent's type
+carries a pointer, and `return x` from a reference-returning function
+(`'$ck_ret'`) is checked as a borrow out (`borrow_escapes` for a
+reference to a local, `ck_no_escape`). `new T` is
+`(T *) malloc(sizeof(T))`, `new T(v)` stores v through a statement
+expression, `new T[n]` `malloc(n * sizeof(T))`, `delete p` / `delete[]
+p` `free(p)` (`ir_new/3`; `malloc` and `free` declared by
+`ir_cpp_prelude` when the file did not, before the check, which consumes
+at a delete as at a free and takes `new` as a fresh value). A form of a
+later step is REFUSED BY NAME, never dropped: `class(N)` at its
+declaration and where a variable has the type, `member_of_class(N)`,
+`operator(Op)`, `constructor`, `destructor`, `method(N)`, `template`,
+`lambda`, `throw`, `try` (the check's last `ck_stmt` clause throws the
+lowering's `not_lowered(F)` with its place); the noters skip a member
+defined out of its class (`Counter::made`, `Shape::scale`: a compound
+name), which crashed `atom_concat` before. Gated by `test/cpp.sh`:
+`test/cpp/run/names.cpp` and `loops.cpp` built through `cicili++`, run
+against their `.expect`, and `control.cpp`, `classes.cpp`,
+`templates.cpp` refused with `try`, `class`, `template`. Not done: two
+namespaces with one name, a reference member, a reference to a class,
+`auto` the reader could not infer (`ir_fail(auto)`).
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
