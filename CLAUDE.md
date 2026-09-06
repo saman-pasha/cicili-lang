@@ -792,6 +792,71 @@ nodes `uint(N)`, `long(N)`, `ulong(N)`, typed, folded, lowered and
 keyed (`cpp_type_key`: `Nu`, `Nl`, `Nul`) beside `int(N)`; reader
 version 33; `k59` and `k65` read `0xFFul` and `1u << 4`.
 
+**M6's twelfth step (0.43): C++23.** The level's macros were there
+(`-std=c++23`, `pp_std_table`); this step is the forms. THE READER
+(version 34): `if consteval { } else { }` and `if ! consteval` are
+`if_consteval(L, no | yes, T, E)`; an explicit object parameter, `this
+Self &self` (`ccl_param`, cpp only), is `param(this(T), N)` first among
+the parameters (`ccl_declare_params` strips the mark); `a[i, j]` at
+`-std=c++23` (`ccl_std_at_least/1`) is `index(A, args(Is))`, a single
+index the `index/2` it was -- one clause reads `ccl_args` and chooses,
+no re-parse; `auto(x)` and `auto{x}` are `decay_copy(E)`; a lambda
+takes an attribute after its captures and its specifiers with or
+without the parentheses (`ccl_lambda_specs`: `mutable`, `constexpr`,
+`consteval`, `static`, `noexcept(...)`); `using T = type;` in an
+init-statement (`ccl_for_init`'s alias clause, `ccl_init_stmt` makes
+the `typedef` item) and -- C++11's, missing -- in a block; `if (init;
+c)` and `switch (init; e)` (C++17's, missing) are a `block` of the
+initializer and the statement, as the range-for with an initializer
+is; a label may end a block (`ccl_label_body`: `label(L, N, empty)`).
+BOTH LEXERS: the suffix `z`/`Z` (`4uz`) is a long, `size_t` under
+LP64; the escapes `\x{...}`, `\o{...}`, `\u{...}` and the universal
+character names `\uXXXX`, `\UXXXXXXXX` (not read before), the last
+two put into a string as UTF-8 (`ccl_utf8/3`, `ccl_lx_put_utf8`), a
+code point in a char literal; octal `\NNN` up to three digits (before,
+`\101` read as `\1` then `01`); `\N{NAME}` is not read. THE
+PREPROCESSOR: `#elifdef X` and `#elifndef X` (`pp_cond_word`,
+`pp_defined_body/3` spells them as `defined(X)` for the group skipper);
+`#warning` stays nothing. THE DESUGARING: `cpp_norm_members/2` at
+`cpp_register_class` turns the marked parameter into the qualifier
+`explicit_this(N, T)`, so arity, overload choice, mangling and slots see
+the parameters a caller passes; `cpp_declare_members` and
+`cpp_member_fns` declare and emit such a method with `param(T, N)`
+first instead of `param(ThisT, this)` and walk its body under `Ctx =
+none` (no implicit `this`: C++23 has it so, `self.n`), `this auto` on a
+class's method refused as `deduced_this(C)` (a member template);
+EVERY CALL SITE passes the object through `cpp_object_arg/3`: the
+declared function's first parameter named `this` takes the address as
+before, any other name takes the object itself (`B` for `addr(B)`,
+`deref(P)` for a pointer) -- a reference parameter takes its address in
+the lowering, a by-value one a copy, refused for a class with a
+destructor by `cpp_no_copies`. A lambda's `this auto self` is the
+closure by value (`cpp_self_type/3`: `auto` becomes the closure's type,
+an rvalue reference a reference), its method marked `closure`, and its
+body walked under `Ctx = self(C, SN)` so a capture named bare is
+`member(id(self), N)` (`cpp_expr(id)`'s second branch) -- the recursive
+lambda, `n * self(n - 1)`, states its result type, since the first
+return's type is asked before the closure's class exists. `if
+consteval` keeps the run-time branch (nothing here is evaluated at
+compile time); `decay_copy(X)` is `cast(T, X)` of the decayed type, the
+value itself for a class (a copy of one with a destructor refused as
+before); `index(A, args(Is))` goes to the class's `operator[]` over the
+arguments, else `subscript_arity(N)`. FOUND BY THIS STEP: a typedef
+inside a block was noted by the reader and forgotten by the passes
+(the symbol table is rebuilt from the top-level items) -- `T x` was
+`not_lowered(typedef(T))` in C too; `ccl_collect_item(function)` now
+walks the body's statements for `typedef` items (`ccl_stmt_typedefs`,
+by statement shape, not into expressions), one table for the function
+(a name typedef'd in two blocks must agree); `test/c/run/typedef_block.c`.
+Gated by `test/cpp/cxx23.cpp` read at the level (c29-c33: `unit_at/3`
+sets `'$ccl_std'` for the read), `test/cpp/run/cxx23.cpp` built with
+`-std=c++23` (`.flags`) printing `__cplusplus` 202302, and
+`deduced_this.cpp` refused. Not done: deducing `this` with a deduced
+type on a class's method (CRTP: `template` inside a class), `static
+operator[]`, `\N{...}`, the extended floating-point suffixes (`1.0f16`),
+`#warning` printed, `[[assume]]` told to LLVM, trailing whitespace
+before a line splice, `consteval` at compile time, modules; C++26's forms.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

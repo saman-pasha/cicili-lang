@@ -112,6 +112,24 @@ what runs today.
   `test/cpp.sh`: ten programs built through `cicili++`, run and
   checked, plus the reader's `classes.cpp` and `templates.cpp`; `try`,
   a coroutine and an unsatisfied constraint are refused by name. GREEN.
+  **The twelfth step DONE: C++23.** Read: `if consteval`, an explicit
+  object parameter (`int f(this const C &self)`), the multidimensional
+  subscript `a[i, j]`, `auto(x)`, a lambda's specifiers without the
+  parentheses and a static lambda, an alias declaration in an
+  init-statement (and `using T = type;` in a block, `if (init; c)`,
+  `switch (init; e)`, which were missing), a label ending a block, the
+  `z` suffix, the delimited escapes `\x{…}`, `\o{…}`, `\u{…}` and the
+  universal character names (as UTF-8), `#elifdef` and `#elifndef`.
+  Compiled: an explicit object parameter is the function's first, a
+  reference or a copy, where an implicit `this` is an address, the
+  object passed as declared at every call, no implicit member access
+  in the body; a lambda's `this auto self` is the closure itself, its
+  captures reached through it, so a lambda recurses; `if consteval`
+  keeps the run-time branch; `auto(x)` copies the decayed value;
+  `a[i, j]` goes to the class's `operator[]`. A typedef inside a block
+  reaches the passes now (it did not, in C either). `cxx23.cpp` built
+  at `-std=c++23`; `this auto` on a class's method refused by name.
+  GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -205,6 +223,7 @@ with its AST node:
 | `requires (T a) { a + a; { a < a } -> Boolean; typename T::x; requires C<T>; }` | `requires_expr(Params, [expr(E), compound(E, C), type(T), nested(E)])` |
 | `a <=> b`, `co_return e`, `co_await e`, `co_yield e` | `bin('<=>', a, b)`, `co_return(L, E)`, `co_await(E)`, `co_yield(E)` |
 | `using enum E;`, `for (init; x : xs)`, `if constexpr (c) a else b`, `auto f(auto x)`, `[]<typename T>(T x) {}` | `using(L, enum(E))`, `block([Init, for_each(...)])`, `if_constexpr(L, C, T, E)`, `param(base([], [auto]), x)`, `lambda([tparams(Ps)|Caps], ...)` |
+| `if consteval { } else { }`, `int f(this const C &self)`, `a[i, j]` (at `-std=c++23`), `auto(x)`, `[] mutable -> int { }`, `if (using T = long; c)`, `{ s; done: }`, `4uz`, `"\x{41}\u{43}"` | `if_consteval(L, no, T, E)`, `param(this(T), self)` first, `index(a, args([i, j]))`, `decay_copy(x)`, `lambda([], [], T, B)`, `block([typedef(L, [var('T', long, none)]), if(...)])`, `label(L, done, empty)`, `ulong(4)`, `str("AC")` -- C++23 |
 | `enum class Color : int { … }` | `enum_class('Color', Enumerators)` |
 
 A C++ library header, `<cstdio>` and kin, is flattened by one run of the
@@ -228,7 +247,7 @@ Cicili's own test suite -- `objects.cpp`, `emit_report.cpp` with
 read whole, `hello.cpp` built and run, and built again from the
 summaries: 30 seconds served, two minutes the first time.
 
-## C++17 and C++20
+## C++17, C++20 and C++23
 
 `cicili++` compiles C++ against libc++ as the system ships it, never
 against a standard library of its own: the compiler's own headers are the
@@ -255,9 +274,20 @@ function templates (`auto` parameters as invented template parameters);
 `consteval` and `constinit` (read; `consteval` runs at run time like
 `constexpr`); `char8_t`; `using enum`; a range-for with an initializer;
 designated initializers; `[[likely]]`; template lambdas and coroutines
-read and refused by name; modules not read. **C++23 and C++26**: their
-macros, so libc++ takes their paths, their forms still to come. libc++'s
-containers themselves await the forms their bodies use -- allocators,
+read and refused by name; modules not read. **C++23**: `if consteval`
+(the run-time branch runs); an explicit object parameter, `this Self
+&self`, on a method and on a lambda (a recursive lambda through `this
+auto self`; `this auto` on a class's method, a member template, is
+refused by name); the multidimensional subscript `a[i, j]` to the
+class's `operator[]`; `auto(x)` and `auto{x}`; a lambda's specifiers
+without parentheses, a static lambda; an alias in an init-statement; a
+label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
+`\o{…}`, `\u{…}` and the universal character names, into a string as
+UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
+the extended floating-point suffixes, `[[assume]]` told to LLVM.
+**C++26**: its macros, so libc++ takes its paths, its forms still to
+come. libc++'s containers themselves await the forms their bodies use
+-- allocators,
 `enable_if` and partial specializations, `constexpr` and `noexcept`
 everywhere, rvalue-reference overloads by value category, exceptions --
 which is the road the C++ side is on.
@@ -439,7 +469,7 @@ a file stopped.
 
 A Prolog file is included the way a header is, and **every predicate it
 defines is a macro function over ASTs** (what that gives beyond C++'s
-templates is set out under C++17 and C++20, above): a call `name(a, b)`
+templates is set out under C++17, C++20 and C++23, above): a call `name(a, b)`
 in the C source, with `name/3` among them, runs at parse time as
 `name(ASTa, ASTb, Result)` and `Result` takes the call's place. In an
 expression the result is an expression; as a statement it may be a

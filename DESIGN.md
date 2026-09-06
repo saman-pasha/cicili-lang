@@ -256,9 +256,13 @@ it is done (see below); the checker and the lowering take the AST from here.
   (and 23, 26) selects the level's predefined macros, which libc++'s
   headers key on, and the C++20 forms are read and, where they can
   become C, compiled -- concepts checked at instantiation, abbreviated
-  templates, `<=>`, `if constexpr`, `using enum`; coroutines refused.
-  libc++'s containers await the forms their bodies use, which is the
-  road ahead.
+  templates, `<=>`, `if constexpr`, `using enum`; coroutines refused --
+  then C++23's: `if consteval`, an explicit object parameter (the
+  function's first, the object passed as declared; a lambda's is the
+  closure, so a lambda recurses), `a[i, j]`, `auto(x)`, the delimited
+  escapes, `#elifdef`; deducing `this` with a deduced type on a class's
+  method refused, a member template. libc++'s containers await the
+  forms their bodies use, which is the road ahead.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

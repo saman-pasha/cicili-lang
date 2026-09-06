@@ -32,6 +32,8 @@ unit(Name, U) :-
     (   once(catch(nb_getval(K, U0), _, fail)) -> U = U0
     ;   cicili_ast(P, U0), nb_setval(K, U0), U = U0 ).
 fn_body(Name, F, B) :- unit(Name, unit(Is)), member(function(_, _, _, F, _, _, block(B)), Is).
+%% a fixture read at a language level (-std=c++NN): the level set for the read, 17 again after
+unit_at(Std, Name, U) :- nb_setval('$ccl_std', Std), ( unit(Name, U) -> nb_setval('$ccl_std', 17) ; nb_setval('$ccl_std', 17), fail ).
 %% a term anywhere inside another (a class's members, a block's items)
 in(T, T).
 in(T, X) :- compound(X), X =.. [_|As], member(A, As), in(T, A).
@@ -47,7 +49,7 @@ c_checks :-
     section('statements and expressions: range-for, try/catch/throw, lambdas, enum class, casts'),
     c17, c18, c19, c20, c21,
     section('C++20: concepts and requires, <=>, consteval and constinit, char8_t, coroutines read, using enum, for with an initializer, designated initializers, an abbreviated template, a template lambda, if constexpr'),
-    c22, c23, c24, c25, c26, c27, c28.
+    c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33.
 
 c1 :- check('namespace N { ... } is namespace(L, N, Items), nested, and anonymous',
     ( unit('names.cpp', unit(Is)), member(namespace(2, geo, Gs), Is), member(function(_, _, _, twice, _, _, _), Gs), member(namespace(_, inner, _), Gs), member(namespace(_, anon, _), Is) )).
@@ -155,6 +157,24 @@ c27 :- check('auto add(auto a, auto b) is a function with auto parameters (an ab
       fn_body('cxx20.cpp', main, B), member(declaration(_, _, _, [var(pick, _, lambda([tparams([tparam(type, 'T', none)])], [param(_, a), param(_, b)], none, _))]), B) )).
 c28 :- check('if constexpr (sizeof(int) == 4) is if_constexpr(L, C, T, E); [[likely]] before a statement is dropped',
     ( fn_body('cxx20.cpp', main, B), member(if_constexpr(_, bin('==', sizeof_type(base([], [int])), int(4)), _, _), B), member(if(_, bin('>', id(t), int(0)), _, none), B) )).
+%% C++23 (the twelfth step), read at -std=c++23
+c29 :- check('if consteval { } else { } is if_consteval(L, no, T, E), the branches blocks',
+    ( unit_at(23, 'cxx23.cpp', unit(Is)), member(function(_, _, _, pick, _, _, block([if_consteval(_, no, block([return(_, id(x))]), block([return(_, bin('+', id(x), int(1)))]))])), Is) )).
+c30 :- check('int sum(this const Grid &self): the explicit object parameter is param(this(T), self), first; operator[](int r, int c) has two; a static operator()',
+    ( unit('cxx23.cpp', unit(Is)), member(declare(_, base(_, [class(struct, 'Grid', _, Ms)])), Is),
+      member(method(_, _, _, sum, [param(this(ref(_, base(_, [typedef('Grid')]))), self)], _, _), Ms),
+      member(method(_, _, _, operator('[]'), [param(_, r), param(_, c)], _, _), Ms),
+      member(declare(_, base(_, [class(struct, 'Twice', _, Ts)])), Is), member(method(_, Qs, _, operator('()'), [param(_, x)], _, _), Ts), memberchk(static, Qs) )).
+c31 :- check('g[1, 2] = 5 is index(g, args([1, 2])) at -std=c++23; 4uz is ulong(4); the escapes \\x{41}\\u{43} are AC',
+    ( fn_body('cxx23.cpp', main, B), member(expr(_, assign('=', index(id(g), args([int(1), int(2)])), int(5))), B),
+      member(declaration(_, _, _, [var(n, _, ulong(4))]), B), member(declaration(_, _, _, [var(s, _, str([65, 67]))]), B) )).
+c32 :- check('[](this auto self, int n) -> int has the closure as its explicit object parameter; [] mutable -> int { } reads without parentheses',
+    ( fn_body('cxx23.cpp', main, B), member(declaration(_, _, _, [var(fact, _, lambda([], [param(this(base([], [auto])), self), param(base([], [int]), n)], base([], [int]), _))]), B),
+      member(declaration(_, _, _, [var(sq, _, lambda([], [], base([], [int]), block([return(_, int(49))])))]), B) )).
+c33 :- check('auto(k) is decay_copy(k); if (using T = long; true) is a block of the alias and the if; { copy = 1; done: } ends with label(L, done, empty)',
+    ( fn_body('cxx23.cpp', main, B), member(declaration(_, _, _, [var(copy, _, decay_copy(id(k)))]), B),
+      member(block([typedef(_, [var('T', base([], [long]), none)]), if(_, bool(true), block([declaration(_, _, base(_, [typedef('T')]), [var(x, _, int(40))]), _]), none)]), B),
+      member(block([expr(_, assign('=', id(copy), int(1))), label(_, done, empty)]), B) )).
 
 %% ---- real C++ from the neighbours: Cicili's emitted C++, read entirely ----------------------
 c_real :-

@@ -23,6 +23,9 @@ int x = y /* inline */ + z;
 #end
 int cxx20 = a <=> b; /* C++20's three-way comparison, and its words: in C plain names, in C++ keywords in both lexers */
 int words = concept + requires + co_await + co_yield + co_return + consteval + constinit + char8_t;
+unsigned long z = 4uz + 5z + 6ZU; /* C++23: the size_t suffix, a long under LP64 */
+const char *esc = "\x{41}\o{102}\u{43}\104\u00e9\U0001F600\0\7x"; /* C++23: delimited escapes; universal character names as UTF-8; octal */
+char oct = '\101'; char ucn = '\u{7a}';
 int last = 1;
 #if 0
 this is not C but the lexer reads it: @ $ ` are where it stops

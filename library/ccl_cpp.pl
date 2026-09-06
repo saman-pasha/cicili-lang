@@ -107,7 +107,8 @@ cpp_register_([dtor_def(_, C, _, _)|Is]) :- !, nb_getval('$cpp_dtor_defs', Ds), 
 cpp_register_([namespace(_, _, Js)|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
 cpp_register_([extern_c(_, Js)|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
 cpp_register_([_|Is]) :- cpp_register_(Is).
-cpp_register_class(L, C, Bases, Ms) :-
+cpp_register_class(L, C, Bases, Ms0) :-
+    cpp_norm_members(Ms0, Ms),
     (   Bases = [] -> Base = none
     ;   Bases = [base(_, B)] -> Base = B
     ;   cpp_refuse(L, multiple_inheritance(C)) ),
@@ -121,6 +122,11 @@ cpp_register_class(L, C, Bases, Ms) :-
     ( Base == none -> Data1 = Data ; Data1 = [member(base([], [typedef(Base)]), '$base', none)|Data] ),
     ccl_note_tag(C, Data1),                                              % the struct it becomes, in the table at once: its members have types while its methods are walked
     cpp_declare_members(Ms, C), cpp_declare_statics(Statics, C).
+%% C++23: a method's explicit object parameter (`this Self &self', read as param(this(T), N) first among
+%% the parameters) becomes the qualifier explicit_this(N, T), so the parameters are the ones a caller passes
+cpp_norm_members([], []).
+cpp_norm_members([method(L, Qs, Ret, M, [param(this(T), N)|Ps], V, Body)|Ms], [method(L, [explicit_this(N, T)|Qs], Ret, M, Ps, V, Body)|Ms1]) :- !, cpp_norm_members(Ms, Ms1).
+cpp_norm_members([M|Ms], [M|Ms1]) :- cpp_norm_members(Ms, Ms1).
 %% the virtual slots of a class: the base's, an own virtual method (or one
 %% that overrides a slot) appended when new, `$dtor' for a virtual destructor
 cpp_slots(Base, Ms, C, Slots) :-
@@ -153,6 +159,9 @@ cpp_split_members([_|Ms], Data, Ss, Ds) :- cpp_split_members(Ms, Data, Ss, Ds).
 %% the functions a class makes are declared in the symbol table at once, so
 %% a rewritten call has a type while the walk goes on
 cpp_declare_members([], _).
+cpp_declare_members([method(L, Qs, Ret, M, Ps, V, _)|Ms], C) :- memberchk(explicit_this(N, T0), Qs), !,        % C++23: the object parameter as declared, no implicit this
+    cpp_mangle(C, M, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_self_param(L, C, N, T0, Self),
+    ccl_declare(Name, fn(Ret, [Self|Ps1], V)), cpp_note_defaults(Name, Ps), cpp_declare_members(Ms, C).
 cpp_declare_members([method(_, Qs, Ret, M, Ps, V, _)|Ms], C) :- !,
     cpp_mangle(C, M, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, Qs, ThisT),
     ccl_declare(Name, fn(Ret, [param(ThisT, this)|Ps1], V)), cpp_note_defaults(Name, Ps), cpp_declare_members(Ms, C).
@@ -163,6 +172,12 @@ cpp_declare_members([dtor(_, _, _)|Ms], C) :- !,
     atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], [dying], ThisT),
     ccl_declare(Name, fn(base([], [void]), [param(ThisT, this)], false)), cpp_declare_members(Ms, C).
 cpp_declare_members([_|Ms], C) :- cpp_declare_members(Ms, C).
+%% the explicit object parameter as the function's first: `this auto` on a method would make it a template (deduced_this)
+cpp_self_param(L, C, N, T0, param(T, N)) :- ( cpp_auto_in(T0, 0, _, _) -> cpp_refuse(L, deduced_this(C)) ; cpp_type(T0, T) ).
+%% a method with an explicit object parameter takes the object as declared -- by reference (its address, as any
+%% reference argument), or a copy -- where an implicit this takes its address
+cpp_object_arg(Name, Addr, Obj) :- ccl_declared(Name, fn(_, [param(_, First)|_], _)), First \== this, !, ( Addr = addr(B) -> Obj = B ; Obj = deref(Addr) ).
+cpp_object_arg(_, Addr, Addr).
 cpp_declare_statics([], _).
 cpp_declare_statics([N-T|Ss], C) :- atomic_list_concat([C, '.', N], Name), ccl_declare(Name, T), cpp_declare_statics(Ss, C).
 cpp_class(C, Cls) :- nb_getval('$cpp_classes', Cs), memberchk(C-Cls, Cs).
@@ -341,6 +356,12 @@ cpp_static_decls(_, _, [], []).
 cpp_static_decls(L, C, [N-T|Ss], [declaration(L, extern, T, [var(Name, T, none)])|Ds]) :- atomic_list_concat([C, '.', N], Name), cpp_static_decls(L, C, Ss, Ds).
 %% the members that are functions
 cpp_member_fns([], _, _, _, []).
+cpp_member_fns([method(L, Qs, Ret, M, Ps, V, Body)|Ms], C, B, Ds, [F|Fs]) :- memberchk(explicit_this(N, T0), Qs), !,     % C++23: the object parameter as declared; the body has no implicit this
+    cpp_mangle(C, M, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_self_param(L, C, N, T0, Self), Params = [Self|Ps1],
+    ( memberchk(closure, Qs) -> Ctx = self(C, N) ; Ctx = none ),                                                           % a lambda's captures are reached through it
+    (   Body == none -> F = declaration(L, none, Ret, [var(Name, fn(Ret, Params, V), none)])
+    ;   cpp_method_body(Ctx, Ret, Params, Body, Body1), F = function(L, none, Ret, Name, Params, V, Body1) ),
+    cpp_member_fns(Ms, C, B, Ds, Fs).
 cpp_member_fns([method(L, Qs, Ret, M, Ps, V, Body)|Ms], C, B, Ds, [F|Fs]) :- !,
     cpp_mangle(C, M, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, Qs, ThisT), Params = [param(ThisT, this)|Ps1],
     (   Body == none -> F = declaration(L, none, Ret, [var(Name, fn(Ret, Params, V), none)])
@@ -404,6 +425,8 @@ cpp_stmt(Ctx, if_constexpr(L, C, T, E), Out) :- !,                              
     cpp_expr(Ctx, C, C1),
     (   cpp_const_bool(C1, V) -> ( V == true -> cpp_stmt(Ctx, T, Out) ; E == none -> Out = empty ; cpp_stmt(Ctx, E, Out) )
     ;   cpp_stmt(Ctx, T, T1), ( E == none -> E1 = none ; cpp_stmt(Ctx, E, E1) ), Out = if(L, C1, T1, E1) ).
+cpp_stmt(Ctx, if_consteval(_, Neg, T, E), Out) :- !,                                          % C++23: nothing runs at compile time here, so the run-time branch is kept
+    ( Neg == yes -> Keep = T ; Keep = E ), ( Keep == none -> Out = empty ; cpp_stmt(Ctx, Keep, Out) ).
 cpp_stmt(_, co_return(L, _), _) :- !, cpp_refuse(L, coroutine).                               % C++20 coroutines: no runtime to suspend into
 cpp_stmt(Ctx, if(L, C, T, E), if(L, C1, T1, E1)) :- !, cpp_expr(Ctx, C, C1), cpp_stmt(Ctx, T, T1), ( E == none -> E1 = none ; cpp_stmt(Ctx, E, E1) ).
 cpp_stmt(Ctx, while(L, C, S), while(L, C1, S1)) :- !, cpp_expr(Ctx, C, C1), cpp_stmt(Ctx, S, S1).
@@ -494,6 +517,7 @@ cpp_expr(_, this, id(this)) :- !.
 cpp_expr(_, E, E) :- \+ compound(E), !.
 cpp_expr(Ctx, id(N), E) :- !,
     (   cpp_local(N) -> E = id(N)
+    ;   Ctx = self(C, SN), cpp_data_member(C, N, []) -> E = member(id(SN), N)                   % C++23: a capture, through the closure's explicit object parameter
     ;   Ctx \== none, cpp_data_member(Ctx, N, Hops) -> cpp_access(id(this), N, Hops, E)
     ;   Ctx \== none, cpp_static_member(Ctx, N, Name) -> E = id(Name)
     ;   E = id(N) ).
@@ -512,7 +536,7 @@ cpp_no_copies_([_|Ps], [_|As]) :- cpp_no_copies_(Ps, As).
 cpp_expr(Ctx, member(X, N), E) :- !, cpp_expr(Ctx, X, X1), ( cpp_class_of_type_of(X1, C), cpp_data_member(C, N, Hops), Hops \== [] -> cpp_hops(X1, Hops, B), E = member(B, N) ; E = member(X1, N) ).
 cpp_expr(Ctx, arrow(X, N), E) :- !, cpp_expr(Ctx, X, X1), ( cpp_pointee_class_of(X1, C), cpp_data_member(C, N, Hops), Hops \== [] -> cpp_access(X1, N, Hops, E) ; E = arrow(X1, N) ).
 cpp_expr(Ctx, bin('<=>', A, B), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1),         % C++20: the three-way comparison, an int for scalars (-1, 0, 1); a class's operator<=> when it has one
-    (   cpp_class_of_type_of(A1, C) -> ( cpp_method(C, operator('<=>'), [B1], Name, Hops) -> cpp_hops(A1, Hops, Base), E = call(id(Name), [addr(Base), B1]) ; cpp_refuse(0, three_way_comparison_of_a_class(C)) )
+    (   cpp_class_of_type_of(A1, C) -> ( cpp_method(C, operator('<=>'), [B1], Name, Hops) -> cpp_hops(A1, Hops, Base), cpp_object_arg(Name, addr(Base), Obj), E = call(id(Name), [Obj, B1]) ; cpp_refuse(0, three_way_comparison_of_a_class(C)) )
     ;   E = bin('-', bin('>', A1, B1), bin('<', A1, B1)) ).
 cpp_expr(_, co_await(_), _) :- !, cpp_refuse(0, coroutine).
 cpp_expr(_, co_yield(_), _) :- !, cpp_refuse(0, coroutine).
@@ -520,7 +544,13 @@ cpp_expr(Ctx, bin(Op, A, B), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1)
 cpp_expr(Ctx, assign(Op, A, B), E) :- Op \== '=', !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1), cpp_operator(Op, A1, [B1], assign(Op, A1, B1), E).
 cpp_expr(Ctx, assign('=', A, B), assign('=', A1, B1)) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1),
     ( cpp_class_of_type_of(A1, C), cpp_dtor(C, _), \+ B1 = move(_) -> cpp_refuse(0, assignment_to_a_class_with_destructor(C)) ; true ).   % the old value would never be destroyed, the new freed twice; a move into a fresh slot is the holder's business
+cpp_expr(Ctx, index(A, args(Is)), E) :- !, cpp_expr(Ctx, A, A1), cpp_exprs(Ctx, Is, Is1),        % C++23: a[i, j] is the class's operator[](i, j)
+    ( cpp_operator('[]', A1, Is1, none, E), E \== none -> true ; length(Is1, N), cpp_refuse(0, subscript_arity(N)) ).
 cpp_expr(Ctx, index(A, I), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, I, I1), cpp_operator('[]', A1, [I1], index(A1, I1), E).
+cpp_expr(Ctx, decay_copy(X), E) :- !, cpp_expr(Ctx, X, X1),                                       % C++23: auto(x), auto{x}: a copy of the decayed value
+    (   ccl_type_of(X1, T0), T0 \== unknown
+    ->  cpp_decayed(T0, T), ( cpp_class_of_type(T, C) -> ( cpp_dtor(C, _), cpp_lvalue(X1) -> cpp_refuse(0, copy_of_a_class_with_destructor(C)) ; E = X1 ) ; E = cast(T, X1) )
+    ;   E = X1 ).
 cpp_expr(Ctx, new(T0, As), E) :- !, cpp_type(T0, T), cpp_exprs(Ctx, As, As1), cpp_new(T, As1, E).
 cpp_expr(Ctx, new_array(T0, N), new_array(T, N1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, N, N1).
 cpp_expr(Ctx, cast(T0, X), cast(T, X1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1).
@@ -548,26 +578,26 @@ cpp_call(Ctx, member(X0, M), As, E) :- !,
     (   cpp_class_of_type_of(X, C), length(As, N), cpp_method(C, M, As, Name, Hops)
     ->  cpp_fill_defaults(Name, As, As1),
         (   cpp_slot(C, M, N, Slot), \+ cpp_static_object(X) -> cpp_dispatch(addr(X), C, Slot, As1, E)   % a reference, *p: the dynamic type's
-        ;   cpp_hops(X, Hops, B), E = call(id(Name), [addr(B)|As1]) )
+        ;   cpp_hops(X, Hops, B), cpp_object_arg(Name, addr(B), Obj), E = call(id(Name), [Obj|As1]) )
     ;   E = call(member(X, M), As) ).
 cpp_call(Ctx, arrow(X0, M), As, E) :- !,
     cpp_expr(Ctx, X0, X),
     (   cpp_pointee_class_of(X, C), length(As, N), cpp_method(C, M, As, Name, Hops)
     ->  cpp_fill_defaults(Name, As, As1),
         (   cpp_slot(C, M, N, Slot) -> cpp_dispatch(X, C, Slot, As1, E)
-        ;   ( Hops == [] -> P = X ; cpp_hops(deref(X), Hops, B), P = addr(B) ), E = call(id(Name), [P|As1]) )
+        ;   ( Hops == [] -> P = X ; cpp_hops(deref(X), Hops, B), P = addr(B) ), cpp_object_arg(Name, P, Obj), E = call(id(Name), [Obj|As1]) )
     ;   E = call(arrow(X, M), As) ).
 cpp_call(Ctx, id(M), As, E) :- Ctx \== none, \+ cpp_local(M), length(As, N), cpp_method(Ctx, M, As, Name, Hops), !,
     cpp_fill_defaults(Name, As, As1),
     (   cpp_slot(Ctx, M, N, Slot) -> cpp_dispatch(id(this), Ctx, Slot, As1, E)
-    ;   ( Hops == [] -> P = id(this) ; cpp_hops(deref(id(this)), Hops, B), P = addr(B) ), E = call(id(Name), [P|As1]) ).
+    ;   ( Hops == [] -> P = id(this) ; cpp_hops(deref(id(this)), Hops, B), P = addr(B) ), cpp_object_arg(Name, P, Obj), E = call(id(Name), [Obj|As1]) ).
 %% p->$vptr->slot(p, args), the pointer to the table found through the base sub-objects
 cpp_dispatch(P, C, Slot, As, call(arrow(Vptr, Slot), [P|As])) :- cpp_data_member(C, '$vptr', Hops), cpp_access(P, '$vptr', Hops, Vptr).
 %% a value whose dynamic type is its static one: a named object, or a member of one; not a reference
 cpp_static_object(id(N)) :- ccl_declared(N, T), \+ T = ref(_, _), \+ T = rref(_, _).
 cpp_static_object(member(X, _)) :- cpp_static_object(X).
 cpp_call(_, scoped([std], move), [X], move(X)) :- !.                                           % std::move is Cicili's move: the fields go, the source is emptied
-cpp_call(_, id(F), As, call(id(Name), [addr(id(F))|As1])) :- cpp_local(F), cpp_class_of_type_of(id(F), C), cpp_method(C, operator('()'), As, Name, _), !, cpp_fill_defaults(Name, As, As1).   % a lambda, or any object with operator()
+cpp_call(_, id(F), As, call(id(Name), [Obj|As1])) :- cpp_local(F), cpp_class_of_type_of(id(F), C), cpp_method(C, operator('()'), As, Name, _), !, cpp_fill_defaults(Name, As, As1), cpp_object_arg(Name, addr(id(F)), Obj).   % a lambda, or any object with operator()
 cpp_call(_, tmpl(F, TArgs), As, call(id(Name), As)) :- cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_types(TArgs, TArgs1), cpp_instantiate_function(F, TArgs1, As, Name).
 cpp_call(_, id(F), As, call(id(Name), As)) :- \+ cpp_local(F), cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_instantiate_function(F, [], As, Name).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
@@ -580,7 +610,7 @@ cpp_temporary(T, C, As, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, no
 %% an operator on a class-typed left operand: the class's member operator, else a free one declared, else the form as it is
 cpp_operator(Op, A, Args, Plain, E) :-
     (   cpp_class_of_type_of(A, C), cpp_method(C, operator(Op), Args, Name, Hops)
-    ->  cpp_hops(A, Hops, B), cpp_fill_defaults(Name, Args, Args1), E = call(id(Name), [addr(B)|Args1])
+    ->  cpp_hops(A, Hops, B), cpp_fill_defaults(Name, Args, Args1), cpp_object_arg(Name, addr(B), Obj), E = call(id(Name), [Obj|Args1])
     ;   cpp_class_of_type_of(A, _), length(Args, N0), N1 is N0 + 1, length(Ps, N1), cpp_free_operator(Op, Ps, Name), nb_getval('$cpp_free_ops', Os), memberchk(Name, Os)
     ->  E = call(id(Name), [A|Args])
     ;   E = Plain ).
@@ -716,17 +746,24 @@ cpp_merge_quals(_, A, A).
 %% ---- lambdas: a class of the captures, operator() the body ----------------------------------
 cpp_lambda(Ctx, Caps, Ps0, Ret0, Body, compound_lit(T, init(Items))) :-
     ( memberchk(cap(this), Caps) -> cpp_refuse(0, capture_this) ; true ),
-    ( ( memberchk(tparams(_), Caps) ; member(P, Ps0), ( P = param(PT, _) ; P = param(PT, _, _) ), cpp_auto_in(PT, 0, _, _) ) -> cpp_refuse(0, generic_lambda) ; true ),   % C++20: a template lambda, a member template of the closure
-    cpp_plain_params(Ps0, Ps),
-    cpp_captures(Caps, Ps, Body, Captures),
+    ( Ps0 = [param(this(ST0), SN)|Ps1] -> true ; Ps1 = Ps0, SN = none ),                                         % C++23: an explicit object parameter: the closure itself, `this auto self'
+    ( ( memberchk(tparams(_), Caps) ; member(P, Ps1), ( P = param(PT, _) ; P = param(PT, _, _) ), cpp_auto_in(PT, 0, _, _) ) -> cpp_refuse(0, generic_lambda) ; true ),   % C++20: a template lambda, a member template of the closure
+    cpp_plain_params(Ps1, Ps),
     nb_getval('$cpp_lambdas', K0), K is K0 + 1, nb_setval('$cpp_lambdas', K), atomic_list_concat(['lambda.', K], Name),
     T = base([], [typedef(Name)]),
-    ( Ret0 == none -> cpp_lambda_ret(Ps, Body, Ret) ; cpp_type(Ret0, Ret) ),
+    ( SN == none -> Self = [], SelfPs = Ps ; cpp_self_type(ST0, Name, ST), Self = [param(this(ST), SN)], SelfPs = [param(ST, SN)|Ps] ),
+    cpp_captures(Caps, SelfPs, Body, Captures),
+    ( Ret0 == none -> cpp_lambda_ret(SelfPs, Body, Ret) ; cpp_type(Ret0, Ret) ),
     findall(member(MT, N, none), ( member(N-How, Captures), ( How = val(CT) -> MT = CT ; How = ref(CT), MT = ref([], CT) ) ), Ms0),
     findall(item([], V), ( member(N-How, Captures), ( How = val(_) -> V0 = id(N) ; V0 = addr(id(N)) ), cpp_expr(Ctx, V0, V) ), Items),
-    append(Ms0, [method(0, [], Ret, operator('()'), Ps, false, Body)], Ms),
+    append(Self, Ps, MPs), append(Ms0, [method(0, [closure], Ret, operator('()'), MPs, false, Body)], Ms),
     cpp_isolated(( cpp_register_class(0, Name, [], Ms), cpp_item(declare(0, base([], [class(struct, Name, [], Ms)])), Its) )),
     cpp_add_instance_items(Its).
+%% the closure's own type for `this auto self': by value, by reference (an rvalue reference read as one), or as named
+cpp_self_type(base(Q, [auto]), Name, base(Q, [typedef(Name)])) :- !.
+cpp_self_type(ref(Q, T0), Name, ref(Q, T)) :- !, cpp_self_type(T0, Name, T).
+cpp_self_type(rref(Q, T0), Name, ref(Q, T)) :- !, cpp_self_type(T0, Name, T).
+cpp_self_type(T, _, T).
 %% the captures, Name-val(Type) | Name-ref(Type): the ones named, then, under a default, every enclosing local the body names
 cpp_captures(Caps, Ps, Body, Captures) :-
     findall(N-How, ( member(cap(K, N), Caps), K \== default, ccl_type_of(id(N), CT), CT \== unknown, cpp_decayed(CT, CT1), ( K == val -> How = val(CT1) ; How = ref(CT1) ) ), Explicit),

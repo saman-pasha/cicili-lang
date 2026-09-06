@@ -362,6 +362,8 @@ pp_directive_(if, Rest, _, _, Ls, Ls1, Out, Out) :- !, pp_lex_body(Rest, Ts), ( 
 pp_directive_(ifdef, Rest, _, _, Ls, Ls1, Out, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), atom_codes(N, W), ( pp_defined(N) -> Ls1 = Ls ; pp_skip_false(Ls, Ls1) ).
 pp_directive_(ifndef, Rest, _, _, Ls, Ls1, Out, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), atom_codes(N, W), ( pp_defined(N) -> pp_skip_false(Ls, Ls1) ; Ls1 = Ls ).
 pp_directive_(elif, _, _, _, Ls, Ls1, Out, Out) :- !, pp_skip_to_endif(Ls, Ls1).          % a taken group ended: the branches left go
+pp_directive_(elifdef, _, _, _, Ls, Ls1, Out, Out) :- !, pp_skip_to_endif(Ls, Ls1).       % C++23 (and C23): #elifdef X, #elifndef X
+pp_directive_(elifndef, _, _, _, Ls, Ls1, Out, Out) :- !, pp_skip_to_endif(Ls, Ls1).
 pp_directive_(else, _, _, _, Ls, Ls1, Out, Out) :- !, pp_skip_to_endif(Ls, Ls1).
 pp_directive_(endif, _, _, _, Ls, Ls, Out, Out) :- !.
 pp_directive_(pragma, Rest, _, _, Ls, Ls, Out, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), ( atom_codes(once, W) -> pp_current_file(F), nb_getval('$pp_once', O), nb_setval('$pp_once', [F|O]) ; true ).
@@ -422,11 +424,15 @@ pp_skip_group([line(_, A)|Ls], D, Found, Rest) :-
         ;   Kind == endif, D =:= 0 -> Found = endif, Rest = Ls
         ;   Kind == endif -> D1 is D - 1, pp_skip_group(Ls, D1, Found, Rest)
         ;   D =:= 0, Kind == elif -> pp_lex_body(R, Ts), Found = elif(Ts), Rest = Ls
+        ;   D =:= 0, Kind == elifdef -> pp_defined_body('defined(', R, Ts), Found = elif(Ts), Rest = Ls      % C++23: as #elif defined(X)
+        ;   D =:= 0, Kind == elifndef -> pp_defined_body('!defined(', R, Ts), Found = elif(Ts), Rest = Ls
         ;   D =:= 0 -> Found = else, Rest = Ls
         ;   pp_skip_group(Ls, D, Found, Rest) )
     ;   pp_skip_group(Ls, D, Found, Rest) ).
 pp_cond_word(if, open). pp_cond_word(ifdef, open). pp_cond_word(ifndef, open).
 pp_cond_word(elif, elif). pp_cond_word(else, else). pp_cond_word(endif, endif).
+pp_cond_word(elifdef, elifdef). pp_cond_word(elifndef, elifndef).
+pp_defined_body(Head, R, Ts) :- atom_codes(Head, H), pp_ws(R, R1), pp_word(R1, W, _), append(H, W, C0), append(C0, [0')], Cs), pp_lex_body(Cs, Ts).
 pp_skip_to_endif(Ls, Ls1) :- pp_skip_group(Ls, 0, Found, Rest), ( Found = elif(_) -> pp_skip_to_endif(Rest, Ls1) ; Found == else -> pp_skip_to_endif(Rest, Ls1) ; Ls1 = Rest ).
 
 %% ---- #if: defined, the built-ins, expansion, then the reader's constant expression ----
