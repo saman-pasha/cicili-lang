@@ -58,7 +58,12 @@ while [ $# -gt 0 ]; do
     -I) need "$@"; shift; opts="$opts include($(q "$1"))," ;;
     -I*) opts="$opts include($(q "${1#-I}"))," ;;
     -l*|-L*|-shared|-Wl,*|-framework|-static|-rdynamic|-fPIC|-pthread|-m*) case "$1" in -framework) need "$@"; opts="$opts link('-framework'),"; shift ;; esac; opts="$opts link($(q "$1"))," ;;
-    -g|-D*|-U*|-W*|-f*|-std=*|-pedantic) ;;   # accepted for clang's sake; no preprocessor, no debug info yet
+    -std=c++17|-std=gnu++17|-std=c++1z|-std=gnu++1z) opts="$opts std(17)," ;;   # the language level: C++17 the baseline, then the majors
+    -std=c++20|-std=gnu++20|-std=c++2a|-std=gnu++2a) opts="$opts std(20)," ;;
+    -std=c++23|-std=gnu++23|-std=c++2b|-std=gnu++2b) opts="$opts std(23)," ;;
+    -std=c++26|-std=gnu++26|-std=c++2c|-std=gnu++2c) opts="$opts std(26)," ;;
+    -std=c++*|-std=gnu++*) echo "$me: error: unsupported C++ standard '$1' (C++17 and later)" >&2; exit 1 ;;
+    -g|-D*|-U*|-W*|-f*|-std=*|-pedantic) ;;   # accepted for clang's sake: C's -std, no debug info yet
     -*) echo "$me: error: unknown argument: '$1'" >&2; exit 1 ;;
     *) inputs="$inputs $(q "$1"),";;
   esac

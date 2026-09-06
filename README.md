@@ -77,28 +77,41 @@ what runs today.
   own fields unset, and live or null when it returns) and a
   destructor's as dying (its fields may be consumed, and whoever ran
   the destructor takes them as gone), so the class holds what C's
-  struct held. **The seventh step DONE: `std::vector`**, the compiler's
-  own `<vector>` in `library/include/cxx`, found ahead of libc++'s: an
-  own block grown by doubling and freed by the destructor, indexed by
-  reference, walked by a range-for through `size()` and `[]`; its
-  template is kept whole in the header's summary, so it instantiates
-  like one the program wrote, under the same ownership check. **The
-  eighth step DONE: `std::string`**, the same way, an own buffer always
-  terminated, built from a literal, appended a char, a C string or a
-  string, indexed by reference, compared; and with it methods
-  overloaded by type (a name carries its parameters' types, a call
-  picks the overload the arguments fit) and the rule a destructor
-  brings: a class that has one is never copied -- by initialization,
-  assignment, a parameter or a return by value -- since two owners of
-  one buffer would free it twice; hand it by reference or by pointer.
-  **The ninth step DONE: a vector of strings** -- `std::move` is
-  Cicili's `move`, which empties its source's owners at run time so the
-  source's destructor frees nothing; an element with a destructor is
-  pushed by move and destroyed where it leaves the vector; a struct
-  with owners handed by value hands them to the callee, who must
-  consume them. `test/cpp.sh`: ten programs built through `cicili++`,
-  run and checked, plus the reader's `classes.cpp` and
-  `templates.cpp`; `try` is refused by name. GREEN.
+  struct held. **The seventh to tenth steps DONE, over classes of the
+  program's own** (the standard library is libc++'s and never the
+  compiler's, the owner's rule; libc++'s containers await the forms
+  their bodies use): a class template over an `own` block and a
+  range-for over an object by `size()` and `[]`, the classes and
+  templates of a header the program wrote reaching every unit that
+  includes it, linked once; methods overloaded by type (a name carries
+  its parameters' types, a call picks the overload the arguments fit)
+  and the rule a destructor brings, that a class with one is never
+  copied -- by initialization, assignment, a parameter or a return by
+  value -- but moved: `std::move` is Cicili's `move`, a struct moved
+  whole empties its owners behind it so its destructor frees nothing,
+  a struct handed by value hands its owners to the callee, an element
+  leaves a container by an explicit destructor call `x.~T()`; and a
+  member of class type constructed with its holder (an implicit
+  constructor, an initializer list, an aggregate initializer) and
+  destroyed with it, the members in reverse order. **The eleventh
+  step DONE: C++20.** `-std=c++17|20|23|26` is the language level,
+  C++17 the baseline: the level's predefined macros (`__cplusplus`,
+  the `__cpp_*` feature tests, from the reference compiler's `-dM -E`
+  once) are what libc++'s headers key on, and every summary is one
+  level's. Read: `concept` and `requires` (the clause on a template's
+  head, the expression with its requirements), `<=>`, `consteval` and
+  `constinit`, `char8_t`, coroutines, `using enum`, a range-for with
+  an initializer, an abbreviated function template, a template lambda,
+  `if constexpr`, `[[likely]]`. Compiled: a concept is checked where a
+  template is instantiated (its requirements type-check under its
+  parameters, or the instantiation is refused by the concept's name),
+  an abbreviated template is a template of invented parameters, `auto`
+  results are deduced, `if constexpr` is decided at compile time, `<=>`
+  on scalars is an int, `using enum` nothing (the enumerators are in
+  scope); coroutines and template lambdas are refused by name.
+  `test/cpp.sh`: ten programs built through `cicili++`, run and
+  checked, plus the reader's `classes.cpp` and `templates.cpp`; `try`,
+  a coroutine and an unsatisfied constraint are refused by name. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -161,9 +174,11 @@ the lowering of the C++ forms are M6, in steps: the first, the forms that
 are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
 the casts, `enum class`, range-for, `new` and `delete`), the second,
 classes, the third, `virtual`, the fourth, templates, the fifth,
-lambdas, and, over the compiler's own `<vector>` and `<string>`,
-`std::vector` and `std::string`, build and run; `try` is refused by its
-name. What is read, each
+lambdas, and, over classes of the program's own, overloads, moves and
+members of class type, build and run; `try` is refused by its name, and
+so is a template of libc++'s, whose body a summary does not carry: the
+standard library is libc++'s, C++17 the baseline and the next majors
+after, and compiling it as it is is the road ahead. What is read, each
 with its AST node:
 
 | C++ | AST |
@@ -185,6 +200,11 @@ with its AST node:
 | `for (auto &x : xs) S` | `for_each(L, var(x, ref([], auto), none), Range, S)` |
 | `try { } catch (Err e) { } catch (...) { }`, `throw e` | `try(L, Body, [catch(param(T, e), B), catch(any, B)])`, `throw(E)` |
 | `[k, &t](int a) mutable -> int { }` | `lambda([cap(val, k), cap(ref, t)], Params, Ret, Body)` |
+| `x.~T()`, `p->~T()` | `call(member(x, dtor(T)), [])`, `call(arrow(p, dtor(T)), [])` |
+| `template <typename T> concept C = E;`, `template <typename T> requires C<T> ...` | `template(L, Ps, concept(L, C, E))`, `template(L, [tparam(...), requires(tmpl(C, [T]))], Item)` |
+| `requires (T a) { a + a; { a < a } -> Boolean; typename T::x; requires C<T>; }` | `requires_expr(Params, [expr(E), compound(E, C), type(T), nested(E)])` |
+| `a <=> b`, `co_return e`, `co_await e`, `co_yield e` | `bin('<=>', a, b)`, `co_return(L, E)`, `co_await(E)`, `co_yield(E)` |
+| `using enum E;`, `for (init; x : xs)`, `if constexpr (c) a else b`, `auto f(auto x)`, `[]<typename T>(T x) {}` | `using(L, enum(E))`, `block([Init, for_each(...)])`, `if_constexpr(L, C, T, E)`, `param(base([], [auto]), x)`, `lambda([tparams(Ps)|Caps], ...)` |
 | `enum class Color : int { … }` | `enum_class('Color', Enumerators)` |
 
 A C++ library header, `<cstdio>` and kin, is flattened by one run of the

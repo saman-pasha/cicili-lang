@@ -39,7 +39,6 @@ library/ccl_pp.pl        the preprocessor, in cocolog (owner's rule: no clang, n
                          ccl_pp_top/3, the user's file through it, its directives kept
 library/include/         the compiler's own freestanding headers: stddef.h, stdarg.h,
                          stdbool.h, float.h, iso646.h, stdalign.h, stdnoreturn.h
-library/include/cxx/     the compiler's own C++ headers, ahead of libc++'s in C++: vector, string
 library/ccl_infer.pl     the macro facilities: ccl_type_of/2 and lookups over the symbol table
 library/ccl_format.pl    format, print, println: the global macros, Rust's holes
 library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause per construct
@@ -619,128 +618,176 @@ constructor that delegates, `this` handed out of a constructor, a
 destructor's effect on a struct member of class type, arrays of
 objects, `static` methods (a `this` is passed and unused).
 
-**M6's seventh step (0.38): `std::vector`, the compiler's own.**
-libc++'s templates use every C++ form there is, so the standard
-library goes the way `stddef.h` went for C: `library/include/cxx/`
-holds the compiler's own C++ headers, put FIRST on the inclusion path
-in C++ (`ccl_own_cxx_dirs/1`, ahead of `ccl_cxx_dirs`), and
-`<vector>` there is `std::vector<T>` as Safe Modern C++ has it: `own T
-*d`, grown by doubling through `realloc` (which the check takes as
-consuming the old block and giving a fresh one), freed by the
-destructor, `T &operator[]` and `back()`, `push_back`, `size`, `empty`,
-`reserve`, `clear`, `pop_back`; no copies (a vector copies as a struct,
-two owners of one block), no iterators, no `insert`/`erase`. It declares
-`realloc` and `free` itself under `extern "C"` rather than including
-`<stdlib.h>`: libc++'s `stdlib.h` wrapper reads only PARTLY in the
-flattened form (a summary tolerates that, keeping what was read), and
-everything after a partial read is lost -- our template was. A header
-under `library/include/cxx` (`ccl_own_cxx_header/1`) keeps its template
-items WHOLE in its summary, `titem(template(L, Ps, Item))` lines
-(`ccl_items_template_items/2`, through the namespaces), where every
-other header keeps `template(N)` names; the desugaring's registry reads
-them from an include node -- `file(Path, summary, summary(F))` (the
-served shape), `summary(F)`, or a first read's `file(_, _, unit(Is))` --
-so `std::vector<int>` instantiates like a template the program wrote,
-`vector.int` (the namespace flattens). `cpp_subst` turns `sizeof(id(T))`
-(read as an expression while T was only a name) into `sizeof_type` of
-the argument and `T(x)` into a functional cast. A range-for over an
-object whose class has `size()` and `operator[]` is rewritten by the
-desugaring (`cpp_stmt(for_each)`, before the passes' array rule) into
-the `for` over an index, the element type the operator's result
-unreferenced; the range must be an lvalue form. The reader's version
-went to 29 for the summary's new lines. Gated by
-`test/cpp/run/vec.cpp` (ints and structs, `v[0] = 100`, `v.back() =
-1`, a range-for, a vector by pointer). Not done: the rest of `<vector>`,
-`<array>`, `<map>`; a vector of objects with destructors; a
-`std` template of libc++'s (its summary has no body: refused).
-
-**M6's eighth step (0.39): `std::string`, and what it forced.**
-`library/include/cxx/string`: an own buffer always terminated, grown by
-doubling, `string()`, `string(const char *)`, `~string`, `size`,
-`length`, `empty`, `c_str`, `char &operator[]`, `clear`, `operator+=`
-of a `char`, a `const char *` and a `const string &`, `operator==` of
-both, `operator!=`; it declares `realloc`, `free`, `strlen`, `memcpy`,
-`strcmp` itself. A header's CLASSES are kept whole in its summary
-beside its templates (`ccl_items_template_items`: `declare(_,
-base(_, [class(...)]))` too), and the desugaring's registry
-(`cpp_register_header/1`, from the summary's `titem` lines or a first
-read's unit) registers each class once and EMITS its struct and
-functions into the unit as it emits an instance -- with `linkonce`
-storage (`cpp_linkonce/2` in `cpp_add_instance_items`; the lowering
-spells it `define linkonce_odr`), so two units including the header
-link. OVERLOADS BY TYPE: a name carries its parameters' type keys
-(`cpp_params_key/2`: `string.op.plus_assign.char`,
-`string.op.plus_assign.char_p`, `string.op.plus_assign.string_r`,
-`Counter.add.int`, a nullary `C.m.0`), and `cpp_method/5` and
-`cpp_ctor/3` take the ARGUMENTS, keep the overloads whose arity fits
-and pick the one whose parameter types fit the arguments' best
-(`cpp_pick/3`, `cpp_arg_fit/3`: the same class 3, both pointers 2, both
-arithmetic 2, an unknown type 1). A scoped type name flattens in the
-type hook (`typedef(scoped([std], string))` is `typedef(string)`).
-THE RULE A DESTRUCTOR BRINGS: a class with one is never copied, since
-two owners of one buffer free it twice and the check cannot see the
-destructor's free -- refused as `copy_of_a_class_with_destructor(C)`
-(a local initialized from an lvalue of the class),
-`assignment_to_a_class_with_destructor(C)` (`s = t`, and `s = f()`,
-whose old value no destructor would free), `class_with_destructor_by_value(C)`
-(an lvalue handed to a by-value parameter, `cpp_no_copies/1` after
-every call), `return_of_a_class_with_destructor(C)` (an lvalue returned
-by value; `'$cpp_ret'` holds the function's result type through
+**M6's seventh to ninth steps (0.38-0.40, redone in 0.41 over the
+program's own classes -- THE OWNER'S RULE: nothing of the standard
+library is the compiler's own; the C freestanding headers were the one
+exception, on the C side; the C++ side compiles against libc++ as it
+is, C++17 the baseline then the next majors, and libc++'s containers
+await the forms their bodies use).** What the three steps built stays,
+exercised by `test/cpp/run/bag.h` (a `Name` over an `own char *` and a
+`Bag<T>` over an `own T *`, a LOCAL header read whole) and `bag.cpp`:
+(1) a header the program wrote gives its classes and templates to
+every unit that includes it (`cpp_register_header/1` from the include
+node's raw unit, `file(_, _, unit(Is))`; its class, struct and enum
+class NAMES join the includer's Env, `ccl_items_typedefs` in cpp mode,
+so `Name &s` parses): a class registered and EMITTED as an instance
+is, its functions `linkonce` (`cpp_linkonce/2` in
+`cpp_add_instance_items`; the lowering spells `define linkonce_odr`),
+so two units link; a library header's summary keeps names only, and a
+template of libc++'s is refused, `template_without_body(N)`. A
+range-for over an object whose class has `size()` and `operator[]` is
+rewritten by the desugaring (`cpp_stmt(for_each)`) into the `for` over
+an index, the element type the operator's result unreferenced; the
+range must be an lvalue form. `cpp_subst` turns `sizeof(id(T))` (read
+as an expression while T was only a name) into `sizeof_type` of the
+argument and `T(x)` into a functional cast; a scoped type name
+flattens in the type hook (`typedef(scoped([std], string))` is
+`typedef(string)`); a class's STRUCT form is in the tags table from
+its registration (`cpp_register_class` notes it), so `this->d[i]`'s
+element has a type while the instance's own methods are walked. (2)
+OVERLOADS BY TYPE: a name carries its parameters' type keys
+(`cpp_params_key/2`: `Name.op.plus_assign.char`,
+`Name.op.plus_assign.char_p`, `Counter.add.int`, a nullary `C.m.0`),
+and `cpp_method/5` and `cpp_ctor/3` take the ARGUMENTS, keep the
+overloads whose arity fits and pick the one whose parameter types fit
+the arguments' best (`cpp_pick/3`, `cpp_arg_fit/3`: the same class 3,
+both pointers 2, both arithmetic 2, an unknown type 1). THE RULE A
+DESTRUCTOR BRINGS: a class with one is never copied, since two owners
+of one buffer free it twice and the check cannot see the destructor's
+free -- refused as `copy_of_a_class_with_destructor(C)` (a local
+initialized from an lvalue of the class),
+`assignment_to_a_class_with_destructor(C)` (`s = t`, unless the right
+side is a `move(...)` into the holder's fresh slot),
+`class_with_destructor_by_value(C)` (an lvalue handed to a by-value
+parameter, `cpp_no_copies/1` after every call),
+`return_of_a_class_with_destructor(C)` (an lvalue returned by value;
+`'$cpp_ret'` holds the function's result type through
 `cpp_method_body/5`; a temporary, a call's result, is fine and moves).
 `ccl_members_of` of a raw `class(...)` spec keeps pointer-typed
-members (a filter had dropped `own char *d`, and the check then saw no
-own field under `this`). A tag noted TWICE -- the header's raw class
-from the include node, the desugared struct from the emitted items --
-resolves to the struct (`ccl_tag_type` through `ccl_tag_struct/2`, the
-first entry of plain members, cached under `'$ccl_ts:'`). And a
-parameter's own field RETURNED AS A PLAIN POINTER (`c_str`: `return
-this->d` under `const char *`) is a borrow out, the caller's still, not
-a move (`ck_consume_or_use`, first clause: a borrowed field, the
-function's result not own), where the check had demanded the field
-whole at the return. Reader version 30. Gated by
-`test/cpp/run/str.cpp`. Not done: `operator+` making a new string,
-`substr`, `find`, comparison operators `<`, `std::to_string`,
-iteration.
-
-**M6's ninth step (0.40): a vector of strings -- MOVE SEMANTICS.**
-`std::move(x)` is Cicili's `move(x)` (`cpp_call`: `scoped([std],
-move)`); a class with a destructor, never copied, is moved. THE
-LOWERING: `move(E)` of a struct lvalue whose type holds owners loads
-the value and then stores null into every own pointer field of the
-source, nested structs recursively (`ir_null_own_fields/2`,
+members; a tag noted TWICE -- the raw class from an include, the
+desugared struct from the emitted items -- resolves to the struct
+(`ccl_tag_type` through `ccl_tag_struct/2`, cached under `'$ccl_ts:'`);
+a parameter's own field RETURNED AS A PLAIN POINTER (`c_str`) is a
+borrow out, the caller's still, not a move (`ck_consume_or_use`, first
+clause). (3) MOVE SEMANTICS: `std::move(x)` is Cicili's `move(x)`
+(`cpp_call`: `scoped([std], move)`, a semantic mapping, no header
+needed); the LOWERING's `move(E)` of a struct lvalue whose type holds
+owners loads the value and stores null into every own pointer field of
+the source, nested structs recursively (`ir_null_own_fields/2`,
 `ir_has_own_fields/1`), so the source's destructor, run at its scope's
-end, frees nothing -- where a C move had left the source as it was
-(the check forbidding its use). THE CHECK: `move(E)` of a struct by
-value with owners under it moves its fields out (`ck_expr(move)`,
-first clause, through `ck_move_out`), and `ck_kind(move(E))` gives
-such a value its own kind instead of `move_of_non_owner`; a struct by
-value handed to a plain function moves its owners to the callee's copy
-and the callee's PARAMETER owns them (the check's rule above: `x.d-live`
-in `push_back(T x)`, moved into the slot, refused for a leak
-otherwise); `move(x)` of a value without owners is `x` in the
-desugaring (`cpp_holds_owners/1`: a template's `T` an int); a class's
-STRUCT form is in the tags table from its registration
-(`cpp_register_class` notes it), so `this->d[i]`'s element has a type
-while the instance's own methods are walked -- without it `__destroy`
-found no class and destroyed nothing (three leaks). After a call with a
-`fresh` parameter the argument's own fields are LIVE
-(`ck_fresh_param/2` in `ck_args_`, the constructor's contract read
-back by the caller), so `std::move(a)` after `std::string a = "alpha"`
-finds fields to move. THE DESUGARING: `__destroy(e)` is the compiler's
-intrinsic, `T.dtor.0(&e)` when `e`'s class has a destructor and
-nothing otherwise (`cpp_call`, `id('__destroy')`); `<vector>`'s
-destructor, `clear` and `pop_back` destroy the elements that leave, and
-`push_back` stores `d[n] = move(x)` -- the assignment rule lets a
-`move(...)` into a slot of a class with a destructor (the holder's
-fresh slot); `std::string("x")` (`call(scoped(_, C), As)`) is a
-temporary. `for (std::string &s : v)` binds a reference to the
-element through `operator[]`; `for (std::string s : v)` is refused as
-a copy. A moved-from string keeps its `n` (only owners are nulled): its
-state is unspecified, as C++ has it. Gated by `test/cpp/run/vecstr.cpp`,
-run under `leaks` and MallocScribble. Not done: a vector's own copy or
-move constructor, `emplace_back`, `insert`/`erase`, a vector of
-vectors' elements' destruction on `free` of the outer block (it is:
-`__destroy` recurses through the element's destructor).
+end, frees nothing; the CHECK's `move(E)` of a struct by value with
+owners moves its fields out (`ck_expr(move)`, first clause), and
+`ck_kind(move(E))` gives such a value its own kind; a struct with
+owners handed BY VALUE hands them to the callee's copy (the check's
+rule in the safe part above); `move(x)` of a value without owners is
+`x` (`cpp_holds_owners/1`: a template's `T` an int); after a call with
+a `fresh` parameter the argument's own fields are LIVE
+(`ck_fresh_param/2` in `ck_args_`, the constructor's contract read back
+by the caller), so `std::move(a)` after `Name a = "alpha"` finds fields
+to move; a constructor's or destructor's argument may be a member's
+address (`ck_arg_base(addr(E), K)` takes any path). AN EXPLICIT
+DESTRUCTOR CALL, `x.~T()` and `p->~T()`, is read as `call(member(x,
+dtor(T)), [])` (`ccl_postfix_p`, cpp only) and desugared (the first
+`cpp_call` clauses) to the class's destructor over its address,
+nothing for a class without one -- what a container of the program's
+own writes where its elements leave (`Bag::pop`, `~Bag`); `d[n] =
+move(x)` is how it stores. A moved-from object keeps its plain fields
+(only owners are nulled): its state is unspecified, as C++ has it.
+Reader version 31 (for `.~T()`). Gated by `test/cpp/run/bag.cpp`, run
+under `leaks` and MallocScribble. Not done: the forms libc++'s
+`<vector>` and `<string>` use (allocators, `enable_if`, partial
+specializations, `constexpr`, `noexcept`, rvalue reference overloads
+chosen by value category, exceptions), which are the road to compiling
+them as they are.
+
+**M6's tenth step (0.41): members of class type.** A data member whose
+class has constructors is CONSTRUCTED in every constructor of its
+holder (`cpp_member_inits`, the class clause: from its `init(N, Args)`
+entry, else its default initializer, else the member's default
+constructor, else `member_not_constructed`), and a holder without a
+constructor gets the implicit one for it (`cpp_implicit_ctor_needed`
+counts such a member); a member whose class has a destructor is
+DESTROYED by every destructor of its holder, the members in reverse
+order, then the base (`cpp_dtor_body`), and a holder with none gets an
+implicit destructor (`cpp_implicit_dtor_needed/1`, `cpp_implicit_dtor/3`,
+emitted with the class; `cpp_own_dtor` counts it, so `delete`, the
+scope's defer and the table's slot find it). An AGGREGATE initializer
+of a class whose only constructor is the implicit one constructs each
+member from its item (`cpp_decl_pieces`' first clause,
+`cpp_aggregate_inits/5`: `Person p = { "ann", 30 }` is
+`string.string.char_p(&p.name, "ann"); p.age = 30;`), then the
+destructor's defer. The check's constructor and destructor effects
+reach a member's address: `ck_arg_base(addr(E), K)` takes any path
+(`&this->name`, `&p.name`), so the member's own fields go live after
+its constructor and moved after its destructor, and the holder's
+`fresh`/`dying` rules hold through the nesting (`ck_pointee_fields`
+recurses into members held by value). Gated by
+`test/cpp/run/member.cpp` (a struct with a `Name`, a class with a
+`Name` and a `Bag` of the structs, a member initializer, an aggregate,
+a move into the bag; zero leaks). Not done: a member's default
+initializer of class type (`std::string s = "x";` in a class body),
+an array member of objects, a union of objects.
+
+**M6's eleventh step (0.42): C++20.** THE LEVEL: `-std=c++17|20|23|26`
+(`bin/cicili`: `std(N)` in the options; older levels refused as
+unsupported, C's `-std` ignored) sets `'$ccl_std'` (default 17;
+`ccl_std/1` reads it), and the preprocessor answers the level's macros
+first (`pp_predef_macro`: the tables `cpp26`, `cpp23`, `cpp20` by
+`pp_std_table/2`, then `any`, the arch, `cpp`; the tables at the end
+of `ccl_pp.pl`, from the reference compiler's `-dM -E` at each level,
+taken once: `__cplusplus` 202002L/202302L/202400L, the `__cpp_*`
+feature tests -- concepts, consteval, constinit, char8_t, the three-way
+comparison, coroutines, modules, `using enum` ...). A summary is one
+level's (`ccl_sum_file` folds `Path@Std`, the `sum` line's key is
+`cpp(Std)`), the store's key `cpp(Version, Std)`. THE READER (version
+32): the keywords `concept requires co_await co_yield co_return
+consteval constinit char8_t` in both lexers (`ccl_lx_cppkw` in the
+module), `<=>` a punctuator in both (`ccl_lx_p3`) and a binary
+operator at level 7.5 -- below the relational, above the shifts;
+`concept N = E;` an item (`ccl_note_template(N)`, so `C<T>` reads as a
+template-id), a `requires` clause on a template's head kept as
+`requires(E)` among the parameters (the binders skip it), a
+`requires` expression a primary with its requirements (`type(T)`,
+`compound(E, C)`, `nested(E)`, `expr(E)`), `co_return` a statement and
+`co_await`/`co_yield` unaries, `using enum E`, a range-for with an
+initializer as a block, `if constexpr` its own node, an attribute
+before a statement dropped, `auto` a TYPE in C++ declarations (C's
+storage class it is not) so `auto f(auto x)` reads, a template lambda
+with `tparams(Ps)` among its captures, `explicit(cond)`. THE
+DESUGARING: a concept is registered (`'$cpp_concepts'`,
+`N-concept(TPs, E)`) and CHECKED where a template is instantiated
+(`cpp_constraints_hold/3` after the bindings; `cpp_satisfied/1`: `&&`,
+`||`, `!`, a concept-id through `cpp_concept_holds/2`, a
+`requires_expr` whose requirements type-check under its parameters --
+an expression rewritten by the desugaring has a type, a type resolves,
+a compound's type satisfies its concept, a nested one holds -- else a
+constant expression; a trait with no body here is
+`constraint_unknown`), refusing `constraint_not_satisfied(N)`; an
+abbreviated function template becomes a template of invented
+parameters `$A1, $A2 ...` at registration (`cpp_auto_params/4`, through
+pointers and references) and its item is nothing; a function's `auto`
+result is deduced from its first return (`cpp_lambda_ret`, at the item
+and at an instance); `if_constexpr` is decided by `cpp_const_bool/2` (a
+constant, a `bool`, a concept-id) and one branch kept, else a plain
+`if`; `bin('<=>', A, B)` on scalars is `(A > B) - (A < B)`, an int
+where C++ has `std::strong_ordering` (a class's `operator<=>` when it
+has one, else `three_way_comparison_of_a_class`); `using enum` is
+nothing (the enumerators are global names already); `co_return`,
+`co_await`, `co_yield` are `coroutine`, a template or generic lambda
+`generic_lambda`; `char8_t` is a byte. Gated by `test/cpp/cxx20.cpp`
+read (c22-c28), `test/cpp/run/cxx20.cpp` built with `-std=c++20`
+(`test/cpp/run/NAME.flags` gives a fixture its flags) printing
+`__cplusplus` 202002, and `coro.cpp` and `concept_fail.cpp` refused by
+name. Not done: modules (`import`/`export`), `consteval` evaluated at
+compile time (it runs at run time like `constexpr`), coroutines,
+`std::strong_ordering` and defaulted `operator<=>`, generic lambdas,
+constrained `auto` (`Number auto x`), `requires` clauses on a
+non-template function, C++23's and C++26's forms beyond their macros;
+and, found by this step, an integer literal's SUFFIX is not read (`1L`
+is `int(1)`, `1u` too: both lexers drop it), so a template deduces
+`int` from `1L` and `%ld` of a suffixed literal reads garbage -- the
+fixture casts; a `long(N)`/`uint(N)` token in both lexers, the parser
+and the passes is the fix.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

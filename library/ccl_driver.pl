@@ -21,6 +21,7 @@ ccl_drive(Inputs, Options) :- once(dr_drive(Inputs, Options)).          % one an
 dr_drive(Inputs, Options) :-
     ccl_ensure_globals, nb_setval('$dr_errors', 0),
     ( memberchk(lang(cpp), Options) -> nb_setval('$ccl_lang_forced', cpp), nb_setval('$ccl_lang', cpp) ; nb_setval('$ccl_lang_forced', none) ),   % cicili++: everything C++
+    ( memberchk(std(Std), Options) -> nb_setval('$ccl_std', Std) ; nb_setval('$ccl_std', 17) ),                                       % -std=c++20: the level libc++ keys on
     forall(member(include(D), Options), assertz(ccl_include_dir(D))),
     ( memberchk(opt(O), Options) -> Flags = [O] ; Flags = ['-O0'] ),
     ( memberchk(verbose, Options) -> nb_setval('$dr_verbose', yes) ; nb_setval('$dr_verbose', no) ),

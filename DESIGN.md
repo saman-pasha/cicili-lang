@@ -214,7 +214,7 @@ it is done (see below); the checker and the lowering take the AST from here.
   thousands of lines and are a one-time cost per project through the cache.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
-* **M6 — the check and the lowering of the C++ forms, IN STEPS: nine
+* **M6 — the check and the lowering of the C++ forms, IN STEPS: eleven
   DONE.** The forms that are C with names: a namespace flattened
   to its bare names, `extern "C"`, `using`, `bool`, `nullptr`, the casts,
   `enum class`, a range-for over an array as the `for` it stands for, a
@@ -242,17 +242,24 @@ it is done (see below); the checker and the lowering take the AST from here.
   object going to the operator. Then a real program: the B-tree the
   C++ way, a class over `own` pointers, which taught the check the
   object's lifecycle -- a constructor's `this` fresh, a destructor's
-  dying -- so a class holds what a struct held. Then the standard
-  library, the way the C side took for `stddef.h`: libc++'s templates
-  use every C++ form there is, so the compiler ships its own
-  `<vector>` (`library/include/cxx`, ahead of libc++ on the path), a
-  Safe Modern C++ one over `own` memory, its template kept whole in
-  the summary, and `<string>` the same way, a header's classes kept
-  whole too and emitted into every unit that includes them, linked
-  once; a class with a destructor is never copied, it is MOVED:
-  `std::move` is Cicili's `move`, a struct moved whole empties its
-  owners behind it, and a vector of strings holds, destroys and hands
-  out its elements without a copy anywhere. `try` is refused
+  dying -- so a class holds what a struct held. Then, over a string
+  and a container the program wrote: a header's classes and templates
+  reach every unit that includes it, emitted once (`linkonce_odr`); a
+  class with a destructor is never copied, it is MOVED: `std::move` is
+  Cicili's `move`, a struct moved whole empties its owners behind it,
+  an element leaves a container by an explicit destructor call; a
+  member of class type is constructed and destroyed with its holder,
+  implicitly where the holder wrote no constructor or destructor. THE
+  STANDARD LIBRARY IS libc++'s, never the compiler's own (the owner's
+  rule; the C freestanding headers were the one exception, on the C
+  side), C++17 the baseline and the next majors after: `-std=c++20`
+  (and 23, 26) selects the level's predefined macros, which libc++'s
+  headers key on, and the C++20 forms are read and, where they can
+  become C, compiled -- concepts checked at instantiation, abbreviated
+  templates, `<=>`, `if constexpr`, `using enum`; coroutines refused.
+  libc++'s containers await the forms their bodies use, which is the
+  road ahead.
+  `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in
   `CLAUDE.md` under each step.

@@ -58,6 +58,8 @@ ccl_tag(Tag, Ms) :- ccl_cached_named('$ccl_tag:', Tag, Ms, ( nb_getval('$ccl_tag
 ccl_enum_value(N, V) :- nb_getval('$ccl_enums', L), memberchk(N-V, L).
 %% an integer constant expression, as C folds it
 ccl_const_eval(int(N), N) :- !.
+ccl_const_eval(bool(true), 1) :- !.                                            % C++
+ccl_const_eval(bool(false), 0) :- !.
 ccl_const_eval(chr(C), C) :- !.
 ccl_const_eval(id(N), V) :- !, ccl_enum_value(N, V).
 ccl_const_eval(neg(E), V) :- !, ccl_const_eval(E, V0), V is -V0.
@@ -132,7 +134,7 @@ ccl_is_pointer(T) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, _) ; T1 = arr(_, _) 
 ccl_is_float(T) :- ccl_resolve_type(T, base(_, S)), ( memberchk(double, S) ; memberchk(float, S) ; memberchk('_Float16', S) ), !.
 ccl_is_integer(T) :- ccl_resolve_type(T, base(_, S)), \+ memberchk(double, S), \+ memberchk(float, S), \+ memberchk(void, S),
     ( memberchk(int, S) ; memberchk(char, S) ; memberchk(short, S) ; memberchk(long, S) ; memberchk(signed, S)
-    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; S = [enum(_, _)] ; S = [enum_class(_, _)] ), !.
+    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; memberchk(char8_t, S) ; S = [enum(_, _)] ; S = [enum_class(_, _)] ), !.
 ccl_is_arith(T) :- ( ccl_is_integer(T) ; ccl_is_float(T) ), !.
 
 %% integer rank and signedness, for the usual arithmetic conversions
@@ -246,7 +248,7 @@ ccl_size_align(base(_, [enum_class(_, _)]), 4, 4) :- !.
 ccl_size_align(ref(_, _), 8, 8) :- !.                                            % C++: a reference is a pointer in memory
 ccl_size_align(rref(_, _), 8, 8) :- !.
 ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; memberchk('_Float16', S) -> N = 2 ; ccl_count(long, S, 2) -> N = 8
-    ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1 ; memberchk(bool, S) -> N = 1
+    ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1 ; memberchk(bool, S) -> N = 1 ; memberchk(char8_t, S) -> N = 1
     ; memberchk(int, S) -> N = 4 ; memberchk(unsigned, S) -> N = 4 ; memberchk(signed, S) -> N = 4 ; memberchk(void, S) -> N = 1 ; fail ).
 ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).
 %% ccl_members_layout(+Members, -Lays, -Size, -Align): where every member lies --

@@ -249,7 +249,7 @@
   ;; ccl_version(-Atom): THE VERSION. Every commit raises it (owner's rule),
   ;; one number per change; `cicili --version' prints it with LLVM's.
   (func ccl_p_version ((coco_engine * e) (size_t g)) (out int)
-        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.40")))
+        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.41")))
 
   ;; ccl_cocolog_version(-Atom): the engine's own version text, from the
   ;; running binary (coco_version_text is cocolog's, resolved at load like
@@ -515,10 +515,11 @@
     "enum" "extern" "float" "for" "goto" "if" "inline" "int" "long" "register" "restrict" "return" "short"
     "signed" "sizeof" "static" "struct" "switch" "typedef" "union" "unsigned" "void" "volatile" "while"
     "_Bool" "_Complex" "_Noreturn" "_Atomic" "_Static_assert" "_Thread_local" "_Float16" nil })
-  (static) (var const char * ccl_lx_cppkw [48] . '{ "bool" "class" "namespace" "template" "typename" "this" "new" "delete" "operator" "using"
+  (static) (var const char * ccl_lx_cppkw [56] . '{ "bool" "class" "namespace" "template" "typename" "this" "new" "delete" "operator" "using"
     "public" "private" "protected" "virtual" "friend" "true" "false" "nullptr" "try" "catch" "throw" "static_cast" "dynamic_cast"
     "reinterpret_cast" "const_cast" "explicit" "mutable" "constexpr" "noexcept" "decltype" "typeid" "wchar_t" "char16_t" "char32_t"
-    "thread_local" "alignas" "alignof" "static_assert" nil })
+    "thread_local" "alignas" "alignof" "static_assert"
+    "concept" "requires" "co_await" "co_yield" "co_return" "consteval" "constinit" "char8_t" nil })
   (static) (func ccl_lx_in ((const char ** table) (const char * w)) (out int)
         (let ((size_t k . 0))
           (while (!= (nth k table) nil)
@@ -537,7 +538,7 @@
           (set (-> x i) j)))
 
   ;; punctuators, longest first, as ccl_punct//1 tries them; `::' in C++ only
-  (static) (var const char * ccl_lx_p3 [8] . '{ "..." ">>=" "<<=" "<*>" nil })
+  (static) (var const char * ccl_lx_p3 [8] . '{ "..." ">>=" "<<=" "<*>" "<=>" nil })
   (static) (var const char * ccl_lx_p2 [24] . '{ ":=" "->" "++" "--" "<<" ">>" "<=" ">=" "==" "!=" "&&" "||" "*=" "/=" "%=" "+=" "-=" "&=" "^=" "|=" nil })
   (static) (var const char * ccl_lx_p1 . "[](){}.&*+-~!/%<>^|?:;=,")
   (static) (func ccl_lx_punct ((ccl_lx * x) (i64 line)) (out int)

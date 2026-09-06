@@ -45,7 +45,9 @@ c_checks :-
     section('templates: functions, classes, template-id types, explicit arguments, aliases'),
     c12, c13, c14, c15, c16,
     section('statements and expressions: range-for, try/catch/throw, lambdas, enum class, casts'),
-    c17, c18, c19, c20, c21.
+    c17, c18, c19, c20, c21,
+    section('C++20: concepts and requires, <=>, consteval and constinit, char8_t, coroutines read, using enum, for with an initializer, designated initializers, an abbreviated template, a template lambda, if constexpr'),
+    c22, c23, c24, c25, c26, c27, c28.
 
 c1 :- check('namespace N { ... } is namespace(L, N, Items), nested, and anonymous',
     ( unit('names.cpp', unit(Is)), member(namespace(2, geo, Gs), Is), member(function(_, _, _, twice, _, _, _), Gs), member(namespace(_, inner, _), Gs), member(namespace(_, anon, _), Is) )).
@@ -131,6 +133,28 @@ c21 :- check('Color::Green, static_cast<long>(t), unsigned(k)',
     ( fn_body('control.cpp', main, B), member(declaration(_, _, _, [var(c, base([], [typedef('Color')]), scoped(['Color'], 'Green'))]), B),
       member(declaration(_, _, _, [var(big, base([], [long]), ccast(static, base([], [long]), id(t)))]), B),
       member(declaration(_, _, _, [var(u, base([], [unsigned]), ccast(functional, base([], [unsigned]), id(k)))]), B) )).
+
+c22 :- check('template <typename T> concept Number = requires (T a, T b) { a + b; { a < b } -> Boolean; }: a concept item under its template, its requires-expression',
+    ( unit('cxx20.cpp', unit(Is)), member(template(_, [tparam(type, 'T', none)], concept(_, 'Number', requires_expr([param(_, a), param(_, b)], Rs))), Is),
+      member(expr(bin('+', id(a), id(b))), Rs), member(compound(bin('<', id(a), id(b)), id('Boolean')), Rs),
+      member(template(_, _, concept(_, 'Boolean', requires_expr([param(_, x)], [expr(not(id(x)))]))), Is) )).
+c23 :- check('template <typename T> requires Number<T> T twice(T x): the requires-clause kept with the parameters',
+    ( unit('cxx20.cpp', unit(Is)), member(template(_, [tparam(type, 'T', none), requires(tmpl('Number', [id('T')]))], function(_, _, _, twice, _, _, _)), Is) )).
+c24 :- check('(a <=> b) < 0: the three-way comparison, below the relational; consteval, constinit and char8_t are specifiers',
+    ( fn_body('cxx20.cpp', order, [return(_, cond(bin('<', bin('<=>', id(a), id(b)), int(0)), _, _))]),
+      unit('cxx20.cpp', unit(Is)), member(function(_, _, base([consteval], [int]), cube, _, _, _), Is),
+      member(declaration(_, _, base([constinit], [int]), [var(limit, _, int(100))]), Is), member(declaration(_, _, base([], [char8_t]), [var(glyph, _, _)]), Is) )).
+c25 :- check('co_return is read as co_return(L, E), to be refused by name',
+    ( fn_body('cxx20.cpp', count, [co_return(_, none)]) )).
+c26 :- check('using enum Mode; for (int k = 2; int x : xs) is a block of the initializer and the range-for; Point p = { .x = 3, .y = 4 }',
+    ( fn_body('cxx20.cpp', main, B), member(using(_, enum('Mode')), B),
+      member(block([declaration(_, _, _, [var(k, _, int(2))]), for_each(_, var(x, base([], [int]), none), id(xs), _)]), B),
+      member(declaration(_, _, _, [var(p, _, init([item([field(x)], int(3)), item([field(y)], int(4))]))]), B) )).
+c27 :- check('auto add(auto a, auto b) is a function with auto parameters (an abbreviated template); []<typename T>(T a, T b) a lambda with its parameters among the captures',
+    ( unit('cxx20.cpp', unit(Is)), member(function(_, _, base([], [auto]), add, [param(base([], [auto]), a), param(base([], [auto]), b)], _, _), Is),
+      fn_body('cxx20.cpp', main, B), member(declaration(_, _, _, [var(pick, _, lambda([tparams([tparam(type, 'T', none)])], [param(_, a), param(_, b)], none, _))]), B) )).
+c28 :- check('if constexpr (sizeof(int) == 4) is if_constexpr(L, C, T, E); [[likely]] before a statement is dropped',
+    ( fn_body('cxx20.cpp', main, B), member(if_constexpr(_, bin('==', sizeof_type(base([], [int])), int(4)), _, _), B), member(if(_, bin('>', id(t), int(0)), _, none), B) )).
 
 %% ---- real C++ from the neighbours: Cicili's emitted C++, read entirely ----------------------
 c_real :-

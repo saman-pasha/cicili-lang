@@ -21,6 +21,8 @@ int x = y /* inline */ + z;
   double(X, Y) :- Y is X * 2.
   greet(N, R) :- R = puts("hi").
 #end
+int cxx20 = a <=> b; /* C++20's three-way comparison, and its words: in C plain names, in C++ keywords in both lexers */
+int words = concept + requires + co_await + co_yield + co_return + consteval + constinit + char8_t;
 int last = 1;
 #if 0
 this is not C but the lexer reads it: @ $ ` are where it stops

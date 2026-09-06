@@ -101,7 +101,16 @@ pp_defined_(_, G, N) :- ( pp_outer_macro(N, _, _) -> true ; pp_key(N, K), pp_not
 pp_outer_macro(N, Ps, Cs) :-                                                       % the predefined first: no header redefines one
     (   pp_predef_macro(N, Ps, Cs) -> pp_set_macro(N, Ps, Cs)
     ;   pp_header_macro(N, Ps, Cs), pp_define(N, Ps, Cs) ).
-pp_predef_macro(N, obj, Cs) :- ( pp_predef(N, any, T) -> true ; pp_arch(A), pp_predef(N, A, T) -> true ; ccl_lang(cpp), pp_predef(N, cpp, T) ), atom_codes(T, Cs).
+pp_predef_macro(N, obj, Cs) :-
+    (   ccl_lang(cpp), ccl_std(S), pp_std_table(S, Tab), pp_predef(N, Tab, T) -> true   % the level's own value first (__cplusplus, __cpp_constexpr ...)
+    ;   pp_predef(N, any, T) -> true
+    ;   pp_arch(A), pp_predef(N, A, T) -> true
+    ;   ccl_lang(cpp), pp_predef(N, cpp, T) ),
+    atom_codes(T, Cs).
+%% the tables a level sees beyond cpp's (C++17's): the newest first
+pp_std_table(S, cpp26) :- S >= 26.
+pp_std_table(S, cpp23) :- S >= 23.
+pp_std_table(S, cpp20) :- S >= 20.
 %% the headers' tables, the last included first, by the table's kind
 %% (ccl_header_macros/2): the summary's facts, the store's rows, or a list
 pp_header_macro(N, Ps, Cs) :- nb_getval('$pp_hdrs', Hs), Hs \== [], pp_header_macro_(Hs, N, Ps, Cs).
@@ -1048,3 +1057,33 @@ pp_predef('__cpp_variadic_friend', cpp, '202403L').
 pp_predef('__cpp_variadic_templates', cpp, '200704L').
 pp_predef('__cpp_variadic_using', cpp, '201611L').
 pp_predef('__private_extern__', cpp, 'extern').
+%% the levels above C++17, from the reference compiler's -dM -E at each (2026-09-06): what appears or changes
+pp_predef('__cplusplus', cpp20, '202002L').
+pp_predef('__CLANG_ATOMIC_CHAR8_T_LOCK_FREE', cpp20, '2').
+pp_predef('__GCC_ATOMIC_CHAR8_T_LOCK_FREE', cpp20, '2').
+pp_predef('__cpp_aggregate_paren_init', cpp20, '201902L').
+pp_predef('__cpp_char8_t', cpp20, '202207L').
+pp_predef('__cpp_concepts', cpp20, '202002').
+pp_predef('__cpp_conditional_explicit', cpp20, '201806L').
+pp_predef('__cpp_consteval', cpp20, '202211L').
+pp_predef('__cpp_constexpr', cpp20, '202002L').
+pp_predef('__cpp_constexpr_dynamic_alloc', cpp20, '201907L').
+pp_predef('__cpp_constinit', cpp20, '201907L').
+pp_predef('__cpp_designated_initializers', cpp20, '201707L').
+pp_predef('__cpp_generic_lambdas', cpp20, '201707L').
+pp_predef('__cpp_impl_coroutine', cpp20, '201902L').
+pp_predef('__cpp_impl_three_way_comparison', cpp20, '201907L').
+pp_predef('__cpp_init_captures', cpp20, '201803L').
+pp_predef('__cpp_modules', cpp20, '1').
+pp_predef('__cpp_using_enum', cpp20, '201907L').
+pp_predef('__cplusplus', cpp23, '202302L').
+pp_predef('__cpp_auto_cast', cpp23, '202110L').
+pp_predef('__cpp_constexpr', cpp23, '202211L').
+pp_predef('__cpp_explicit_this_parameter', cpp23, '202110L').
+pp_predef('__cpp_if_consteval', cpp23, '202106L').
+pp_predef('__cpp_implicit_move', cpp23, '202207L').
+pp_predef('__cpp_multidimensional_subscript', cpp23, '202211L').
+pp_predef('__cpp_range_based_for', cpp23, '202211L').
+pp_predef('__cpp_size_t_suffix', cpp23, '202011L').
+pp_predef('__cplusplus', cpp26, '202400L').
+pp_predef('__cpp_constexpr', cpp26, '202406L').

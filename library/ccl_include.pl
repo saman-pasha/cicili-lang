@@ -115,7 +115,8 @@ ccl_read_file_(File, AST, Rest) :-
     nb_setval('$ccl_far', F),
     ( Rest == [] -> ccl_kb_remember(File, top, AST) ; true ).
 
-ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V0), ( ccl_lang(cpp) -> V = cpp(V0) ; V = V0 ).   % a C++ read is not the C read; the time asked every time (0.4 ms): the gate touches a file mid-process and expects the miss
+ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V0), ( ccl_lang(cpp) -> ccl_std(S), V = cpp(V0, S) ; V = V0 ).
+ccl_std(S) :- ( catch(nb_getval('$ccl_std', S0), _, fail) -> S = S0 ; S = 17 ).   % a C++ read is not the C read; the time asked every time (0.4 ms): the gate touches a file mid-process and expects the miss
 ccl_kb_forget :- ccl_kb_ready, findall(P, '$ccl_ast'(P, _, _), Ps), ccl_kb_forget_each(Ps), retractall('$ccl_ast'(_, _, _)).
 ccl_kb_forget_each([]).
 ccl_kb_forget_each([P|Ps]) :- ccl_kb_forget_items(P), ccl_kb_forget_each(Ps).
@@ -199,6 +200,7 @@ ccl_ensure_globals :-
       nb_setval('$ccl_expansions', []), nb_setval('$ccl_incpath', none), nb_setval('$ccl_kb_ready', no), nb_setval('$ccl_reading', []),
       nb_setval('$ccl_macro_files', []), nb_setval('$ccl_std_macros', none), nb_setval('$ccl_gensym', 0), nb_setval('$ccl_unit_paths', []),
       nb_setval('$ccl_lang', c), nb_setval('$ccl_lang_forced', none), nb_setval('$ccl_class', []), nb_setval('$ccl_inc_kind', local), nb_setval('$ccl_hash', line),
+      ( catch(nb_getval('$ccl_std', _), _, fail) -> true ; nb_setval('$ccl_std', 17) ),
       nb_setval('$ccl_templates', [vector, map, set, unordered_map, unordered_set, list, deque, array, pair, tuple, optional, variant,
                                    unique_ptr, shared_ptr, weak_ptr, function, basic_string, initializer_list, allocator, less, greater, hash,
                                    numeric_limits, is_same, enable_if, remove_reference, decay, queue, stack, priority_queue, span]),
@@ -379,13 +381,13 @@ ccl_read_unit(Path, How, Unit) :-
 %% involved: it cannot hold units this size (CLAUDE.md's findings).
 ccl_sum_dir(D) :- ( catch(os_env('HOME', H), _, fail) -> true ; H = '/tmp' ), atom_concat(H, '/.cicili/cpp', D).
 ccl_sum_file(Path, F) :-
-    ccl_sum_dir(D), atom_codes(Path, Cs), ccl_fold(Cs, 7, 131, S1), ccl_fold(Cs, 13, 137, S2),
+    ccl_sum_dir(D), ccl_std(Std), atomic_list_concat([Path, '@', Std], Keyed), atom_codes(Keyed, Cs), ccl_fold(Cs, 7, 131, S1), ccl_fold(Cs, 13, 137, S2),   % one summary per level
     ( sub_atom(Path, B, _, 0, Base), sub_atom(Path, B1, 1, _, '/'), B1 < B, \+ sub_atom(Base, _, _, _, '/') -> true ; Base = Path ),
     atomic_list_concat([D, '/', Base, '-', S1, '-', S2, '.sum'], F).
 ccl_fold([], S, _, S).
 ccl_fold([C|Cs], S0, M, S) :- S1 is (S0 * M + C) mod 2147483647, ccl_fold(Cs, S1, M, S).
 ccl_sum_valid(F) :-
-    exists_file(F), ccl_sum_terms(F, [sum(_, key(V, cpp))|Terms]), ccl_reader_version(V),
+    exists_file(F), ccl_sum_terms(F, [sum(_, key(V, cpp(S)))|Terms]), ccl_reader_version(V), ccl_std(S),
     findall(P-T, member(dep(P, T), Terms), Deps), Deps \== [], ccl_deps_hold(Deps).
 ccl_deps_hold([]).
 ccl_deps_hold([P-T|Ds]) :- once(catch(time_file(P, T1), _, fail)), T1 =:= T, ccl_deps_hold(Ds).
@@ -395,11 +397,10 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
     ccl_collect_items(Is, Ds, [], Ts, [], Gs, [], Es, []),
     ccl_items_typedefs(Is, Names0), ccl_tag_names(Gs, TagNames), append(Names0, TagNames, Names),
     ccl_items_templates(Is, Tmpls),
-    ccl_sum_terms_out([sum(Path, key(V, cpp))], Out0), ccl_sum_deps(Deps, Out0b), append(Out0, Out0b, Out1),   % a term per dep: a line stays short
+    ccl_std(S), ccl_sum_terms_out([sum(Path, key(V, cpp(S)))], Out0), ccl_sum_deps(Deps, Out0b), append(Out0, Out0b, Out1),   % a term per dep: a line stays short
     ccl_sum_decls(Ds, Out2), ccl_sum_typedefs(Ts, Out3), ccl_sum_tags(Gs, Out4), ccl_sum_enums(Es, Out5),
     ccl_sum_names(Names, Out6), ccl_sum_tmpls(Tmpls, Out7),
-    ( ccl_own_cxx_header(Path) -> ccl_items_template_items(Is, TItems), ccl_sum_titems(TItems, Out7b) ; Out7b = [] ),   % our own header's templates whole, to instantiate
-    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7, Out7b], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
+    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
     ccl_pp_macros(Ms), ccl_sum_mnames(Ms, Out8), ccl_sum_terms_out(Ms, Out9),   % the macros the run defined, for the user's file, beside it
     ccl_mac_file(F, M), append(Out8, Out9, MCodes), write_file_from_codes(M, MCodes).
 ccl_sum_mnames([], []) :- !.
@@ -435,15 +436,6 @@ ccl_concat_codes([], []).
 ccl_concat_codes([C|Cs], Out) :- ccl_concat_codes(Cs, O2), append(C, O2, Out).
 ccl_tag_names([], []).
 ccl_tag_names([Tag-_|Gs], Ns) :- ccl_tag_names(Gs, Ns1), ( atom(Tag), Tag \== anon -> Ns = [Tag|Ns1] ; Ns = Ns1 ).
-%% the template items themselves, through the namespaces (which flatten): titem(Item) lines
-ccl_items_template_items([], []).
-ccl_items_template_items([template(L, Ps, I)|Is], [template(L, Ps, I)|Ts]) :- !, ccl_items_template_items(Is, Ts).
-ccl_items_template_items([declare(L, base(Q, [class(K, N, Bs, Ms)]))|Is], [declare(L, base(Q, [class(K, N, Bs, Ms)]))|Ts]) :- !, ccl_items_template_items(Is, Ts).   % a class with its bodies
-ccl_items_template_items([namespace(_, _, Js)|Is], Ts) :- !, ccl_items_template_items(Js, T1), ccl_items_template_items(Is, T2), append(T1, T2, Ts).
-ccl_items_template_items([extern_c(_, Js)|Is], Ts) :- !, ccl_items_template_items(Js, T1), ccl_items_template_items(Is, T2), append(T1, T2, Ts).
-ccl_items_template_items([_|Is], Ts) :- ccl_items_template_items(Is, Ts).
-ccl_sum_titems([], []).
-ccl_sum_titems([T|Ts], Out) :- ccl_sum_terms_out([titem(T)], O1), ccl_sum_titems(Ts, O2), append(O1, O2, Out).
 ccl_items_templates([], []).
 ccl_items_templates([template(_, _, I)|Is], Ns) :- !, ccl_items_templates(Is, Ns1), ( ccl_template_name(I, N), N \== none -> Ns = [N|Ns1] ; Ns = Ns1 ).
 ccl_items_templates([namespace(_, _, Js)|Is], Ns) :- !, ccl_items_templates(Js, N1), ccl_items_templates(Is, N2), append(N1, N2, Ns).
@@ -621,12 +613,11 @@ ccl_user_dirs(Ds) :-
 %% stdarg.h, stdbool.h, float.h ...), the local prefix, then the SDK
 %% ($SDKROOT, the Command Line Tools' SDK, Xcode's) or /usr/include
 ccl_toolchain_dirs(Ds) :-
-    ( ccl_lang(cpp) -> ccl_own_cxx_dirs(OwnCxx), ccl_cxx_dirs(Cxx0), append(OwnCxx, Cxx0, Cxx) ; Cxx = [] ),   % the compiler's own <vector> ahead of libc++'s
+    ( ccl_lang(cpp) -> ccl_cxx_dirs(Cxx) ; Cxx = [] ),
     ccl_own_include_dirs(Own), ccl_sdk_dirs(Sdk),
     append(Cxx, Own, D1), append(D1, ['/usr/local/include', '/opt/homebrew/include'], D2), append(D2, Sdk, D3),
     ccl_existing_dirs(D3, Ds).
-ccl_own_cxx_dirs(Ds) :- ccl_library_dirs(Ls), findall(D, ( member(L, Ls), atom_concat(L, '/include/cxx', D) ), Ds).
-ccl_own_cxx_header(Path) :- ccl_own_cxx_dirs(Ds), member(D, Ds), atom_concat(D, '/', DP), atom_concat(DP, _, Path), !.
+
 %% ONE C++ library, the first found: two libc++ trees on the path mix their
 %% wrappers (the SDK's ctype.h under LLVM's cctype defines _LIBCPP_CTYPE_H
 %% and trips an #error)
@@ -658,7 +649,13 @@ ccl_unit_typedefs(_, []).
 ccl_items_typedefs([], []).
 ccl_items_typedefs([typedef(_, Ds)|T], Ns) :- !, ccl_declared_names(Ds, N1), ccl_items_typedefs(T, N2), append(N1, N2, Ns).
 ccl_items_typedefs([include(_, _, R)|T], Ns) :- !, ccl_include_typedefs(R, [], N1), ccl_items_typedefs(T, N2), append(N1, N2, Ns).
+ccl_items_typedefs([declare(_, base(_, [S]))|T], [N|Ns]) :- ccl_lang(cpp), ccl_cpp_type_name(S, N), !, ccl_items_typedefs(T, Ns).   % C++: a class's, a struct's, an enum class's name is a type name
+ccl_items_typedefs([template(_, _, declare(_, base(_, [S])))|T], [N|Ns]) :- ccl_lang(cpp), ccl_cpp_type_name(S, N), !, ccl_items_typedefs(T, Ns).
+ccl_items_typedefs([namespace(_, _, Js)|T], Ns) :- ccl_lang(cpp), !, ccl_items_typedefs(Js, N1), ccl_items_typedefs(T, N2), append(N1, N2, Ns).
 ccl_items_typedefs([_|T], Ns) :- ccl_items_typedefs(T, Ns).
+ccl_cpp_type_name(class(_, N, _, _), N) :- atom(N), N \== anon.
+ccl_cpp_type_name(struct(N, _), N) :- atom(N), N \== anon.
+ccl_cpp_type_name(enum_class(N, _), N) :- atom(N).
 
 %% ccl_declares(+Unit, +Name, -Item): the item declaring Name, here or in an
 %% include, depth first in file order

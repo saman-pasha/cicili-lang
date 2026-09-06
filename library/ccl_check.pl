@@ -194,7 +194,8 @@ ck_dying_param(Callee, I) :- ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(
 ck_fresh_param(Callee, I) :- ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(PT, _)), ck_this_marker(PT, fresh).
 %% the callee takes the argument by value (not by C++'s reference, which borrows); an unknown callee is taken to
 ck_param_by_value(Callee, I) :- ( ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(PT, _)) -> \+ PT = ref(_, _), \+ PT = rref(_, _) ; true ).
-ck_arg_base(addr(id(K)), K).
+ck_arg_base(addr(id(K)), K) :- !.
+ck_arg_base(addr(E), K) :- ck_path(E, K), !.                                   % &this->name, &p.name: the member's own fields
 ck_arg_base(id(K), K).
 ck_body_static(declaration(_, static, _, Vs), N) :- member(var(N, _, _), Vs), !.
 ck_body_static(T, N) :- compound(T), T =.. [_|As], member(A, As), ck_body_static(A, N), !.
