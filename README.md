@@ -27,8 +27,8 @@ what runs today.
   the double free, a leak on any path, a move inside a loop, a dangling
   borrow are compile errors naming the statement's line; a plain pointer
   parameter is a borrow of the caller's, never stored, freed or moved.
-  GREEN: the owners programs run, twenty-seven programs are refused each with
-  its error.
+  GREEN: the owners programs run, twenty-eight programs are refused each
+  with its error.
 * **M2 -- the lowering.** `cicili_ir/2`, `cicili_compile/3`, `cicili_link/3`:
   C11's core -- every type, bitfields, unions and static locals included,
   every statement and
@@ -91,9 +91,14 @@ what runs today.
   brings: a class that has one is never copied -- by initialization,
   assignment, a parameter or a return by value -- since two owners of
   one buffer would free it twice; hand it by reference or by pointer.
-  `test/cpp.sh`: nine programs built through `cicili++`, run and
-  checked, plus the reader's `classes.cpp` and `templates.cpp`; `try`
-  is refused by name. GREEN.
+  **The ninth step DONE: a vector of strings** -- `std::move` is
+  Cicili's `move`, which empties its source's owners at run time so the
+  source's destructor frees nothing; an element with a destructor is
+  pushed by move and destroyed where it leaves the vector; a struct
+  with owners handed by value hands them to the callee, who must
+  consume them. `test/cpp.sh`: ten programs built through `cicili++`,
+  run and checked, plus the reader's `classes.cpp` and
+  `templates.cpp`; `try` is refused by name. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

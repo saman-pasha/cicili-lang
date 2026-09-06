@@ -510,7 +510,16 @@ ir_expr(cond(C, A, B), V, T, LL) :- !,
     ir_block(LE), ir_fresh(V), ir_ins([V, ' = phi ', LL, ' [ ', VA, ', %', LT1, ' ], [ ', VB, ', %', LF1, ' ]']).
 ir_expr(comma(A, B), V, T, LL) :- !, ir_expr(A, _, _, _), ir_expr(B, V, T, LL).
 ir_expr(move(E), V, T, LL) :- ir_own_elem(E), !, ir_lval(E, Slot, T, LL), ir_load_slot(Slot, T, LL, V), ir_store_slot(Slot, T, LL, null).   % out of an own array: the slot nulled
+ir_expr(move(E), V, T, LL) :- ir_lvalue_form(E), ir_lval(E, Slot, T, LL), ccl_resolve_type(T, T1), T1 = base(_, [struct(_, _)]), ir_has_own_fields(T1), !,   % a struct with owners moved: its own fields nulled behind it (C++: its destructor then frees nothing)
+    ir_load_slot(Slot, T, LL, V), ir_slot_addr(Slot, Addr), ir_null_own_fields(Addr, T1).
 ir_expr(move(E), V, T, LL) :- !, ir_expr(E, V, T, LL).                        % a move is the value; the checker did the rest
+ir_has_own_fields(T) :- ccl_members_of(T, Ms), member(member(MT, _, _), Ms), ( ck_own_type(MT) ; ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ir_has_own_fields(MT1) ), !.
+ir_null_own_fields(Addr, T) :-
+    ccl_members_of(T, Ms),
+    forall(( member(member(MT, N, _), Ms), N \== anon ),
+           (   ck_own_type(MT), ccl_resolve_type(MT, ptr(_, _)) -> ir_member_slot(Addr, T, N, Slot, _), ir_slot_addr(Slot, A), ir_ins(['store ptr null, ptr ', A])
+           ;   ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ir_has_own_fields(MT1) -> ir_member_slot(Addr, T, N, Slot, _), ir_slot_addr(Slot, A), ir_null_own_fields(A, MT1)
+           ;   true )).
 ir_expr(compound_lit(T, Init), V, T1, LL) :- !,
     ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E), LL = ptr ; T1 = T, ir_type(T, LL) ).
 ir_expr(stmt_expr(block(Is)), V, T, LL) :- !,

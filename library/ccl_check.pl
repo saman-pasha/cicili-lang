@@ -191,6 +191,9 @@ ck_field_names([K-_|Fs], [K|Ns]) :- !, ck_field_names(Fs, Ns).
 ck_field_names([K|Fs], [K|Ns]) :- ck_field_names(Fs, Ns).
 ck_is_dying_field(N) :- nb_getval('$ck_dying_fields', Ds), memberchk(N, Ds).
 ck_dying_param(Callee, I) :- ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(PT, _)), ck_this_marker(PT, dying).
+ck_fresh_param(Callee, I) :- ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(PT, _)), ck_this_marker(PT, fresh).
+%% the callee takes the argument by value (not by C++'s reference, which borrows); an unknown callee is taken to
+ck_param_by_value(Callee, I) :- ( ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(PT, _)) -> \+ PT = ref(_, _), \+ PT = rref(_, _) ; true ).
 ck_arg_base(addr(id(K)), K).
 ck_arg_base(id(K), K).
 ck_body_static(declaration(_, static, _, Vs), N) :- member(var(N, _, _), Vs), !.
@@ -211,6 +214,7 @@ ck_param_owners([param(T, N)|Ps], Os) :-
         ( ck_is_pointer_type(T) -> append([N-live|FOs], Os0, Os) ; append(FOs, Os0, Os) )
     ;   ck_is_pointer_type(T) -> ( ck_pointee_fields(N, T, Fs) -> ( ck_this_marker(T, fresh) -> Mode = garbage ; Mode = complete ), ck_field_states(Fs, Mode, FOs) ; FOs = [] ), append([N-borrow(N)|FOs], Os0, Os)
     ;   ccl_resolve_type(T, arr(_, _)) -> Os = [N-borrow(N)|Os0]
+    ;   ck_var_fields(N, T, Fs), Fs \== [] -> ck_field_states(Fs, complete, FOs), append(FOs, Os0, Os)   % a struct by value with owners inside: theirs to consume (a moved string)
     ;   Os = Os0 ).
 %% the ties of the parameters, in order: the fields' (a struct's members tied
 %% to earlier members, in what an own or a plain pointer parameter points to,
@@ -789,6 +793,7 @@ ck_decls([var(N, T0, Init0)|Vs], St0, St) :-
 %% what a right-hand side is to a slot: an owner (moved in), a null, a borrow, or a fresh value
 ck_kind(E, _, null) :- ck_null(E), !.
 ck_kind(move(E), _, fresh) :- ck_own_elem(E, _), !.                  % an element moved out: an owner, complete
+ck_kind(move(E), St, K) :- ck_path(E, P), ck_by_value(E), ck_own_under(St, P, Fs), Fs \== [], !, ck_kind(E, St, K).   % a struct with owners moved whole: the value's kind, the fields going in ck_expr
 ck_kind(move(E), St, K) :- !, ( ck_owner_path(St, E, P) -> K = owner(P) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
 ck_name(E, N) :- ( ck_path(E, N) -> true ; N = E ).
 ck_kind(E, St, owner(P)) :- ck_owner_path(St, E, P), !.
@@ -1037,6 +1042,7 @@ ck_unary_shape(neg(E), E). ck_unary_shape(not(E), E). ck_unary_shape(bitnot(E), 
 ck_unary_shape(deref(E), E). ck_unary_shape(cast(_, E), E). ck_unary_shape(postinc(E), E). ck_unary_shape(postdec(E), E).
 ck_unary_shape(preinc(E), E). ck_unary_shape(predec(E), E).
 ck_expr(move(E), St0, St) :- ck_own_elem(E, K), !, ck_expr(E, St0, St1), ck_dangle(St1, K, St).   % an element out: the array's borrows dangle
+ck_expr(move(E), St0, St) :- ck_path(E, K), ck_by_value(E), ck_own_under(St0, K, Fs), Fs \== [], !, ck_expr(E, St0, St1), ck_move_out(St1, Fs, move(E), St).   % a struct with owners moved whole: its fields go
 ck_expr(move(E), St0, St) :- !, ( ck_owner_path(St0, E, K) -> ck_base_use(E, St0, St1), ck_consume(K, move, move(E), St1, St, _) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
 ck_expr(scoped(_, N), St0, St) :- !, ck_expr(id(N), St0, St).                  % C++ (M6)
 ck_expr(ccast(_, _, E), St0, St) :- !, ck_expr(E, St0, St).
@@ -1137,9 +1143,13 @@ ck_args_([A|As], Callee, I, St0, St) :-
         ;   ck_borrows_from(A, St0, P), ck_state(St0, P, loose) -> ck_expr(A, St0, St1a), ck_consume_loose(St1a, P, St1)   % loose memory freed, or taken by an own parameter
         ;   ck_kind(A, St0, borrow(P)) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)
         ;   ck_expr(A, St0, St1) )
+    ;   ck_strip_move(A, A1), ck_path(A1, K), ck_by_value(A1), ck_own_under(St0, K, Fs), Fs \== [], ck_param_by_value(Callee, I)   % a struct with owners handed by value: its fields go to the callee's copy
+    ->  ck_expr(A1, St0, St1a), ck_move_out(St1a, Fs, call(Callee, [A|As]), St1)
     ;   ck_expr(A, St0, St1) ),
     (   ck_dying_param(Callee, I), ck_arg_base(A, K), ck_own_under(St1, K, Fs), Fs \== []                % a destructor ran: the object's own fields are gone
     ->  ck_set_all(St1, Fs, moved, St1m), ck_dangle_all(St1m, Fs, St1d)
+    ;   ck_fresh_param(Callee, I), ck_arg_base(A, K), ck_own_under(St1, K, Fs), Fs \== []               % a constructor ran: the object's own fields are live (or null, as good)
+    ->  ck_set_all(St1, Fs, live, St1d)
     ;   St1d = St1 ),
     I1 is I + 1, ck_args_(As, Callee, I1, St1d, St).
 ck_consumes(id(free), 1) :- !.

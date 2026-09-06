@@ -104,6 +104,8 @@ cpp_register_class(L, C, Bases, Ms) :-
     ->  cpp_vt_tag(C, VT), Data = [member(ptr([], base([], [struct(VT, none)])), '$vptr', none)|Data0]
     ;   Data = Data0 ),
     nb_getval('$cpp_classes', Cs), nb_setval('$cpp_classes', [C-cls(Base, Data, Ms, Statics, Defaults, Slots)|Cs]),
+    ( Base == none -> Data1 = Data ; Data1 = [member(base([], [typedef(Base)]), '$base', none)|Data] ),
+    ccl_note_tag(C, Data1),                                              % the struct it becomes, in the table at once: its members have types while its methods are walked
     cpp_declare_members(Ms, C), cpp_declare_statics(Statics, C).
 %% the virtual slots of a class: the base's, an own virtual method (or one
 %% that overrides a slot) appended when new, `$dtor' for a virtual destructor
@@ -194,6 +196,9 @@ cpp_arg_fit(PT, A, S) :-
         ;   S = 0 )
     ;   S = 1 ).
 cpp_pointerish(T) :- ccl_resolve_type(T, R), ( R = ptr(_, _) ; R = arr(_, _) ), !.
+%% a type that holds an owner: an own pointer, an own array, a struct with one inside
+cpp_holds_owners(T) :- ck_own_type(T), !.
+cpp_holds_owners(T) :- ccl_resolve_type(T, base(_, [struct(_, Ms)])), Ms \== none, member(member(MT, _, _), Ms), cpp_holds_owners(MT), !.
 cpp_has_ctors(C) :- cpp_class(C, cls(_, _, Ms, _, _, _)), memberchk(ctor(_, _, _, _, _), Ms), !.
 cpp_has_ctors(C) :- cpp_implicit_ctor_needed(C).
 cpp_implicit_ctor_needed(C) :- cpp_class(C, cls(B, _, Ms, _, Defaults, _)), \+ memberchk(ctor(_, _, _, _, _), Ms), ( Defaults \== [] ; B \== none, cpp_has_ctors(B) ; cpp_polymorphic(C) ), !.
@@ -442,7 +447,7 @@ cpp_expr(Ctx, arrow(X, N), E) :- !, cpp_expr(Ctx, X, X1), ( cpp_pointee_class_of
 cpp_expr(Ctx, bin(Op, A, B), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1), cpp_operator(Op, A1, [B1], bin(Op, A1, B1), E).
 cpp_expr(Ctx, assign(Op, A, B), E) :- Op \== '=', !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1), cpp_operator(Op, A1, [B1], assign(Op, A1, B1), E).
 cpp_expr(Ctx, assign('=', A, B), assign('=', A1, B1)) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1),
-    ( cpp_class_of_type_of(A1, C), cpp_dtor(C, _) -> cpp_refuse(0, assignment_to_a_class_with_destructor(C)) ; true ).   % the old value would never be destroyed, the new freed twice
+    ( cpp_class_of_type_of(A1, C), cpp_dtor(C, _), \+ B1 = move(_) -> cpp_refuse(0, assignment_to_a_class_with_destructor(C)) ; true ).   % the old value would never be destroyed, the new freed twice; a move into a fresh slot is the holder's business
 cpp_expr(Ctx, index(A, I), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, I, I1), cpp_operator('[]', A1, [I1], index(A1, I1), E).
 cpp_expr(Ctx, new(T0, As), E) :- !, cpp_type(T0, T), cpp_exprs(Ctx, As, As1), cpp_new(T, As1, E).
 cpp_expr(Ctx, new_array(T0, N), new_array(T, N1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, N, N1).
@@ -452,6 +457,7 @@ cpp_expr(Ctx, compound_lit(T0, I), compound_lit(T, I1)) :- !, cpp_type(T0, T), c
 cpp_expr(Ctx, delete(X), E) :- !, cpp_expr(Ctx, X, X1), cpp_delete(X1, E).
 cpp_expr(Ctx, ccast(functional, base(Q, [typedef(C)]), X), E) :- cpp_class(C, _), !, cpp_expr(Ctx, X, X1), cpp_temporary(base(Q, [typedef(C)]), C, [X1], E).
 cpp_expr(Ctx, ccast(K, T0, X), ccast(K, T, X1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1).
+cpp_expr(Ctx, move(X), E) :- !, cpp_expr(Ctx, X, X1), ( ccl_type_of(X1, T), T \== unknown, cpp_holds_owners(T) -> E = move(X1) ; E = X1 ).   % move of an int is the int (a template's T)
 cpp_expr(Ctx, stmt_expr(block(Is)), stmt_expr(block(Js))) :- !, ccl_scope_push, cpp_stmts(Ctx, Is, Js), ccl_scope_pop.
 cpp_expr(Ctx, lambda(Caps, Ps, Ret, Body), E) :- !, cpp_lambda(Ctx, Caps, Ps, Ret, Body, E).
 cpp_expr(_, str(S), str(S)) :- !.
@@ -486,10 +492,13 @@ cpp_dispatch(P, C, Slot, As, call(arrow(Vptr, Slot), [P|As])) :- cpp_data_member
 %% a value whose dynamic type is its static one: a named object, or a member of one; not a reference
 cpp_static_object(id(N)) :- ccl_declared(N, T), \+ T = ref(_, _), \+ T = rref(_, _).
 cpp_static_object(member(X, _)) :- cpp_static_object(X).
+cpp_call(_, scoped([std], move), [X], move(X)) :- !.                                           % std::move is Cicili's move: the fields go, the source is emptied
+cpp_call(_, id('__destroy'), [X], E) :- !, ( cpp_class_of_type_of(X, C), cpp_dtor(C, DName) -> E = call(id(DName), [addr(X)]) ; E = int(0) ).   % the compiler's: an element destroyed where it leaves its holder
 cpp_call(_, id(F), As, call(id(Name), [addr(id(F))|As1])) :- cpp_local(F), cpp_class_of_type_of(id(F), C), cpp_method(C, operator('()'), As, Name, _), !, cpp_fill_defaults(Name, As, As1).   % a lambda, or any object with operator()
 cpp_call(_, tmpl(F, TArgs), As, call(id(Name), As)) :- cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_types(TArgs, TArgs1), cpp_instantiate_function(F, TArgs1, As, Name).
 cpp_call(_, id(F), As, call(id(Name), As)) :- \+ cpp_local(F), cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_instantiate_function(F, [], As, Name).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
+cpp_call(_, scoped(_, C), As, E) :- atom(C), cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).   % std::string("x"): a temporary of the class
 cpp_call(_, id(F), As, call(id(F), As1)) :- !, cpp_fill_defaults(F, As, As1).
 cpp_call(Ctx, F, As, call(F1, As)) :- cpp_expr(Ctx, F, F1).
 %% a temporary of the class: constructed in a statement expression, its value the last expression

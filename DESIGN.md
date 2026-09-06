@@ -214,7 +214,7 @@ it is done (see below); the checker and the lowering take the AST from here.
   thousands of lines and are a one-time cost per project through the cache.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
-* **M6 — the check and the lowering of the C++ forms, IN STEPS: eight
+* **M6 — the check and the lowering of the C++ forms, IN STEPS: nine
   DONE.** The forms that are C with names: a namespace flattened
   to its bare names, `extern "C"`, `using`, `bool`, `nullptr`, the casts,
   `enum class`, a range-for over an array as the `for` it stands for, a
@@ -249,7 +249,10 @@ it is done (see below); the checker and the lowering take the AST from here.
   Safe Modern C++ one over `own` memory, its template kept whole in
   the summary, and `<string>` the same way, a header's classes kept
   whole too and emitted into every unit that includes them, linked
-  once; a class with a destructor is never copied. `try` is refused
+  once; a class with a destructor is never copied, it is MOVED:
+  `std::move` is Cicili's `move`, a struct moved whole empties its
+  owners behind it, and a vector of strings holds, destroys and hands
+  out its elements without a copy anywhere. `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in
   `CLAUDE.md` under each step.

@@ -18,8 +18,9 @@ static own person *make(const char *name, int age) {
 static void drop(own person *p) { free(p->name); free(p); }
 /* a field moved out; the struct freed without it */
 static own char *take_name(own person *p) { own char *n = move(p->name); free(p); return n; }
-/* by value, plain: the fields are only looked at */
-static int total(person a, person b) { return a.age + b.age; }
+/* by pointer: the fields are only looked at (by value, the copy would take
+   them over, as `person d = c' does: test/c/safe/by_value_move.c) */
+static int total(person *a, person *b) { return a->age + b->age; }
 
 int main(void) {
     own person *a = make("ann", 30);
@@ -38,6 +39,6 @@ int main(void) {
     defer(e) { free(e.name); }               /* consumed at main's exit */
     own person *f = make("fay", 70);
     defer(f) { free(f->name); free(f); }
-    printf("%s %s %d\n", e.name, f->name, total(e, e));
+    printf("%s %s %d\n", e.name, f->name, total(&e, &e));
     return 0;
 }

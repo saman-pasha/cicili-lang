@@ -3,9 +3,11 @@
    reference, walked by a range-for through size() and operator[]. The
    compiler's own, found ahead of libc++'s: its template is kept whole in
    the header's summary, so it instantiates like one the program wrote.
-   Not here: copies (a vector copies as a struct: two owners of one block,
-   which the check refuses where it can see it), iterators beyond begin()
-   and end(), insert and erase, a vector of objects with destructors. */
+   An element of a class with a destructor is destroyed where it leaves the
+   vector (__destroy: the compiler's, nothing for a plain element) and is
+   pushed by move, `v.push_back(std::move(s))', never copied. Not here:
+   copies (a vector copies as a struct: two owners of one block, which the
+   compiler refuses), iterators, insert and erase. */
 #ifndef CICILI_VECTOR
 #define CICILI_VECTOR
 extern "C" {                        /* the two of the C library it needs, declared here: libc++'s <stdlib.h> wrapper
@@ -20,19 +22,20 @@ template <typename T> class vector {
     int cap;
 public:
     vector() : d(nullptr), n(0), cap(0) { }
-    ~vector() { free(d); }
+    ~vector() { for (int i = 0; i < n; i++) __destroy(d[i]); free(d); }
     int size() const { return n; }
     bool empty() const { return n == 0; }
     T &operator[](int i) { return d[i]; }
     T &back() { return d[n - 1]; }
-    void clear() { n = 0; }
-    void pop_back() { n--; }
+    void clear() { for (int i = 0; i < n; i++) __destroy(d[i]); n = 0; }
+    void pop_back() { n = n - 1; __destroy(d[n]); }
     void reserve(int m) {
         if (m > cap) { cap = m; d = (own T *) realloc(d, cap * sizeof(T)); }
     }
     void push_back(T x) {
         if (n == cap) reserve(cap ? cap * 2 : 4);
-        d[n++] = x;
+        d[n] = move(x);
+        n = n + 1;
     }
 };
 }

@@ -700,7 +700,47 @@ function's result not own), where the check had demanded the field
 whole at the return. Reader version 30. Gated by
 `test/cpp/run/str.cpp`. Not done: `operator+` making a new string,
 `substr`, `find`, comparison operators `<`, `std::to_string`,
-iteration, `std::move` (a move would let a copy be written).
+iteration.
+
+**M6's ninth step (0.40): a vector of strings -- MOVE SEMANTICS.**
+`std::move(x)` is Cicili's `move(x)` (`cpp_call`: `scoped([std],
+move)`); a class with a destructor, never copied, is moved. THE
+LOWERING: `move(E)` of a struct lvalue whose type holds owners loads
+the value and then stores null into every own pointer field of the
+source, nested structs recursively (`ir_null_own_fields/2`,
+`ir_has_own_fields/1`), so the source's destructor, run at its scope's
+end, frees nothing -- where a C move had left the source as it was
+(the check forbidding its use). THE CHECK: `move(E)` of a struct by
+value with owners under it moves its fields out (`ck_expr(move)`,
+first clause, through `ck_move_out`), and `ck_kind(move(E))` gives
+such a value its own kind instead of `move_of_non_owner`; a struct by
+value handed to a plain function moves its owners to the callee's copy
+and the callee's PARAMETER owns them (the check's rule above: `x.d-live`
+in `push_back(T x)`, moved into the slot, refused for a leak
+otherwise); `move(x)` of a value without owners is `x` in the
+desugaring (`cpp_holds_owners/1`: a template's `T` an int); a class's
+STRUCT form is in the tags table from its registration
+(`cpp_register_class` notes it), so `this->d[i]`'s element has a type
+while the instance's own methods are walked -- without it `__destroy`
+found no class and destroyed nothing (three leaks). After a call with a
+`fresh` parameter the argument's own fields are LIVE
+(`ck_fresh_param/2` in `ck_args_`, the constructor's contract read
+back by the caller), so `std::move(a)` after `std::string a = "alpha"`
+finds fields to move. THE DESUGARING: `__destroy(e)` is the compiler's
+intrinsic, `T.dtor.0(&e)` when `e`'s class has a destructor and
+nothing otherwise (`cpp_call`, `id('__destroy')`); `<vector>`'s
+destructor, `clear` and `pop_back` destroy the elements that leave, and
+`push_back` stores `d[n] = move(x)` -- the assignment rule lets a
+`move(...)` into a slot of a class with a destructor (the holder's
+fresh slot); `std::string("x")` (`call(scoped(_, C), As)`) is a
+temporary. `for (std::string &s : v)` binds a reference to the
+element through `operator[]`; `for (std::string s : v)` is refused as
+a copy. A moved-from string keeps its `n` (only owners are nulled): its
+state is unspecified, as C++ has it. Gated by `test/cpp/run/vecstr.cpp`,
+run under `leaks` and MallocScribble. Not done: a vector's own copy or
+move constructor, `emplace_back`, `insert`/`erase`, a vector of
+vectors' elements' destruction on `free` of the outer block (it is:
+`__destroy` recurses through the element's destructor).
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
@@ -1060,8 +1100,14 @@ fields with it (`ck_set_null/3`). An owner moved in from an own FIELD
 (whose pointee is not opened) has complete fields (`ck_complete_rest/4`),
 and a struct's fields move out, or fill, only for a struct held BY VALUE
 (`ck_by_value/1`), never for a pointer parameter whose pointee's fields
-are keys. `statics.c` ties its static results, `untied.c` and
-`unconsumed.c` are refused.
+are keys. **A struct with owners handed BY VALUE hands them to the
+callee's copy** (0.40, the rule `person d = c` already had for a copy):
+the caller's fields move at the call (`ck_args_`, the branch after the
+consumers), the callee's by-value parameter owns its copy's fields
+(`ck_param_owners`, the last branch) and must consume them; `own_fields.c`
+takes its structs by pointer since, and `safe/by_value_move.c` frees a
+field after handing the struct over (`use_after_move`). `statics.c`
+ties its static results, `untied.c` and `unconsumed.c` are refused.
 
 **Own arrays (owner's rule: a constant bound, or nothing):** `own node
 *C[4]` is one key -- a local's name or a field's path, listed in
