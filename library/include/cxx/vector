@@ -1,0 +1,39 @@
+/* cicili-lang's <vector>: std::vector<T> as Safe Modern C++ has it -- an own
+   block that grows by doubling, freed by the destructor, indexed by
+   reference, walked by a range-for through size() and operator[]. The
+   compiler's own, found ahead of libc++'s: its template is kept whole in
+   the header's summary, so it instantiates like one the program wrote.
+   Not here: copies (a vector copies as a struct: two owners of one block,
+   which the check refuses where it can see it), iterators beyond begin()
+   and end(), insert and erase, a vector of objects with destructors. */
+#ifndef CICILI_VECTOR
+#define CICILI_VECTOR
+extern "C" {                        /* the two of the C library it needs, declared here: libc++'s <stdlib.h> wrapper
+                                       reads only partly, and what follows a partial read is lost */
+    void *realloc(void *p, unsigned long size);
+    void free(void *p);
+}
+namespace std {
+template <typename T> class vector {
+    own T *d;
+    int n;
+    int cap;
+public:
+    vector() : d(nullptr), n(0), cap(0) { }
+    ~vector() { free(d); }
+    int size() const { return n; }
+    bool empty() const { return n == 0; }
+    T &operator[](int i) { return d[i]; }
+    T &back() { return d[n - 1]; }
+    void clear() { n = 0; }
+    void pop_back() { n--; }
+    void reserve(int m) {
+        if (m > cap) { cap = m; d = (own T *) realloc(d, cap * sizeof(T)); }
+    }
+    void push_back(T x) {
+        if (n == cap) reserve(cap ? cap * 2 : 4);
+        d[n++] = x;
+    }
+};
+}
+#endif

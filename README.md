@@ -77,9 +77,15 @@ what runs today.
   own fields unset, and live or null when it returns) and a
   destructor's as dying (its fields may be consumed, and whoever ran
   the destructor takes them as gone), so the class holds what C's
-  struct held. `test/cpp.sh`: seven programs built through `cicili++`,
-  run and checked, plus the reader's `classes.cpp` and
-  `templates.cpp`; `try` is refused by name. GREEN.
+  struct held. **The seventh step DONE: `std::vector`**, the compiler's
+  own `<vector>` in `library/include/cxx`, found ahead of libc++'s: an
+  own block grown by doubling and freed by the destructor, indexed by
+  reference, walked by a range-for through `size()` and `[]`; its
+  template is kept whole in the header's summary, so it instantiates
+  like one the program wrote, under the same ownership check.
+  `test/cpp.sh`: eight programs built through `cicili++`, run and
+  checked, plus the reader's `classes.cpp` and `templates.cpp`; `try`
+  is refused by name. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -141,8 +147,9 @@ says nothing when it reads, and a C++ file that is C builds; the check and
 the lowering of the C++ forms are M6, in steps: the first, the forms that
 are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
 the casts, `enum class`, range-for, `new` and `delete`), the second,
-classes, the third, `virtual`, the fourth, templates, and the fifth,
-lambdas, build and run; `try` is refused by its name. What is read, each
+classes, the third, `virtual`, the fourth, templates, the fifth,
+lambdas, and, over the compiler's own `<vector>`, `std::vector`, build
+and run; `try` is refused by its name. What is read, each
 with its AST node:
 
 | C++ | AST |

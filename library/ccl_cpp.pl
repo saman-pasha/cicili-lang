@@ -71,6 +71,9 @@ cpp_register_units(Units) :-
     nb_setval('$cpp_templates', []), nb_setval('$cpp_instances', []), nb_setval('$cpp_instance_items', []), nb_setval('$cpp_lambdas', 0),
     forall(member(unit(Is), Units), cpp_register_(Is)).
 cpp_register_([template(_, TPs, Item)|Is]) :- !, ( cpp_template_name(Item, N) -> nb_getval('$cpp_templates', Ts), nb_setval('$cpp_templates', [N-tmpl(TPs, Item)|Ts]) ; true ), cpp_register_(Is).
+cpp_register_([include(_, _, file(_, summary, summary(F)))|Is]) :- !, ccl_sum_terms(F, Terms), forall(member(titem(T), Terms), cpp_register_([T])), cpp_register_(Is).   % the compiler's own headers' templates, kept whole
+cpp_register_([include(_, _, summary(F))|Is]) :- !, ccl_sum_terms(F, Terms), forall(member(titem(T), Terms), cpp_register_([T])), cpp_register_(Is).
+cpp_register_([include(_, _, file(_, _, unit(Js)))|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
 cpp_register_([]).
 cpp_register_([declare(L, base(_, [class(_, C, Bases, Ms)]))|Is]) :- !, cpp_register_class(L, C, Bases, Ms), cpp_register_(Is).
 cpp_register_([function(_, _, Ret, operator(Op), Ps, V, _)|Is]) :- !,
@@ -312,8 +315,24 @@ cpp_stmt(Ctx, for(L, Init, C, Step, S), for(L, Init1, C1, Step1, S1)) :- !,
     ccl_scope_push,
     ( Init = decl(B, Vs) -> cpp_vars(Ctx, Vs, Vs1), ccl_declare_vars(Vs1), Init1 = decl(B, Vs1) ; cpp_opt_expr(Ctx, Init, Init1) ),
     cpp_opt_expr(Ctx, C, C1), cpp_opt_expr(Ctx, Step, Step1), cpp_stmt(Ctx, S, S1), ccl_scope_pop.
-cpp_stmt(Ctx, for_each(L, var(N, T0, I), R, S), for_each(L, var(N, T, I), R1, S1)) :- !,
-    cpp_type(T0, T), cpp_expr(Ctx, R, R1), ccl_scope_push, ccl_declare(N, T), cpp_stmt(Ctx, S, S1), ccl_scope_pop.
+cpp_stmt(Ctx, for_each(L, var(N, T0, I), R, S), Out) :- !,
+    cpp_type(T0, T), cpp_expr(Ctx, R, R1),
+    (   cpp_class_of_type_of(R1, C), cpp_method(C, size, 0, _, _), cpp_method(C, operator('[]'), 1, IxName, _)   % a range-for over an object: by size() and []
+    ->  ( cpp_lvalue(R1) -> true ; cpp_refuse(L, range_for_over_a_value(C)) ),
+        ccl_declared(IxName, fn(ERet, _, _)), ccl_unref(ERet, ET), cpp_range_type(T, ET, T1), ccl_gensym('$i', Ix),
+        For = for(L, decl(base([], [int]), [var(Ix, base([], [int]), int(0))]), bin('<', id(Ix), call(member(R1, size), [])), postinc(id(Ix)),
+                  block([declaration(L, none, ET, [var(N, T1, index(R1, id(Ix)))]), S])),
+        cpp_stmt(Ctx, For, Out)
+    ;   Out = for_each(L, var(N, T, I), R1, S1), ccl_scope_push, ccl_declare(N, T), cpp_stmt(Ctx, S, S1), ccl_scope_pop ).
+cpp_range_type(base(_, [auto]), ET, ET) :- !.
+cpp_range_type(ref(Q, base(_, [auto])), ET, ref(Q, ET)) :- !.
+cpp_range_type(rref(Q, base(_, [auto])), ET, ref(Q, ET)) :- !.
+cpp_range_type(T, _, T).
+cpp_lvalue(id(_)).
+cpp_lvalue(member(_, _)).
+cpp_lvalue(arrow(_, _)).
+cpp_lvalue(deref(_)).
+cpp_lvalue(index(_, _)).
 cpp_stmt(Ctx, return(L, E), return(L, E1)) :- !, cpp_expr(Ctx, E, E1).
 cpp_stmt(Ctx, label(L, N, S), label(L, N, S1)) :- !, cpp_stmt(Ctx, S, S1).
 cpp_stmt(Ctx, switch(L, E, S), switch(L, E1, S1)) :- !, cpp_expr(Ctx, E, E1), cpp_stmt(Ctx, S, S1).
@@ -531,11 +550,14 @@ cpp_spec_key(X, K) :- cpp_type_key(X, K).
 %% argument (its qualifiers kept), a non-type parameter's name the value
 cpp_subst(T, _, T) :- \+ compound(T), !.
 cpp_subst(base(Q, [typedef(P)]), B, T) :- memberchk(P-A, B), !, cpp_merge_quals(Q, A, T).
+cpp_subst(sizeof(id(P)), B, sizeof_type(A)) :- memberchk(P-A, B), cpp_is_type(A), !.          % sizeof(T), read as an expression while T was a name
+cpp_subst(call(id(P), [X0]), B, ccast(functional, A, X)) :- memberchk(P-A, B), cpp_is_type(A), !, cpp_subst(X0, B, X).   % T(x)
 cpp_subst(id(P), B, V) :- memberchk(P-V, B), !.
 cpp_subst(str(S), _, str(S)) :- !.
 cpp_subst(T0, B, T) :- T0 =.. [F|As], cpp_subst_list(As, B, Bs), T =.. [F|Bs].
 cpp_subst_list([], _, []).
 cpp_subst_list([X|Xs], B, [Y|Ys]) :- cpp_subst(X, B, Y), cpp_subst_list(Xs, B, Ys).
+cpp_is_type(T) :- ( T = base(_, _) ; T = ptr(_, _) ; T = ref(_, _) ; T = rref(_, _) ; T = arr(_, _) ; T = fn(_, _, _) ), !.
 cpp_merge_quals(Q, base(Q2, S), base(Q3, S)) :- !, append(Q, Q2, Q3).
 cpp_merge_quals(_, A, A).
 

@@ -398,7 +398,8 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
     ccl_sum_terms_out([sum(Path, key(V, cpp))], Out0), ccl_sum_deps(Deps, Out0b), append(Out0, Out0b, Out1),   % a term per dep: a line stays short
     ccl_sum_decls(Ds, Out2), ccl_sum_typedefs(Ts, Out3), ccl_sum_tags(Gs, Out4), ccl_sum_enums(Es, Out5),
     ccl_sum_names(Names, Out6), ccl_sum_tmpls(Tmpls, Out7),
-    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
+    ( ccl_own_cxx_header(Path) -> ccl_items_template_items(Is, TItems), ccl_sum_titems(TItems, Out7b) ; Out7b = [] ),   % our own header's templates whole, to instantiate
+    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7, Out7b], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
     ccl_pp_macros(Ms), ccl_sum_mnames(Ms, Out8), ccl_sum_terms_out(Ms, Out9),   % the macros the run defined, for the user's file, beside it
     ccl_mac_file(F, M), append(Out8, Out9, MCodes), write_file_from_codes(M, MCodes).
 ccl_sum_mnames([], []) :- !.
@@ -434,6 +435,14 @@ ccl_concat_codes([], []).
 ccl_concat_codes([C|Cs], Out) :- ccl_concat_codes(Cs, O2), append(C, O2, Out).
 ccl_tag_names([], []).
 ccl_tag_names([Tag-_|Gs], Ns) :- ccl_tag_names(Gs, Ns1), ( atom(Tag), Tag \== anon -> Ns = [Tag|Ns1] ; Ns = Ns1 ).
+%% the template items themselves, through the namespaces (which flatten): titem(Item) lines
+ccl_items_template_items([], []).
+ccl_items_template_items([template(L, Ps, I)|Is], [template(L, Ps, I)|Ts]) :- !, ccl_items_template_items(Is, Ts).
+ccl_items_template_items([namespace(_, _, Js)|Is], Ts) :- !, ccl_items_template_items(Js, T1), ccl_items_template_items(Is, T2), append(T1, T2, Ts).
+ccl_items_template_items([extern_c(_, Js)|Is], Ts) :- !, ccl_items_template_items(Js, T1), ccl_items_template_items(Is, T2), append(T1, T2, Ts).
+ccl_items_template_items([_|Is], Ts) :- ccl_items_template_items(Is, Ts).
+ccl_sum_titems([], []).
+ccl_sum_titems([T|Ts], Out) :- ccl_sum_terms_out([titem(T)], O1), ccl_sum_titems(Ts, O2), append(O1, O2, Out).
 ccl_items_templates([], []).
 ccl_items_templates([template(_, _, I)|Is], Ns) :- !, ccl_items_templates(Is, Ns1), ( ccl_template_name(I, N), N \== none -> Ns = [N|Ns1] ; Ns = Ns1 ).
 ccl_items_templates([namespace(_, _, Js)|Is], Ns) :- !, ccl_items_templates(Js, N1), ccl_items_templates(Is, N2), append(N1, N2, Ns).
@@ -611,10 +620,12 @@ ccl_user_dirs(Ds) :-
 %% stdarg.h, stdbool.h, float.h ...), the local prefix, then the SDK
 %% ($SDKROOT, the Command Line Tools' SDK, Xcode's) or /usr/include
 ccl_toolchain_dirs(Ds) :-
-    ( ccl_lang(cpp) -> ccl_cxx_dirs(Cxx) ; Cxx = [] ),
+    ( ccl_lang(cpp) -> ccl_own_cxx_dirs(OwnCxx), ccl_cxx_dirs(Cxx0), append(OwnCxx, Cxx0, Cxx) ; Cxx = [] ),   % the compiler's own <vector> ahead of libc++'s
     ccl_own_include_dirs(Own), ccl_sdk_dirs(Sdk),
     append(Cxx, Own, D1), append(D1, ['/usr/local/include', '/opt/homebrew/include'], D2), append(D2, Sdk, D3),
     ccl_existing_dirs(D3, Ds).
+ccl_own_cxx_dirs(Ds) :- ccl_library_dirs(Ls), findall(D, ( member(L, Ls), atom_concat(L, '/include/cxx', D) ), Ds).
+ccl_own_cxx_header(Path) :- ccl_own_cxx_dirs(Ds), member(D, Ds), atom_concat(D, '/', DP), atom_concat(DP, _, Path), !.
 %% ONE C++ library, the first found: two libc++ trees on the path mix their
 %% wrappers (the SDK's ctype.h under LLVM's cctype defines _LIBCPP_CTYPE_H
 %% and trips an #error)

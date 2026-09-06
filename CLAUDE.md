@@ -39,6 +39,7 @@ library/ccl_pp.pl        the preprocessor, in cocolog (owner's rule: no clang, n
                          ccl_pp_top/3, the user's file through it, its directives kept
 library/include/         the compiler's own freestanding headers: stddef.h, stdarg.h,
                          stdbool.h, float.h, iso646.h, stdalign.h, stdnoreturn.h
+library/include/cxx/     the compiler's own C++ headers, ahead of libc++'s in C++: vector
 library/ccl_infer.pl     the macro facilities: ccl_type_of/2 and lookups over the symbol table
 library/ccl_format.pl    format, print, println: the global macros, Rust's holes
 library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause per construct
@@ -617,6 +618,41 @@ built with `-O1` at 20000 keys gives the expectation. Not done: a
 constructor that delegates, `this` handed out of a constructor, a
 destructor's effect on a struct member of class type, arrays of
 objects, `static` methods (a `this` is passed and unused).
+
+**M6's seventh step (0.38): `std::vector`, the compiler's own.**
+libc++'s templates use every C++ form there is, so the standard
+library goes the way `stddef.h` went for C: `library/include/cxx/`
+holds the compiler's own C++ headers, put FIRST on the inclusion path
+in C++ (`ccl_own_cxx_dirs/1`, ahead of `ccl_cxx_dirs`), and
+`<vector>` there is `std::vector<T>` as Safe Modern C++ has it: `own T
+*d`, grown by doubling through `realloc` (which the check takes as
+consuming the old block and giving a fresh one), freed by the
+destructor, `T &operator[]` and `back()`, `push_back`, `size`, `empty`,
+`reserve`, `clear`, `pop_back`; no copies (a vector copies as a struct,
+two owners of one block), no iterators, no `insert`/`erase`. It declares
+`realloc` and `free` itself under `extern "C"` rather than including
+`<stdlib.h>`: libc++'s `stdlib.h` wrapper reads only PARTLY in the
+flattened form (a summary tolerates that, keeping what was read), and
+everything after a partial read is lost -- our template was. A header
+under `library/include/cxx` (`ccl_own_cxx_header/1`) keeps its template
+items WHOLE in its summary, `titem(template(L, Ps, Item))` lines
+(`ccl_items_template_items/2`, through the namespaces), where every
+other header keeps `template(N)` names; the desugaring's registry reads
+them from an include node -- `file(Path, summary, summary(F))` (the
+served shape), `summary(F)`, or a first read's `file(_, _, unit(Is))` --
+so `std::vector<int>` instantiates like a template the program wrote,
+`vector.int` (the namespace flattens). `cpp_subst` turns `sizeof(id(T))`
+(read as an expression while T was only a name) into `sizeof_type` of
+the argument and `T(x)` into a functional cast. A range-for over an
+object whose class has `size()` and `operator[]` is rewritten by the
+desugaring (`cpp_stmt(for_each)`, before the passes' array rule) into
+the `for` over an index, the element type the operator's result
+unreferenced; the range must be an lvalue form. The reader's version
+went to 29 for the summary's new lines. Gated by
+`test/cpp/run/vec.cpp` (ints and structs, `v[0] = 100`, `v.back() =
+1`, a range-for, a vector by pointer). Not done: the rest of `<vector>`,
+`<string>`, `<array>`, `<map>`; a vector of objects with destructors; a
+`std` template of libc++'s (its summary has no body: refused).
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
