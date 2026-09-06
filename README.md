@@ -628,27 +628,27 @@ same i9-9880H, the minimum of five, in seconds:
 
 | | hello `-O0` | hello `-O3` | B-tree `-O0` | B-tree `-O3` | B-tree `-c` | B-tree, read only |
 |---|---|---|---|---|---|---|
-| `cicili++`, the first run (init phase) | 3.0 | | 8.2 | | | |
-| `cicili++`, after it | 0.79 | 0.83 | 1.47 | 1.54 | 1.12 | 0.67 |
-| `clang++` | 1.05 | 1.10 | 1.12 | 1.21 | 0.39 | 0.39 |
-| `rustc` | 0.52 | 0.52 | 0.59 | 0.76 | 0.33 | |
+| `cicili++`, the first run (init phase) | 3.1 | | 8.6 | | | |
+| `cicili++`, after it | 0.82 | 0.82 | 1.37 | 1.50 | 1.07 | 0.62 |
+| `clang++` | 1.08 | 1.06 | 1.09 | 1.17 | 0.38 | 0.38 |
+| `rustc` | 0.52 | 0.55 | 0.61 | 0.77 | 0.30 | |
 
 `rustc` is the fastest on both programs; `cicili++` after its init phase
-builds the hello faster than `clang++` and takes 1.3 times `clang++` on
+builds the hello faster than `clang++` and takes 1.26 times `clang++` on
 the B-tree. Where its time goes, measured piece by piece: cocolog starts
 in 0.06 s and the library's clauses load in 0.03 s; the command's shell
 is a floor of its own, a fork per `$(...)` and per pipe, so `bin/cicili`
 forks six times where it forked twenty; a header's summary is parsed in
 30 ms; the raw parse of the 170 lines takes 0.1 s (the lexer, since it
 went native, 20 ms; the parser one look per token); the check 0.07 s and
-the lowering 0.21 s (50,000 predicate calls of the type machinery and
+the lowering 0.19 s (46,000 predicate calls of the type machinery and
 the emission, at cocolog's 5 µs a call), the embedded LLVM and the
 link the rest -- `c++` links in 0.3 s, and `clang++`'s own link is 0.7 of
 its 1.1 s. No process is spawned but the linker: the arch the module was
 compiled on answers for `uname -m`, which cost 0.14 s a spawn, twice a
 build. The init phase is paid once per header, 3 s for `<stdio.h>`'s
-closure of 38 files and 8 s for the three headers the B-tree includes.
-Six floors went in turn, each measured before it was touched -- the
+closure of 38 files and 9 s for the three headers the B-tree includes.
+Seven floors went in turn, each measured before it was touched -- the
 lexer (the DCG ran at 0.15 ms a token, the native one 600 times faster:
 0.3 s of a build), the summaries' parse (0.5 s each, a free-position
 `sub_atom/5` a line; 30 ms bound), the floor (the spawns and the forks:
@@ -657,12 +657,15 @@ an empty file's read from 0.62 to 0.39 s, in C mode over the store from
 answers, and the symbol table was read 4000 times: the file scope in a
 global of its own, the answers cached, 1.0 s to 0.46 s), the parser
 (sixty-two thousand token matches for two thousand tokens, one look per
-token now, 0.3 s to 0.1 s) and the lowering again (its text joined by a
+token now, 0.3 s to 0.1 s), the lowering again (its text joined by a
 walk over the codes, a quarter of it; the type resolution chosen by its
-functor; the ABI classification cached: 0.4 to 0.21 s) -- and the
-B-tree's build went from 3.64 to 1.47 s, `test/compile.sh`'s eighteen
-programs and forty refusals from 37 to 26 s. What is left is
-interpretation: fifty thousand calls in the lowering, then the check's.
+functor; the ABI classification cached: 0.4 to 0.21 s) and the LLVM
+type carried with every value (`ir_expr/4`, so the conversions, stores
+and arithmetic stop deriving it from the C type: a tenth of the calls,
+0.21 to 0.19 s) -- and the B-tree's build went from 3.64 to 1.37 s,
+`test/compile.sh`'s eighteen programs and forty refusals from 37 to
+26 s. What is left is interpretation: the inference the lowering and the
+check share, then the emission.
 
 `test/c/run/btree.c` and `btree_del.c` are the ownership test case: a
 B-tree whose every node owns its children through an own array, fixed in

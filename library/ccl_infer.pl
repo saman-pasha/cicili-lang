@@ -102,6 +102,8 @@ ccl_add_quals([], T, T) :- !.
 ccl_add_quals(Q, base(Q0, S), base(Q1, S)) :- !, append(Q, Q0, Q1).
 ccl_add_quals(Q, ptr(Q0, T), ptr(Q1, T)) :- !, append(Q, Q0, Q1).
 ccl_add_quals(_, T, T).
+ccl_members_of(base(_, [struct(_, Ms)]), Ms) :- Ms \== none, !.                 % resolved already: no resolution
+ccl_members_of(base(_, [union(_, Ms)]), Ms) :- Ms \== none, !.
 ccl_members_of(T, Ms) :- ccl_resolve_type(T, T1), ( T1 = base(_, [struct(_, Ms)]) ; T1 = base(_, [union(_, Ms)]) ), Ms \== none, !.
 ccl_member_type(T, N, MT) :- ccl_members_of(T, Ms), memberchk(member(MT, N, _), Ms).
 

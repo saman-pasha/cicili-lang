@@ -217,17 +217,19 @@ ir_member_slot(Base, ST, N, Slot, T) :-
 ir_slot_addr(bf(_, _, _, _, _), _) :- !, ir_fail(address_of_bitfield).
 ir_slot_addr(A, A).
 %% a load from a slot (an array decays to its address); a bitfield's bits shifted out of its run
-ir_load_slot(bf(P, RunLL, Off, W, Signed), T, V) :- !,
+ir_load_slot(Slot, T, V) :- ir_type(T, LL), ir_load_slot(Slot, T, LL, V).
+ir_load_slot(bf(P, RunLL, Off, W, Signed), _, LL, V) :- !,
     ir_fresh(U), ir_ins([U, ' = load ', RunLL, ', ptr ', P, ', align 1']),
     ir_bits(RunLL, K), Sh1 is K - Off - W, Sh2 is K - W,
     ( Sh1 =:= 0 -> V1 = U ; ir_fresh(V1), ir_ins([V1, ' = shl ', RunLL, ' ', U, ', ', Sh1]) ),
     ( Signed == true -> Op = ashr ; Op = lshr ),
     ( Sh2 =:= 0 -> V2 = V1 ; ir_fresh(V2), ir_ins([V2, ' = ', Op, ' ', RunLL, ' ', V1, ', ', Sh2]) ),
-    ir_type(T, LL), ir_int_convert(V2, RunLL, Signed, LL, V).
-ir_load_slot(A, T, V) :- ir_load_or_decay(A, T, V).
+    ir_int_convert(V2, RunLL, Signed, LL, V).
+ir_load_slot(A, T, LL, V) :- ir_load_or_decay(A, T, LL, V).
 %% a store to a slot; a bitfield's bits masked into its run
-ir_store_slot(bf(P, RunLL, Off, W, _), T, V) :- !,
-    ir_type(T, LL), ir_bits(RunLL, K), Mask is (1 << W) - 1, ir_iconst(Mask, K, MaskLit),
+ir_store_slot(Slot, T, V) :- ir_type(T, LL), ir_store_slot(Slot, T, LL, V).
+ir_store_slot(bf(P, RunLL, Off, W, _), _, LL, V) :- !,
+    ir_bits(RunLL, K), Mask is (1 << W) - 1, ir_iconst(Mask, K, MaskLit),
     ( K < 64 -> Clear is ((1 << K) - 1) - (Mask << Off) ; Clear is \ (Mask << Off) ), ir_iconst(Clear, K, ClearLit),
     ir_fresh(U), ir_ins([U, ' = load ', RunLL, ', ptr ', P, ', align 1']),
     ir_fresh(C), ir_ins([C, ' = and ', RunLL, ' ', U, ', ', ClearLit]),
@@ -236,7 +238,7 @@ ir_store_slot(bf(P, RunLL, Off, W, _), T, V) :- !,
     ( Off =:= 0 -> S = M ; ir_fresh(S), ir_ins([S, ' = shl ', RunLL, ' ', M, ', ', Off]) ),
     ir_fresh(R), ir_ins([R, ' = or ', RunLL, ' ', C, ', ', S]),
     ir_ins(['store ', RunLL, ' ', R, ', ptr ', P, ', align 1']).
-ir_store_slot(A, T, V) :- ir_type(T, LL), ir_ins(['store ', LL, ' ', V, ', ptr ', A]).
+ir_store_slot(A, _, LL, V) :- ir_ins(['store ', LL, ' ', V, ', ptr ', A]).
 %% an integer constant as LLVM writes it for iK: two's complement when the top bit is set
 ir_iconst(Val, K, Lit) :- ( K < 64, Val >= 1 << (K - 1) -> Lit is Val - (1 << K) ; Lit = Val ).
 %% an integer of one width to another
@@ -341,17 +343,20 @@ ir_is_fp(T) :- ccl_is_float(T).
 ir_is_int(T) :- ccl_is_integer(T).
 ir_int(base([], [int])).
 ir_long(base([], [long])).
+ir_elem(ptr(_, E), E) :- !.
+ir_elem(arr(_, E), E) :- !.
 ir_elem(T, E) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, E) ; T1 = arr(_, E) ; T1 = block(_, E) ), !.
 ir_elem(T, _) :- ir_fail(not_a_pointer(T)).
 ir_zero(LL, Z) :- ( LL == ptr -> Z = null ; ( LL == double ; LL == float ) -> Z = '0.0' ; sub_atom(LL, 0, 1, _, 'i') -> Z = 0 ; Z = zeroinitializer ).
 
 %% ---- conversions -------------------------------------------------------------------
-ir_convert(V, From, To, V1) :-
-    ir_type(From, FL), ir_type(To, TL),
+ir_convert(V, From, To, V1) :- ir_type(From, FL), ir_type(To, TL), ir_convert(V, From, FL, To, TL, V1).
+%% with both LLVM types in hand (the value's travels with it, the target's the caller has)
+ir_convert(V, From, FL, To, TL, V1) :-
     (   FL == TL -> V1 = V
-    ;   ir_is_fp(From), ir_is_fp(To) -> ( TL == double -> Op = fpext ; Op = fptrunc ), ir_op1(Op, FL, V, TL, V1)
-    ;   ir_is_fp(From) -> ( ir_signed(To) -> Op = fptosi ; Op = fptoui ), ir_op1(Op, FL, V, TL, V1)
-    ;   ir_is_fp(To) -> ( ir_signed(From) -> Op = sitofp ; Op = uitofp ), ir_op1(Op, FL, V, TL, V1)
+    ;   ir_fp_ll(FL), ir_fp_ll(TL) -> ( ir_fp_wider(TL, FL) -> Op = fpext ; Op = fptrunc ), ir_op1(Op, FL, V, TL, V1)
+    ;   ir_fp_ll(FL) -> ( ir_signed(To) -> Op = fptosi ; Op = fptoui ), ir_op1(Op, FL, V, TL, V1)
+    ;   ir_fp_ll(TL) -> ( ir_signed(From) -> Op = sitofp ; Op = uitofp ), ir_op1(Op, FL, V, TL, V1)
     ;   ( FL == ptr ; ir_isfn(From) ), TL == ptr -> V1 = V
     ;   FL == ptr -> ir_op1(ptrtoint, FL, V, TL, V1)
     ;   TL == ptr -> ir_op1(inttoptr, FL, V, TL, V1)
@@ -364,8 +369,8 @@ ir_bits(LL, N) :- atom_concat(i, A, LL), atom_codes(A, Cs), catch(number_codes(N
 %% a value as a condition (i1)
 ir_cond(E, C) :- ir_cmp_op(E, _), !, ir_expr_i1(E, C).
 ir_cond(E, C) :-
-    ir_expr(E, V, T), ir_type(T, LL),
-    ( ir_is_fp(T) -> ir_fresh(C), ir_ins([C, ' = fcmp une ', LL, ' ', V, ', 0.0'])
+    ir_expr(E, V, _, LL),
+    ( ir_fp_ll(LL) -> ir_fresh(C), ir_ins([C, ' = fcmp une ', LL, ' ', V, ', 0.0'])
     ; LL == ptr -> ir_fresh(C), ir_ins([C, ' = icmp ne ptr ', V, ', null'])
     ; ir_fresh(C), ir_ins([C, ' = icmp ne ', LL, ' ', V, ', 0']) ).
 ir_cmp_op(bin(Op, _, _), Op) :- memberchk(Op, ['<', '>', '<=', '>=', '==', '!=']).
@@ -395,88 +400,98 @@ ir_norm(X, E0, E, M) :- M0 is X / (2.0 ** E0), ( M0 >= 2.0 -> E1 is E0 + 1, ir_n
 ir_hexn(_, 0, '') :- !.
 ir_hexn(N, K, A) :- D is N mod 16, N1 is N // 16, K1 is K - 1, ir_hexn(N1, K1, A1), ir_hexd(D, H), atom_concat(A1, H, A).
 
-%% ---- expressions: a value and its C type ------------------------------------------------
-ir_expr(int(N), N, T) :- !, ( ( N > 2147483647 ; N < -2147483648 ) -> ir_long(T) ; ir_int(T) ).
-ir_expr(float(F), A, base([], [double])) :- !, ir_double(F, A).
-ir_expr(chr(C), C, T) :- !, ir_int(T).
-ir_expr(str(S), Ref, ptr([], base([], [char]))) :- !, ir_string(S, Ref).
-ir_expr(id(N), V, T) :- ccl_enum_value(N, V), !, ir_int(T).          % an enumerator is its value
-ir_expr(id(N), V, T) :- !,
+%% ---- expressions: a value, its C type, and its LLVM type ------------------------------------
+%% ir_expr(+E, -V, -T, -LL): the value, the C type (resolved where the
+%% lowering resolved it) and the LLVM type of the value -- `ptr' for an array
+%% that decayed, whatever ir_type/2 says of the array. The LLVM type travels
+%% with the value so the consumers (a conversion, a store, an arithmetic
+%% instruction, a condition) stop deriving it again from the C type: half
+%% the lowering's 50,000 calls were the type machinery asked twice.
+ir_expr(E, V, T) :- ir_expr(E, V, T, _).
+ir_expr(int(N), N, T, LL) :- !, ( ( N > 2147483647 ; N < -2147483648 ) -> ir_long(T), LL = i64 ; ir_int(T), LL = i32 ).
+ir_expr(float(F), A, base([], [double]), double) :- !, ir_double(F, A).
+ir_expr(chr(C), C, T, i32) :- !, ir_int(T).
+ir_expr(str(S), Ref, ptr([], base([], [char])), ptr) :- !, ir_string(S, Ref).
+ir_expr(id(N), V, T, i32) :- ccl_enum_value(N, V), !, ir_int(T).          % an enumerator is its value
+ir_expr(id(N), V, T, LL) :- !,
     ( ir_lookup(N, loc(Addr, T0)) -> true ; ir_fail(undeclared(N)) ),
     ccl_resolve_type(T0, T1),
-    (   T1 = arr(_, E) -> V = Addr, T = ptr([], E)
-    ;   T1 = fn(_, _, _) -> V = Addr, T = ptr([], T0)
-    ;   ir_type(T0, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', Addr]), T = T0 ).
-ir_expr(call(F, Args), V, RT) :- !,
+    (   T1 = arr(_, E) -> V = Addr, T = ptr([], E), LL = ptr
+    ;   T1 = fn(_, _, _) -> V = Addr, T = ptr([], T0), LL = ptr
+    ;   ir_type(T1, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', Addr]), T = T1 ).
+ir_expr(call(F, Args), V, RT, LL) :- !,
     ir_moved_args(F, Args, Args1),
-    ( F = id(free), Args1 = [E], ir_drain_free(E, S) -> ir_expr(S, V, RT) ; ir_call(F, Args1, V, RT) ).
-ir_expr(drain_free(E), V, RT) :- !, ir_call(id(free), [E], V, RT).          % the lowering's own free, past the drain
-ir_expr(assign('=', L, R), V, LT) :- ir_own_elem(L), !, ir_elem_assign(L, R, S), ir_expr(S, V, LT).   % an own array's element: the old one freed
-ir_expr(assign('=', L, R), V, LT) :- !,
-    ir_lval(L, Slot, LT), ir_expr(R, V0, RT), ir_convert(V0, RT, LT, V), ir_store_slot(Slot, LT, V).
-ir_expr(assign(Op, L, R), V, LT) :- !,
-    atom_concat(BinOp, '=', Op), ir_lval(L, Slot, LT),
-    ir_load_slot(Slot, LT, Cur),
-    ir_binary(BinOp, Cur, LT, R, V0, RT), ir_convert(V0, RT, LT, V), ir_store_slot(Slot, LT, V).
-ir_expr(bin('&&', A, B), V, T) :- !, ir_int(T),
+    ( F = id(free), Args1 = [E], ir_drain_free(E, S) -> ir_expr(S, V, RT, LL) ; ir_call(F, Args1, V, RT), ir_type(RT, LL) ).
+ir_expr(drain_free(E), V, RT, LL) :- !, ir_call(id(free), [E], V, RT), ir_type(RT, LL).          % the lowering's own free, past the drain
+ir_expr(assign('=', L, R), V, LT, LL) :- ir_own_elem(L), !, ir_elem_assign(L, R, S), ir_expr(S, V, LT, LL).   % an own array's element: the old one freed
+ir_expr(assign('=', L, R), V, LT, LL) :- !,
+    ir_lval(L, Slot, LT, LL), ir_expr(R, V0, RT, RL), ir_convert(V0, RT, RL, LT, LL, V), ir_store_slot(Slot, LT, LL, V).
+ir_expr(assign(Op, L, R), V, LT, LL) :- !,
+    atom_concat(BinOp, '=', Op), ir_lval(L, Slot, LT, LL),
+    ir_load_slot(Slot, LT, LL, Cur),
+    ir_binary(BinOp, Cur, LT, LL, R, V0, RT, RL), ir_convert(V0, RT, RL, LT, LL, V), ir_store_slot(Slot, LT, LL, V).
+ir_expr(bin('&&', A, B), V, T, i32) :- !, ir_int(T),
     ir_label(LB), ir_label(LE), ir_cond(A, CA), ir_cur_label(LA0), ir_end(['br i1 ', CA, ', label %', LB, ', label %', LE]),
     ir_block(LB), ir_cond(B, CB), ir_cur_label(LB1), ir_end(['br label %', LE]),
     ir_block(LE), ir_fresh(C), ir_ins([C, ' = phi i1 [ false, %', LA0, ' ], [ ', CB, ', %', LB1, ' ]']), ir_bool(C, V).
-ir_expr(bin('||', A, B), V, T) :- !, ir_int(T),
+ir_expr(bin('||', A, B), V, T, i32) :- !, ir_int(T),
     ir_label(LB), ir_label(LE), ir_cond(A, CA), ir_cur_label(LA0), ir_end(['br i1 ', CA, ', label %', LE, ', label %', LB]),
     ir_block(LB), ir_cond(B, CB), ir_cur_label(LB1), ir_end(['br label %', LE]),
     ir_block(LE), ir_fresh(C), ir_ins([C, ' = phi i1 [ true, %', LA0, ' ], [ ', CB, ', %', LB1, ' ]']), ir_bool(C, V).
-ir_expr(bin(Op, A, B), V, T) :- ir_cmp_op(bin(Op, A, B), _), !, ir_int(T), ir_expr_i1(bin(Op, A, B), C), ir_bool(C, V).
-ir_expr(bin(Op, A, B), V, T) :- !, ir_expr(A, VA, TA), ir_binary(Op, VA, TA, B, V, T).
-ir_expr(neg(E), V, T) :- !, ir_expr(E, V0, T0), ccl_promote(T0, T), ir_convert(V0, T0, T, V1), ir_type(T, LL),
-    ir_fresh(V), ( ir_is_fp(T) -> ir_ins([V, ' = fneg ', LL, ' ', V1]) ; ir_signed(T) -> ir_ins([V, ' = sub nsw ', LL, ' 0, ', V1]) ; ir_ins([V, ' = sub ', LL, ' 0, ', V1]) ).
-ir_expr(pos(E), V, T) :- !, ir_expr(E, V, T).
-ir_expr(bitnot(E), V, T) :- !, ir_expr(E, V0, T0), ccl_promote(T0, T), ir_convert(V0, T0, T, V1), ir_type(T, LL), ir_fresh(V), ir_ins([V, ' = xor ', LL, ' ', V1, ', -1']).
-ir_expr(not(E), V, T) :- !, ir_int(T), ir_cond(E, C), ir_fresh(C1), ir_ins([C1, ' = xor i1 ', C, ', true']), ir_bool(C1, V).
-ir_expr(addr(E), Addr, ptr([], T)) :- !, ir_lval(E, Slot, T), ir_slot_addr(Slot, Addr).
-ir_expr(deref(E), V, T) :- !, ir_lval(deref(E), Slot, T), ir_load_slot(Slot, T, V).
-ir_expr(index(A, I), V, T) :- !, ir_lval(index(A, I), Slot, T), ir_load_slot(Slot, T, V).
-ir_expr(member(E, N), V, T) :- !, ir_lval(member(E, N), Slot, T), ir_load_slot(Slot, T, V).
-ir_expr(arrow(E, N), V, T) :- !, ir_lval(arrow(E, N), Slot, T), ir_load_slot(Slot, T, V).
-ir_expr(preinc(E), V, T) :- !, ir_step(E, add, pre, V, T).
-ir_expr(predec(E), V, T) :- !, ir_step(E, sub, pre, V, T).
-ir_expr(postinc(E), V, T) :- !, ir_step(E, add, post, V, T).
-ir_expr(postdec(E), V, T) :- !, ir_step(E, sub, post, V, T).
-ir_expr(cast(T, E), V, T) :- !, ir_expr(E, V0, T0), ( ccl_resolve_type(T, base(_, [void])) -> V = V0 ; ir_convert(V0, T0, T, V) ).
-ir_expr(sizeof(E), N, T) :- !, ccl_size_type(T), ccl_type_of(E, ET), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof(E)) ).
-ir_expr(sizeof_type(ET), N, T) :- !, ccl_size_type(T), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof_type(ET)) ).
-ir_expr(cond(C, A, B), V, T) :- !,
-    ccl_type_of(A, TA), ccl_type_of(B, TB), ( ccl_is_arith(TA), ccl_is_arith(TB) -> ccl_usual(TA, TB, T) ; T = TA ),
+ir_expr(bin(Op, A, B), V, T, i32) :- ir_cmp_op(bin(Op, A, B), _), !, ir_int(T), ir_expr_i1(bin(Op, A, B), C), ir_bool(C, V).
+ir_expr(bin(Op, A, B), V, T, LL) :- !, ir_expr(A, VA, TA, LA), ir_binary(Op, VA, TA, LA, B, V, T, LL).
+ir_expr(neg(E), V, T, LL) :- !, ir_expr(E, V0, T0, L0), ccl_promote(T0, T), ir_type(T, LL), ir_convert(V0, T0, L0, T, LL, V1),
+    ir_fresh(V), ( ir_fp_ll(LL) -> ir_ins([V, ' = fneg ', LL, ' ', V1]) ; ir_signed(T) -> ir_ins([V, ' = sub nsw ', LL, ' 0, ', V1]) ; ir_ins([V, ' = sub ', LL, ' 0, ', V1]) ).
+ir_expr(pos(E), V, T, LL) :- !, ir_expr(E, V, T, LL).
+ir_expr(bitnot(E), V, T, LL) :- !, ir_expr(E, V0, T0, L0), ccl_promote(T0, T), ir_type(T, LL), ir_convert(V0, T0, L0, T, LL, V1), ir_fresh(V), ir_ins([V, ' = xor ', LL, ' ', V1, ', -1']).
+ir_expr(not(E), V, T, i32) :- !, ir_int(T), ir_cond(E, C), ir_fresh(C1), ir_ins([C1, ' = xor i1 ', C, ', true']), ir_bool(C1, V).
+ir_expr(addr(E), Addr, ptr([], T), ptr) :- !, ir_lval(E, Slot, T, _), ir_slot_addr(Slot, Addr).
+ir_expr(deref(E), V, T, LL) :- !, ir_lval(deref(E), Slot, T, LT), ir_load_slot(Slot, T, LT, V), ir_value_ll(LT, LL).
+ir_expr(index(A, I), V, T, LL) :- !, ir_lval(index(A, I), Slot, T, LT), ir_load_slot(Slot, T, LT, V), ir_value_ll(LT, LL).
+ir_expr(member(E, N), V, T, LL) :- !, ir_lval(member(E, N), Slot, T, LT), ir_load_slot(Slot, T, LT, V), ir_value_ll(LT, LL).
+ir_expr(arrow(E, N), V, T, LL) :- !, ir_lval(arrow(E, N), Slot, T, LT), ir_load_slot(Slot, T, LT, V), ir_value_ll(LT, LL).
+ir_expr(preinc(E), V, T, LL) :- !, ir_step(E, add, pre, V, T, LL).
+ir_expr(predec(E), V, T, LL) :- !, ir_step(E, sub, pre, V, T, LL).
+ir_expr(postinc(E), V, T, LL) :- !, ir_step(E, add, post, V, T, LL).
+ir_expr(postdec(E), V, T, LL) :- !, ir_step(E, sub, post, V, T, LL).
+ir_expr(cast(T, E), V, T, LL) :- !, ir_expr(E, V0, T0, L0), ( ccl_resolve_type(T, base(_, [void])) -> V = V0, LL = void ; ir_type(T, LL), ir_convert(V0, T0, L0, T, LL, V) ).
+ir_expr(sizeof(E), N, T, i64) :- !, ccl_size_type(T), ccl_type_of(E, ET), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof(E)) ).
+ir_expr(sizeof_type(ET), N, T, i64) :- !, ccl_size_type(T), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof_type(ET)) ).
+ir_expr(cond(C, A, B), V, T, LL) :- !,
+    ccl_type_of(A, TA), ccl_type_of(B, TB), ( ccl_is_arith(TA), ccl_is_arith(TB) -> ccl_usual(TA, TB, T) ; T = TA ), ir_type(T, LL),
     ir_label(LT), ir_label(LF), ir_label(LE), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LT, ', label %', LF]),
-    ir_block(LT), ir_expr(A, VA0, TA1), ir_convert(VA0, TA1, T, VA), ir_cur_label(LT1), ir_end(['br label %', LE]),
-    ir_block(LF), ir_expr(B, VB0, TB1), ir_convert(VB0, TB1, T, VB), ir_cur_label(LF1), ir_end(['br label %', LE]),
-    ir_block(LE), ir_type(T, LL), ir_fresh(V), ir_ins([V, ' = phi ', LL, ' [ ', VA, ', %', LT1, ' ], [ ', VB, ', %', LF1, ' ]']).
-ir_expr(comma(A, B), V, T) :- !, ir_expr(A, _, _), ir_expr(B, V, T).
-ir_expr(move(E), V, T) :- ir_own_elem(E), !, ir_lval(E, Slot, T), ir_load_slot(Slot, T, V), ir_store_slot(Slot, T, null).   % out of an own array: the slot nulled
-ir_expr(move(E), V, T) :- !, ir_expr(E, V, T).                        % a move is the value; the checker did the rest
-ir_expr(compound_lit(T, Init), V, T1) :- !,
-    ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E) ; T1 = T ).
-ir_expr(stmt_expr(block(Is)), V, T) :- !,
-    ir_env_push, ( append(Init, [expr(_, E)], Is) -> ir_stmts(Init), ir_expr(E, V, T) ; ir_stmts(Is), V = none, T = base([], [void]) ),
+    ir_block(LT), ir_expr(A, VA0, TA1, LA), ir_convert(VA0, TA1, LA, T, LL, VA), ir_cur_label(LT1), ir_end(['br label %', LE]),
+    ir_block(LF), ir_expr(B, VB0, TB1, LB), ir_convert(VB0, TB1, LB, T, LL, VB), ir_cur_label(LF1), ir_end(['br label %', LE]),
+    ir_block(LE), ir_fresh(V), ir_ins([V, ' = phi ', LL, ' [ ', VA, ', %', LT1, ' ], [ ', VB, ', %', LF1, ' ]']).
+ir_expr(comma(A, B), V, T, LL) :- !, ir_expr(A, _, _, _), ir_expr(B, V, T, LL).
+ir_expr(move(E), V, T, LL) :- ir_own_elem(E), !, ir_lval(E, Slot, T, LL), ir_load_slot(Slot, T, LL, V), ir_store_slot(Slot, T, LL, null).   % out of an own array: the slot nulled
+ir_expr(move(E), V, T, LL) :- !, ir_expr(E, V, T, LL).                        % a move is the value; the checker did the rest
+ir_expr(compound_lit(T, Init), V, T1, LL) :- !,
+    ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_load_or_decay(Addr, T, V), ccl_resolve_type(T, RT), ( RT = arr(_, E) -> T1 = ptr([], E), LL = ptr ; T1 = T, ir_type(T, LL) ).
+ir_expr(stmt_expr(block(Is)), V, T, LL) :- !,
+    ir_env_push, ( append(Init, [expr(_, E)], Is) -> ir_stmts(Init), ir_expr(E, V, T, LL) ; ir_stmts(Is), V = none, T = base([], [void]), LL = void ),
     ir_run_defers(1), ir_env_pop.
-ir_expr(E, _, _) :- ir_fail(expr(E)).
+ir_expr(E, _, _, _) :- ir_fail(expr(E)).
+%% the LLVM type of a loaded value: an array decays to its address
+ir_value_ll(LT, LL) :- ( sub_atom(LT, 0, 1, _, '[') -> LL = ptr ; LL = LT ).
+ir_fp_ll(double). ir_fp_ll(float). ir_fp_ll(half).
+ir_fp_wider(double, float). ir_fp_wider(double, half). ir_fp_wider(float, half).
 
 %% the label of the block the last instruction went into (for phis)
 ir_cur_label(L) :- nb_getval('$ir_body', B), ir_last_label(B, L).
 ir_last_label([Line|T], L) :- ( sub_atom(Line, _, 1, 0, ':'), \+ sub_atom(Line, 0, 1, _, ' ') -> sub_atom(Line, 0, _, 1, L) ; ir_last_label(T, L) ).
 ir_last_label([], entry).
 
-ir_load_or_decay(Addr, T, V) :-
-    ccl_resolve_type(T, T1),
-    ( T1 = arr(_, _) -> V = Addr ; ir_type(T, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', Addr]) ).
+ir_load_or_decay(Addr, T, V) :- ir_type(T, LL), ir_load_or_decay(Addr, T, LL, V).
+ir_load_or_decay(Addr, T, LL, V) :-
+    ( ccl_resolve_type(T, arr(_, _)) -> V = Addr ; ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', Addr]) ).
 
 ir_expr_i1(bin(Op, A, B), C) :-
-    ir_expr(A, VA, TA), ir_expr(B, VB, TB),
-    (   ( ir_is_ptr(TA) ; ir_is_ptr(TB) ) -> ir_ptr_operands(VA, TA, VB, TB, PA, PB), ir_icmp(Op, false, ptr, PA, PB, C)
-    ;   ccl_usual(TA, TB, T), ir_convert(VA, TA, T, A1), ir_convert(VB, TB, T, B1), ir_type(T, LL),
-        ( ir_is_fp(T) -> ir_fcmp(Op, LL, A1, B1, C) ; ( ir_signed(T) -> S = true ; S = false ), ir_icmp(Op, S, LL, A1, B1, C) ) ).
-ir_ptr_operands(VA, TA, VB, TB, PA, PB) :- ir_to_ptr(VA, TA, PA), ir_to_ptr(VB, TB, PB).
-ir_to_ptr(V, T, P) :- ( ir_is_ptr(T) -> P = V ; V == 0 -> P = null ; ir_convert(V, T, ptr([], base([], [void])), P) ).
+    ir_expr(A, VA, TA, LA), ir_expr(B, VB, TB, LB),
+    (   ( LA == ptr ; LB == ptr ) -> ir_to_ptr(VA, TA, LA, PA), ir_to_ptr(VB, TB, LB, PB), ir_icmp(Op, false, ptr, PA, PB, C)
+    ;   ccl_usual(TA, TB, T), ir_type(T, LL), ir_convert(VA, TA, LA, T, LL, A1), ir_convert(VB, TB, LB, T, LL, B1),
+        ( ir_fp_ll(LL) -> ir_fcmp(Op, LL, A1, B1, C) ; ( ir_signed(T) -> S = true ; S = false ), ir_icmp(Op, S, LL, A1, B1, C) ) ).
+ir_to_ptr(V, T, L, P) :- ( L == ptr -> P = V ; V == 0 -> P = null ; ir_convert(V, T, L, ptr([], base([], [void])), ptr, P) ).
 ir_icmp(Op, S, LL, A, B, C) :- ir_icmp_pred(Op, S, P), ir_fresh(C), ir_ins([C, ' = icmp ', P, ' ', LL, ' ', A, ', ', B]).
 ir_icmp_pred('==', _, eq). ir_icmp_pred('!=', _, ne).
 ir_icmp_pred('<', true, slt). ir_icmp_pred('<', false, ult). ir_icmp_pred('>', true, sgt). ir_icmp_pred('>', false, ugt).
@@ -485,43 +500,43 @@ ir_fcmp(Op, LL, A, B, C) :- ir_fcmp_pred(Op, P), ir_fresh(C), ir_ins([C, ' = fcm
 ir_fcmp_pred('==', oeq). ir_fcmp_pred('!=', une). ir_fcmp_pred('<', olt). ir_fcmp_pred('>', ogt). ir_fcmp_pred('<=', ole). ir_fcmp_pred('>=', oge).
 
 %% a binary arithmetic/bitwise/shift operator over a lowered left operand
-ir_binary(Op, VA, TA, B, V, T) :-
-    ir_expr(B, VB, TB),
-    (   memberchk(Op, ['+', '-']), ir_is_ptr(TA), ir_is_ptr(TB), Op == '-' ->      % p - q
-            ir_elem(TA, E), ccl_size_of(E, Sz), ir_long(T),
+ir_binary(Op, VA, TA, LA, B, V, T, LL) :-
+    ir_expr(B, VB, TB, LB),
+    (   Op == '-', LA == ptr, LB == ptr ->                                          % p - q
+            ir_elem(TA, E), ccl_size_of(E, Sz), ir_long(T), LL = i64,
             ir_op1(ptrtoint, ptr, VA, i64, A1), ir_op1(ptrtoint, ptr, VB, i64, B1),
             ir_fresh(D), ir_ins([D, ' = sub i64 ', A1, ', ', B1]), ir_fresh(V), ir_ins([V, ' = sdiv exact i64 ', D, ', ', Sz])
-    ;   memberchk(Op, ['+', '-']), ir_is_ptr(TA) -> ir_ptr_add(Op, VA, TA, VB, TB, V), ir_decayed(TA, T)
-    ;   Op == '+', ir_is_ptr(TB) -> ir_ptr_add('+', VB, TB, VA, TA, V), ir_decayed(TB, T)
+    ;   memberchk(Op, ['+', '-']), LA == ptr -> ir_ptr_add(Op, VA, TA, VB, TB, LB, V), ir_decayed(TA, T), LL = ptr
+    ;   Op == '+', LB == ptr -> ir_ptr_add('+', VB, TB, VA, TA, LA, V), ir_decayed(TB, T), LL = ptr
     ;   ccl_usual(TA, TB, T0), ( memberchk(Op, ['<<', '>>']) -> ccl_promote(TA, T) ; T = T0 ),
-        ir_convert(VA, TA, T, A1), ( memberchk(Op, ['<<', '>>']) -> ir_convert(VB, TB, T, B1) ; ir_convert(VB, TB, T, B1) ),
-        ir_type(T, LL), ir_arith_op(Op, T, Ins), ir_fresh(V), ir_ins([V, ' = ', Ins, ' ', LL, ' ', A1, ', ', B1]) ).
+        ir_type(T, LL), ir_convert(VA, TA, LA, T, LL, A1), ir_convert(VB, TB, LB, T, LL, B1),
+        ir_arith_op(Op, T, LL, Ins), ir_fresh(V), ir_ins([V, ' = ', Ins, ' ', LL, ' ', A1, ', ', B1]) ).
 ir_decayed(T, D) :- ccl_resolve_type(T, T1), ( T1 = arr(_, E) -> D = ptr([], E) ; D = T ).
-ir_ptr_add(Op, P, PT, I, IT, V) :-
-    ir_elem(PT, E), ir_type(E, EL), ir_convert(I, IT, base([], [long]), I1),
+ir_ptr_add(Op, P, PT, I, IT, IL, V) :-
+    ir_elem(PT, E), ir_type(E, EL), ir_convert(I, IT, IL, base([], [long]), i64, I1),
     ( Op == '-' -> ir_fresh(N), ir_ins([N, ' = sub i64 0, ', I1]) ; N = I1 ),
     ir_fresh(V), ir_ins([V, ' = getelementptr inbounds ', EL, ', ptr ', P, ', i64 ', N]).
 %% signed overflow is undefined in C, so signed integer arithmetic is `nsw':
 %% LLVM then widens loop counters and drops the sign extensions before an
 %% index (every address is `inbounds' for the same reason: past the object
 %% is undefined too); together a third of a B-tree's search time
-ir_arith_op('+', T, Ins) :- ( ir_is_fp(T) -> Ins = fadd ; ir_signed(T) -> Ins = 'add nsw' ; Ins = add ).
-ir_arith_op('-', T, Ins) :- ( ir_is_fp(T) -> Ins = fsub ; ir_signed(T) -> Ins = 'sub nsw' ; Ins = sub ).
-ir_arith_op('*', T, Ins) :- ( ir_is_fp(T) -> Ins = fmul ; ir_signed(T) -> Ins = 'mul nsw' ; Ins = mul ).
-ir_arith_op('/', T, Ins) :- ( ir_is_fp(T) -> Ins = fdiv ; ir_signed(T) -> Ins = sdiv ; Ins = udiv ).
-ir_arith_op('%', T, Ins) :- ( ir_is_fp(T) -> Ins = frem ; ir_signed(T) -> Ins = srem ; Ins = urem ).
-ir_arith_op('&', _, and). ir_arith_op('|', _, or). ir_arith_op('^', _, xor). ir_arith_op('<<', _, shl).
-ir_arith_op('>>', T, Ins) :- ( ir_signed(T) -> Ins = ashr ; Ins = lshr ).
+ir_arith_op('+', T, LL, Ins) :- ( ir_fp_ll(LL) -> Ins = fadd ; ir_signed(T) -> Ins = 'add nsw' ; Ins = add ).
+ir_arith_op('-', T, LL, Ins) :- ( ir_fp_ll(LL) -> Ins = fsub ; ir_signed(T) -> Ins = 'sub nsw' ; Ins = sub ).
+ir_arith_op('*', T, LL, Ins) :- ( ir_fp_ll(LL) -> Ins = fmul ; ir_signed(T) -> Ins = 'mul nsw' ; Ins = mul ).
+ir_arith_op('/', T, LL, Ins) :- ( ir_fp_ll(LL) -> Ins = fdiv ; ir_signed(T) -> Ins = sdiv ; Ins = udiv ).
+ir_arith_op('%', T, LL, Ins) :- ( ir_fp_ll(LL) -> Ins = frem ; ir_signed(T) -> Ins = srem ; Ins = urem ).
+ir_arith_op('&', _, _, and). ir_arith_op('|', _, _, or). ir_arith_op('^', _, _, xor). ir_arith_op('<<', _, _, shl).
+ir_arith_op('>>', T, _, Ins) :- ( ir_signed(T) -> Ins = ashr ; Ins = lshr ).
 
 %% ++ and --, on integers, floats and pointers
-ir_step(E, Op, When, V, T) :-
-    ir_lval(E, Slot, T), ir_type(T, LL), ir_load_slot(Slot, T, Cur),
+ir_step(E, Op, When, V, T, LL) :-
+    ir_lval(E, Slot, T, LL), ir_load_slot(Slot, T, LL, Cur),
     ir_fresh(New),
-    (   ir_is_ptr(T) -> ir_elem(T, El), ir_type(El, ELL), ( Op == add -> D = 1 ; D = -1 ), ir_ins([New, ' = getelementptr inbounds ', ELL, ', ptr ', Cur, ', i64 ', D])
-    ;   ir_is_fp(T) -> ( Op == add -> F = fadd ; F = fsub ), ir_ins([New, ' = ', F, ' ', LL, ' ', Cur, ', 1.0'])
+    (   LL == ptr -> ir_elem(T, El), ir_type(El, ELL), ( Op == add -> D = 1 ; D = -1 ), ir_ins([New, ' = getelementptr inbounds ', ELL, ', ptr ', Cur, ', i64 ', D])
+    ;   ir_fp_ll(LL) -> ( Op == add -> F = fadd ; F = fsub ), ir_ins([New, ' = ', F, ' ', LL, ' ', Cur, ', 1.0'])
     ;   ir_signed(T) -> ir_ins([New, ' = ', Op, ' nsw ', LL, ' ', Cur, ', 1'])
     ;   ir_ins([New, ' = ', Op, ' ', LL, ' ', Cur, ', 1']) ),
-    ir_store_slot(Slot, T, New),
+    ir_store_slot(Slot, T, LL, New),
     ( When == pre -> V = New ; V = Cur ).
 
 %% ---- own arrays: the drains the source did not write ---------------------------------------
@@ -617,7 +632,7 @@ ir_call_(Callee, RT, Ps, Var, Args, V) :-
 %% the arguments: each as its parts (a struct in pieces is several), and the plain type of each part
 ir_args_([], _, [], []).
 ir_args_([A|As], [param(PT0, _)|Ps], Parts, PLLs) :- !,
-    ir_param_abi(PT0, PT, Abi), ir_expr(A, V0, T0), ( Abi == scalar -> ir_convert(V0, T0, PT, V) ; V = V0 ),
+    ir_param_abi(PT0, PT, Abi), ir_expr(A, V0, T0, L0), ( Abi == scalar -> ir_type(PT, PL), ir_convert(V0, T0, L0, PT, PL, V) ; V = V0 ),
     ir_arg_parts(Abi, PT, V, P1, L1), ir_args_(As, Ps, P2, L2), append(P1, P2, Parts), append(L1, L2, PLLs).
 ir_args_([A|As], [], Parts, PLLs) :-                    % the variadic tail: default promotions
     ir_expr(A, V0, T0), ir_promote_arg(V0, T0, V, T), ir_abi(T, Abi),
@@ -634,17 +649,19 @@ ir_promote_arg(V0, T0, V, T) :-
     ; V = V0, T = T0 ).
 
 %% ---- lvalues: an address and the C type there --------------------------------------------
-ir_lval(id(N), Addr, T) :- !, ( ir_lookup(N, loc(Addr, T)) -> true ; ir_fail(undeclared(N)) ).
-ir_lval(deref(E), Addr, T) :- !, ir_expr(E, Addr, PT), ir_elem(PT, T).
-ir_lval(index(A, I), Addr, T) :- !,
-    ir_expr(A, P, PT), ir_elem(PT, T), ir_type(T, LL), ir_expr(I, IV, IT), ir_convert(IV, IT, base([], [long]), I1),
+%% ir_lval(+E, -Slot, -T, -LL): the slot, the C type there (resolved) and its LLVM type
+ir_lval(E, Slot, T) :- ir_lval(E, Slot, T, _).
+ir_lval(id(N), Addr, T, LL) :- !, ( ir_lookup(N, loc(Addr, T0)) -> true ; ir_fail(undeclared(N)) ), ccl_resolve_type(T0, T), ir_type(T, LL).
+ir_lval(deref(E), Addr, T, LL) :- !, ir_expr(E, Addr, PT, _), ir_elem(PT, T), ir_type(T, LL).
+ir_lval(index(A, I), Addr, T, LL) :- !,
+    ir_expr(A, P, PT, _), ir_elem(PT, T), ir_type(T, LL), ir_expr(I, IV, IT, IL), ir_convert(IV, IT, IL, base([], [long]), i64, I1),
     ir_fresh(Addr), ir_ins([Addr, ' = getelementptr inbounds ', LL, ', ptr ', P, ', i64 ', I1]).
-ir_lval(member(E, N), Slot, T) :- !,
-    ( ir_lval(E, Base0, ST) -> ir_slot_addr(Base0, Base) ; ir_expr(E, SV, ST), ir_type(ST, SLL), ir_fresh(Base), ir_alloca_typed(Base, ST), ir_ins(['store ', SLL, ' ', SV, ', ptr ', Base]) ),
-    ir_member_slot(Base, ST, N, Slot, T).
-ir_lval(arrow(E, N), Slot, T) :- !, ir_expr(E, P, PT), ir_elem(PT, ST), ir_member_slot(P, ST, N, Slot, T).
-ir_lval(compound_lit(T, Init), Addr, T) :- !, ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init).
-ir_lval(E, _, _) :- ir_fail(lvalue(E)).
+ir_lval(member(E, N), Slot, T, LL) :- !,
+    ( ir_lval(E, Base0, ST, _) -> ir_slot_addr(Base0, Base) ; ir_expr(E, SV, ST, SLL), ir_fresh(Base), ir_alloca_typed(Base, ST), ir_ins(['store ', SLL, ' ', SV, ', ptr ', Base]) ),
+    ir_member_slot(Base, ST, N, Slot, T), ir_type(T, LL).
+ir_lval(arrow(E, N), Slot, T, LL) :- !, ir_expr(E, P, PT, _), ir_elem(PT, ST), ir_member_slot(P, ST, N, Slot, T), ir_type(T, LL).
+ir_lval(compound_lit(T, Init), Addr, T, LL) :- !, ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_type(T, LL).
+ir_lval(E, _, _, _) :- ir_fail(lvalue(E)).
 %% an alloca for a value of a C type: a struct or a union aligned as C aligns it
 ir_alloca_typed(Addr, T) :-
     ir_type(T, LL), ccl_resolve_type(T, T1),
@@ -657,7 +674,7 @@ ir_init(Slot, T, init(Items)) :- !,
 ir_init(Slot, T, E) :-
     ccl_resolve_type(T, T1),
     (   T1 = arr(_, El), E = str(S) -> ir_slot_addr(Slot, Addr), ir_type(El, _), ir_init_string(Addr, T1, S)
-    ;   ir_expr(E, V0, ET), ir_convert(V0, ET, T, V), ir_store_slot(Slot, T, V) ).
+    ;   ir_expr(E, V0, ET, EL), ir_type(T, TL), ir_convert(V0, ET, EL, T, TL, V), ir_store_slot(Slot, T, TL, V) ).
 ir_init_string(Addr, arr(_, _), S) :- append(S, [0], Cs), ir_init_chars(Cs, Addr, 0).
 ir_init_chars([], _, _).
 ir_init_chars([C|Cs], Addr, I) :- ir_fresh(P), ir_ins([P, ' = getelementptr inbounds i8, ptr ', Addr, ', i64 ', I]), ir_ins(['store i8 ', C, ', ptr ', P]), I1 is I + 1, ir_init_chars(Cs, Addr, I1).
@@ -712,18 +729,18 @@ ir_stmt(for(L, Init, C, Step, S)) :- !, ir_line(L),
     ir_block(LE), ir_run_defers(1), ir_env_pop.
 ir_stmt(return(L)) :- !, ir_line(L), ir_run_defers(all), ir_end(['ret void']).
 ir_stmt(return(L, E)) :- !, ir_line(L),
-    nb_getval('$ir_ret', RT), nb_getval('$ir_ret_abi', Abi), ir_expr(E, V0, T0),
+    nb_getval('$ir_ret', RT), nb_getval('$ir_ret_abi', Abi), ir_expr(E, V0, T0, L0),
     (   ccl_resolve_type(RT, base(_, [void])) -> ir_run_defers(all), ir_end(['ret void'])
     ;   Abi = direct(Pcs) -> ir_type(RT, LL), ir_pieces_type(Pcs, CL), ir_tmp(LL, Tmp), ir_ins(['store ', LL, ' ', V0, ', ptr ', Tmp]),
             ir_fresh(C), ir_ins([C, ' = load ', CL, ', ptr ', Tmp]), ir_run_defers(all), ir_end(['ret ', CL, ' ', C])
     ;   ( Abi = memory(_, _) ; Abi = indirect(_, _) ) -> ir_type(RT, LL), ir_ins(['store ', LL, ' ', V0, ', ptr %agg.result']), ir_run_defers(all), ir_end(['ret void'])
-    ;   ir_convert(V0, T0, RT, V), ir_run_defers(all), ir_type(RT, LL), ir_end(['ret ', LL, ' ', V]) ).
+    ;   ir_type(RT, LL), ir_convert(V0, T0, L0, RT, LL, V), ir_run_defers(all), ir_end(['ret ', LL, ' ', V]) ).
 ir_stmt(break(L)) :- !, ir_line(L), ir_loop_top(LE, _, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LE]).
 ir_stmt(continue(L)) :- !, ir_line(L), ir_continue_target(LC, Depth), ir_depth(D), K is D - Depth, ir_run_defers(K), ir_end(['br label %', LC]).
 ir_stmt(goto(Ln, L)) :- !, ir_line(Ln), atom_concat('L.', L, LL), ir_end(['br label %', LL]).
 ir_stmt(label(_, L, S)) :- !, atom_concat('L.', L, LL), ir_block(LL), ir_stmt(S).
 ir_stmt(switch(L, E, block(Is))) :- !, ir_line(L),
-    ir_expr(E, V0, T0), ir_int(IT), ir_convert(V0, T0, IT, V),
+    ir_expr(E, V0, T0, L0), ir_int(IT), ir_convert(V0, T0, L0, IT, i32, V),
     ir_label(LE), ir_switch_cases(Is, Cases, Default),
     ( Default = none -> DL = LE ; Default = DL ),
     ir_case_lines(Cases, Lines), ir_join(Lines, ' ', CL),

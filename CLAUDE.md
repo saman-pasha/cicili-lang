@@ -242,8 +242,8 @@ whose first clause takes a plain specifier list in one try, anything else
 itself -- where it tried the typedef, struct and union heads first every
 time. `ir_abi/2` walked a struct's leaves and eightbytes at every call
 site; cached. What is left is 50,000 predicate calls at cocolog's 5 µs a
-call: fewer calls would take `ir_expr/3` carrying the LLVM type beside
-the C type, so the consumers stop re-deriving it.
+call: `ir_expr/4` carries the LLVM type beside the C type now (above),
+which took a tenth of the calls out; the rest is the inference.
 Never `memberchk` on the open accumulator: it binds the tail (the
 enumerators keep a closed list of their own). `library(ccl_infer)` reads them: `ccl_type_of/2` with the
 usual arithmetic conversions, `ccl_resolve_type/2`, `ccl_size_of/2` (LP64).
@@ -462,9 +462,22 @@ are cocolog's), and a summary does not yet carry a header's macros.
 `'$ir_body'` (lines, reversed), `'$ir_allocas'` (the entry block's),
 `'$ir_env'` (frames of Name-loc(Addr, Type)), `'$ir_defers'` (frames of
 defer bodies), `'$ir_loops'` (break/continue targets with the defer depth
-at entry), `'$ir_term'` (is the current block terminated). `ir_expr/3` gives
-a value and its C type, `ir_lval/3` an address, `ir_cond/2` an i1,
-`ir_convert/4` C's conversions; `ir_ins/1` opens a dead block after a
+at entry), `'$ir_term'` (is the current block terminated). **`ir_expr/4`
+gives a value, its C type (resolved where the lowering resolved it) and
+its LLVM type** -- `ptr` for an array that decayed, whatever `ir_type/2`
+says of the array (`ir_value_ll/2`) -- and `ir_lval/4` a slot, the C type
+there and its LLVM type; `ir_load_slot/4` and `ir_store_slot/4` take that
+type, `ir_convert/6` both types' LLVM forms, `ir_binary/8` and
+`ir_arith_op/4` the operand's, `ir_cond/2` reads it off the value;
+`ir_fp_ll/1` tells a floating LLVM type, `ir_fp_wider/2` which extends to
+which. The /3 forms of `ir_expr` and `ir_lval`, the /3 slots and
+`ir_convert/4` remain as wrappers for the callers with no LLVM type in
+hand (the owner's request, 2026-09-06: the LLVM type travels with the
+value so the consumers stop deriving it from the C type; it took 4,500
+calls of 50,000 out of the B-tree's lowering, 0.21 -> 0.19 s -- `ir_type`
+2300 -> 1400, `ccl_is_float` 680 -> 290 -- the rest being the inference
+the check shares, `ccl_type_of` and its resolutions). `ir_cond/2` an i1;
+`ir_ins/1` opens a dead block after a
 terminator so every block ends once. `defer`: `ir_run_defers/1` inlines a
 scope's bodies LIFO at its end, at `break`/`continue` (the frames inside the
 loop) and at `return` (all). Doubles print as LLVM's hex (`ir_double/2`);
