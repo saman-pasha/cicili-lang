@@ -628,13 +628,13 @@ same i9-9880H, the minimum of five, in seconds:
 
 | | hello `-O0` | hello `-O3` | B-tree `-O0` | B-tree `-O3` | B-tree `-c` | B-tree, read only |
 |---|---|---|---|---|---|---|
-| `cicili++`, the first run (init phase) | 3.0 | | 8.1 | | | |
-| `cicili++`, after it | 0.80 | 0.82 | 1.40 | 1.50 | 1.07 | 0.68 |
-| `clang++` | 1.07 | 1.06 | 1.10 | 1.21 | 0.41 | 0.38 |
-| `rustc` | 0.51 | 0.49 | 0.61 | 0.76 | 0.33 | |
+| `cicili++`, the first run (init phase) | 2.9 | | 8.1 | | | |
+| `cicili++`, after it | 0.84 | 0.80 | 1.35 | 1.49 | 1.04 | 0.69 |
+| `clang++` | 1.09 | 1.06 | 1.10 | 1.19 | 0.40 | 0.39 |
+| `rustc` | 0.50 | 0.51 | 0.61 | 0.79 | 0.31 | |
 
 `rustc` is the fastest on both programs; `cicili++` after its init phase
-builds the hello faster than `clang++` and takes 1.27 times `clang++` on
+builds the hello faster than `clang++` and takes 1.23 times `clang++` on
 the B-tree. For scale, a compiler written in another interpreted
 language: the script also runs the Python ones this Mac can, when `PY`
 names a python3 with them installed. `pycparser`, the C parser in Python
@@ -652,8 +652,8 @@ shell is a floor of its own, a fork per `$(...)` and per pipe, so
 `bin/cicili` forks six times where it forked twenty; a header's summary
 is parsed in 30 ms; the raw parse of the 170 lines takes 0.1 s (the
 lexer, since it went native, 20 ms; the parser one look per token); the
-check 0.08 s and the lowering 0.17 s (46,000 predicate calls of the type
-machinery and the emission, at cocolog's 5 µs a call), the embedded LLVM
+check 0.07 s and the lowering 0.17 s (the walk of every statement and
+the emission, at cocolog's 5 µs a call), the embedded LLVM
 and the link the rest -- `c++` links in 0.3 s, and `clang++`'s own link
 is 0.7 of its 1.1 s. No process is spawned but the linker: the arch the
 module was compiled on answers for `uname -m`, which cost 0.14 s a spawn,
@@ -676,10 +676,13 @@ stores and arithmetic stop deriving it from the C type: a tenth of the
 calls, 0.21 to 0.19 s) and the inference (a global per name for the
 caches whose values are large, the own-array test answered per tag, a
 plain type resolved in one clause: a third of its calls, and the clock
-within its noise) -- and the B-tree's build went from 3.64 to 1.40 s,
-`test/compile.sh`'s eighteen programs and forty refusals from 37 to
-26 s. What is left is the check's walk and the lowering's emission, at
-cocolog's 5 µs a call.
+within its noise) and the check's walk (its rebuild of the symbol table
+added a summary's names one at a time, each a copy of the environment:
+17 ms to 5; the anchor walk asks the scope only of the names declared
+as arrays; 86 ms to 70, the rest the expression walk itself) -- and the
+B-tree's build went from 3.64 to 1.35 s, `test/compile.sh`'s eighteen
+programs and forty refusals from 37 to 25 s. What is left is the two
+walks, the check's and the lowering's, at cocolog's 5 µs a call.
 
 `test/c/run/btree.c` and `btree_del.c` are the ownership test case: a
 B-tree whose every node owns its children through an own array, fixed in

@@ -145,6 +145,7 @@ ck_items([_|Is]) :- ck_items(Is).
 %% ---- state: frames of Key-State, innermost first; with each frame its defers ----------
 ck_function(L, Ret, Name, Params, Body) :-
     nb_setval('$ck_fn', Name), nb_setval('$ck_line', L), nb_setval('$ck_loops', []), nb_setval('$ck_ties', []), nb_setval('$ck_statics', []), nb_setval('$ck_arrays', []),
+    nb_setval('$ck_arrlocals', []), ck_note_arrparams(Params),
     ccl_scope_push, ccl_declare_params(Params),
     ck_param_names(Params, Names), nb_setval('$ck_params', Names),
     (   ccl_tie_of(Ret, RY)
@@ -472,7 +473,14 @@ ck_insert_at([F|Frs], I, P, [F|Frs1]) :- I1 is I - 1, ck_insert_at(Frs, I1, P, F
 %% before the expression is read, and the pointer is a borrow of it
 ck_anchor_addrs(E, St, St) :- \+ compound(E), !.
 ck_anchor_addrs(addr(E), St0, St) :- !, ( ck_storage_base(E, N) -> ck_anchor_local(N, St0, St1) ; St1 = St0 ), ck_anchor_addrs(E, St1, St).
-ck_anchor_addrs(id(N), St0, St) :- !, ( ck_local_type(N, T), ccl_resolve_type(T, arr(_, _)) -> ck_anchor_local(N, St0, St) ; St = St0 ).
+ck_anchor_addrs(id(N), St0, St) :- !, ( ck_arrlocal(N), ck_local_type(N, T), ccl_resolve_type(T, arr(_, _)) -> ck_anchor_local(N, St0, St) ; St = St0 ).
+%% the names declared with an array type in this function, so the walk over
+%% every expression asks the scope only of those (every id cost a lookup and
+%% a resolution: 7 ms of the B-tree's check); the scope still decides
+ck_note_arrlocal(N, T) :- ( ccl_resolve_type(T, arr(_, _)) -> nb_getval('$ck_arrlocals', As), nb_setval('$ck_arrlocals', [N|As]) ; true ).
+ck_note_arrparams([]).
+ck_note_arrparams([P|Ps]) :- ( ( P = param(T, N) ; P = param(T, N, _) ), N \== anon -> ck_note_arrlocal(N, T) ; true ), ck_note_arrparams(Ps).
+ck_arrlocal(N) :- nb_getval('$ck_arrlocals', As), memberchk(N, As).
 ck_anchor_addrs(E, St0, St) :- E =.. [_|As], ck_anchor_addrs_list(As, St0, St).
 ck_anchor_addrs_list([], St, St).
 ck_anchor_addrs_list([A|As], St0, St) :- ck_anchor_addrs(A, St0, St1), ck_anchor_addrs_list(As, St1, St).
@@ -687,7 +695,7 @@ ck_has_default(Is) :- member(case(_, _, S), Is), ck_has_default([S]), !.
 %% owner's value is a borrow, given a value with no owner behind it a warning
 ck_decls([], St, St).
 ck_decls([var(N, T, Init)|Vs], St0, St) :-
-    ccl_declare(N, T), ck_type_rules(N, T, var(N, Init)),
+    ccl_declare(N, T), ck_note_arrlocal(N, T), ck_type_rules(N, T, var(N, Init)),
     ck_var_fields(N, T, Fs), ck_states(Fs, unset, FOs),
     ck_declare_all(St0, FOs, St1), ck_field_ties(N, T, St1, St2, Ts), ck_anchor_addrs(Init, St2, St3),
     (   ck_own_array_type(T)

@@ -206,6 +206,7 @@ ccl_ensure_globals :-
                                    unique_ptr, shared_ptr, weak_ptr, function, basic_string, initializer_list, allocator, less, greater, hash,
                                    numeric_limits, is_same, enable_if, remove_reference, decay, queue, stack, priority_queue, span]),
       ( catch(ccl_lex_native('', 1, line, c, _, _), _, fail) -> nb_setval('$ccl_lexer', native) ; nb_setval('$ccl_lexer', dcg) ),
+      nb_setval('$ccl_sumload:names', []),
       nb_setval('$ccl_inited', yes) ).
 
 %% ---- the directive's text -----------------------------------------------------
@@ -447,14 +448,17 @@ ccl_sum_terms(F, Terms) :-
     atom_concat('$ccl_sum:', F, K),
     (   catch(nb_getval(K, T0), _, fail), T0 \== none -> Terms = T0
     ;   read_file_to_codes(F, Codes), atom_codes(A, Codes), atomic_list_concat(Lines, '\n', A), ccl_sum_lines(Lines, Terms), nb_setval(K, Terms) ).
-ccl_sum_forget(F) :- atom_concat('$ccl_sum:', F, K), nb_setval(K, none).
+ccl_sum_forget(F) :- atom_concat('$ccl_sum:', F, K), nb_setval(K, none), nb_setval('$ccl_sumload:names', []).
 ccl_sum_lines([], []).
 ccl_sum_lines([L|Ls], Ts) :-                                                  % every position bound: a free one enumerates, 0.7 ms a line
     (   L == '' -> Ts = Ts1
     ;   atom_length(L, N), N1 is N - 1, sub_atom(L, N1, 1, 0, '.'), sub_atom(L, 0, N1, 1, A), catch(term_to_atom(T, A), _, fail) -> Ts = [T|Ts1]
     ;   Ts = Ts1 ),
     ccl_sum_lines(Ls, Ts1).
+%% a summary's four tables, its templates and its names, split once per process
 ccl_sum_load(F, D, T, G, E, Tmpls, Names) :-
+    ccl_cached_named('$ccl_sumload:', F, sum(D, T, G, E, Tmpls, Names), ccl_sum_load_nocache(F, D, T, G, E, Tmpls, Names)).
+ccl_sum_load_nocache(F, D, T, G, E, Tmpls, Names) :-
     ccl_sum_terms(F, Terms),
     findall(N-Ty, member(decl(N, Ty), Terms), D), findall(N-Ty, member(typedef(N, Ty), Terms), T),
     findall(Tag-Ms, member(tag(Tag, Ms), Terms), G), findall(N-V, member(enum(N, V), Terms), E),
@@ -467,10 +471,13 @@ ccl_sum_note(F) :-
     nb_getval('$ccl_tags', G0), append(G, G0, G1), nb_setval('$ccl_tags', G1), ccl_tables_changed,
     nb_getval('$ccl_enums', E0), append(E, E0, E1), nb_setval('$ccl_enums', E1),
     ccl_note_templates(Tmpls), ccl_add_envs(Names).
-ccl_note_templates([]).
-ccl_note_templates([N|Ns]) :- ccl_note_template(N), ccl_note_templates(Ns).
-ccl_add_envs([]).
-ccl_add_envs([N|Ns]) :- ccl_add_env(N), ccl_add_envs(Ns).
+%% a summary's names into the templates and the Env in ONE read and one write
+%% each: one at a time, every addition copied the whole list (nb_setval/2),
+%% 190 names against 500 -- 15 ms of every rebuild of the symbol table
+ccl_note_templates(Ns) :- nb_getval('$ccl_templates', Ts), ccl_new_names(Ns, Ts, New), ( New == [] -> true ; append(New, Ts, Ts1), nb_setval('$ccl_templates', Ts1) ).
+ccl_add_envs(Ns) :- nb_getval('$ccl_env', G), ccl_new_names(Ns, G, New), ( New == [] -> true ; append(New, G, G1), nb_setval('$ccl_env', G1) ).
+ccl_new_names([], _, []).
+ccl_new_names([N|Ns], Have, New) :- ( atom(N), \+ memberchk(N, Have) -> New = [N|New1] ; New = New1 ), ccl_new_names(Ns, Have, New1).
 ccl_read_unit(Path, How, Unit) :-
     ccl_parse_file(Path, U0, Info0),
     (   Info0 == whole -> How = raw, Unit = U0

@@ -812,6 +812,21 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `"` inside a quoted atom did not read either; `ensure_loaded/1` then says
   only `its clauses would not consult`, no line. Bisect by splitting the
   file into clauses (`test/cpp.pl` needed that twice).
+* **Attribute time with stubs, ten runs deep**: a scratch copy of the
+  library first on `COCOLOG_LIBRARY` with one clause prepended --
+  `ck_anchor_addrs(_, St, St) :- !.` -- and the pass run ten times in one
+  process (`q_check_n`), so a 5 ms piece shows as 50. The check of the
+  B-tree (2026-09-06): 86 ms, of which the symbol table's rebuild was 17
+  -- `ccl_add_envs/1` and `ccl_note_templates/1` added a summary's 190
+  names one at a time, each addition a copy of the 500-name Env (one
+  read, one write now: 5 ms), and `ccl_sum_load/7` re-split a summary's
+  terms at every rebuild (kept per file, `'$ccl_sumload:'`) -- the anchor
+  walk 7 (5 with `'$ck_arrlocals'`, the names declared as arrays, asked
+  before the scope is), the type rules 9 (1 once the own-array test was
+  per tag), the field ties, the escape and the leak checks nothing
+  measurable; what is left, 60 ms, is the expression walk itself,
+  `ck_expr` over 1000 nodes with a state lookup each, at the interpreter's
+  5 µs a call.
 * **A cache in a global copies its whole content at every read**, so a
   cache of pairs is for SMALL values only; a value that may be large (a
   struct's members) goes in a global of its own keyed by name, with an
