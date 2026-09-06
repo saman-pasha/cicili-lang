@@ -278,7 +278,7 @@ k60 :- check('the typedef name is a type from then on',
     ( fn_body('rich.c', main, B), member(declaration(_, none, base([], [typedef(point_t)]), _), B) )).
 
 k61 :- check('for, if/else-if, continue, break, compound assignment',
-    ( fn_body('rich.c', main, B), member(for(_, assign('=', id(i), int(0)), bin('<', id(i), id('LIMIT')), postinc(id(i)), block([if(_, _, continue(_), if(_, _, break(_), none)), expr(_, assign('+=', id(total), call(id(square), [id(i)])))])), B) )).
+    ( fn_body('rich.c', main, B), member(for(_, assign('=', id(i), int(0)), bin('<', id(i), int(10)), postinc(id(i)), block([if(_, _, continue(_), if(_, _, break(_), none)), expr(_, assign('+=', id(total), call(id(square), [id(i)])))])), B) )).   % LIMIT expanded
 
 k62 :- check('while, do-while',
     ( fn_body('rich.c', main, B), member(while(_, bin('>', id(total), int(100)), expr(_, _)), B), member(do(_, block([expr(_, postinc(id(total)))]), bin('<', id(total), int(5))), B) )).
@@ -349,6 +349,13 @@ lex_same(File, Mode, Lang) :-
     read_file_to_codes(File, Cs), phrase(ccl_lex(1, T1), Cs, R1), atom_codes(A, Cs), ccl_lex_native(A, 1, Mode, Lang, T2, R2),
     nb_setval('$ccl_hash', M0), nb_setval('$ccl_lang', L0),
     T1 == T2, R1 == R2, T1 = [_|_].
+
+k86 :- check('macros.c: SQ(a[i]) expanded, CAT(tw, o) a name, NULL the cast, the #if group gone, #define kept as a directive item',
+    ( unit('macros.c', unit(Is)), member(directive(6, '#define SQ(x) ((x) * (x))'), Is), \+ member(directive(_, '#  define BITS 32'), Is),
+      member(declaration(21, none, _, [var(two, _, int(2))]), Is),
+      fn_body('macros.c', main, B), member(declaration(_, none, _, [var(a, arr(int(4), _), _)]), B),
+      member(declaration(_, none, _, [var(p, _, cast(ptr([], base([], [void])), int(0)))]), B),
+      member(for(_, _, _, _, expr(_, assign('+=', id(sum), bin('*', index(id(a), id(i)), index(id(a), id(i)))))), B) )).
 
 t_checks :-
     section('hello.c, whole'),
@@ -449,6 +456,8 @@ t_checks :-
     section('the lexer, native: ccl_lex_native/6 token for token with the DCG'),
     k84,
     k85,
+    section('the user\'s file through the preprocessor: its macros, and the headers\' macros'),
+    k86,
     section('where it stops'),
     k69,
     k70,

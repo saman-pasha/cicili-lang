@@ -35,7 +35,8 @@ library/ccl_include.pl   #include: the inclusion path (the SDK's and LLVM's conv
                          through ccl_pp), .pl macro files, the cycle guard, the KB cache
 library/ccl_pp.pl        the preprocessor, in cocolog (owner's rule: no clang, no LLVM
                          binary): ccl_pp_file/3 -- directives, conditionals, macros, the
-                         built-ins, the target's predefined macros as pp_predef/3 facts
+                         built-ins, the target's predefined macros as pp_predef/3 facts;
+                         ccl_pp_top/3, the user's file through it, its directives kept
 library/include/         the compiler's own freestanding headers: stddef.h, stdarg.h,
                          stdbool.h, float.h, iso646.h, stdalign.h, stdnoreturn.h
 library/ccl_infer.pl     the macro facilities: ccl_type_of/2 and lookups over the symbol table
@@ -154,9 +155,12 @@ thirty token matches a token, this costs eight, and 2000 tokens parse in
 0.1 s where they took 0.3 (owner's rule, 2026-09-06: in DCG predicates,
 do not repeat a pattern across many predicates -- the ten levels were one
 pattern ten times). Declarators are parsed inside out and folded onto the
-base type by `ccl_mk_type/4`. The preprocessor is NOT expanded -- a `#` line is a
-`directive/2` node -- so a typedef name from a header is unknown; it is
-recognised from context instead (`name x`, `name *p` where an expression
+base type by `ccl_mk_type/4`. The user's file goes through the preprocessor first
+(`ccl_pp_top/3`, below): its conditional groups decided and its macros
+expanded, while a `#define`, `#undef` or `#include` line comes out as a
+token the parser reads as the `directive/2` or `include/3` node it always
+made, so the items are what they were. A typedef name from a header the
+reader has not seen is recognised from context (`name x`, `name *p` where an expression
 cannot stand, `(name *)`, `(name){`, `name *p = …` in a block), plus a seed
 of the standard typedef names. Typedefs the file itself declares are
 threaded as an Env and mirrored in `nb_setval('$ccl_env')` for the casts
@@ -464,9 +468,70 @@ ships `stddef.h` but not `stdarg.h`), and the inclusion path is
 `library/include`, `/usr/local/include`, the SDK. Gated by
 `test/c/run/pp.c` (a header only the preprocessor can read, its macros'
 results as enumerators and a typedef) and `test/reader.pl`'s `k83`.
+**The user's file goes through it too** (`ccl_pp_top/3`, called by the
+reader's door `ccl_read_file_`): a run in TOP mode (`'$pp_top'`), where a
+`#define` or `#undef` is done AND passed on as `tok(pp, Text, L)` (the
+parser's `directive/2` item, as before; `pp_pass/4`), an `#include` is
+passed on for the parser to resolve as it always did (the unit from the
+store, a `.pl` the macro file, one nowhere `missing`) and its header joins
+the run's `'$pp_hdrs'` (the last included first), a `#cocolog …
+#end` block is one `tok(cocolog, Text, L)` of the raw lines between
+(`pp_cocolog_block/5`, re-read from the file: `pp_source` had stripped
+the comments), the conditional groups are decided, and every macro --
+the file's own, the headers', the predefined -- is expanded; a line that
+does not lex whole throws `lexical(N)`, the syntax error it always was.
+A run is not re-entrant, so the headers are made ready BEFORE it
+(`ccl_pp_prescan/1`: every `#include` line with a literal name goes to
+`ccl_header_macros_ready/2` -- the header read through
+`ccl_include_read/2`, then its macro table `ccl_header_macros/2`, its
+kind kept per process in `'$ccl_hm:<Path>'`). **A header's macros reach
+the run by NAME, on first use** (`pp_macro/3` and `pp_defined/1`, the two
+doors: this run's `'$pp:<Name>'` first -- `mac(Gen, Params, codes(Cs),
+Tokens | none)`, `undef(Gen)`, or `nomac(Gen, Inc)`, a miss remembered
+until the next include -- then `pp_outer_macro/3`: the predefined macros,
+`pp_predef(Name, any | Arch | cpp, Text)` facts answered by name (first,
+since no header redefines one), then the run's headers through
+`pp_header_macro/3`, the last included first, by each table's kind;
+`pp_reset` bumps the generation `'$pp_gen'`, so an older run's macro is
+simply not this run's, no undefine walk, and the 580 predefined ones are
+never defined in bulk -- that cost 25 ms a run, and a file names ten).
+`<stdio.h>` brings 1200 macros and a file uses a dozen, so no table is
+ever parsed whole: in C++ a summary's macros live BESIDE it in
+`<name>-<fold>.mac` (`mnames([...])` lines, a hundred names each, then one
+`macro(N, Ps, text(A))` line per macro AS WRITTEN; `ccl_mac_lines/3` splits
+the file and takes the names off the front, and each line goes into a
+FACT, `'$ccl_hml'(Name, Path, raw(Line))` -- `indexed`; an assert is 2 µs
+and the lookup by name 3 µs where a global per name cost 25 µs each; a
+fact is a store row under `--embed`, which the C++ mode never runs over
+-- parsed by `pp_raw_macro/4` when the name is asked); in C the table is
+the store's `'$ccl_hmacros:<Path>'(Name, Key, macro(...))` rows, one per
+macro under its NAME (`ccl_kb_macro/5`, `store(Key)`), plus a row per
+file of the closure under `'$dep'` -- 38 for `<stdio.h>`, over the clause
+budget as one term, and the store indexes an atom, not `dep(I)` -- with
+`'$ccl_hmeta'(Path, Key, meta(N, ND))` the index (three headers' tables
+are 10 MB of store, the init phase's one-time write)
+(`ccl_kb_remember_macros/3`, `ccl_kb_macros_cached/2`); a table nowhere
+yet comes from one standalone run of the preprocessor over the header
+(`ccl_pp_file/3` + `ccl_pp_macros/1`, once per store; a header the store
+would not take keeps its macros in a global, `list`, searched; a header
+read preprocessed at `ccl_read_unit` remembers its macros then).
+`pp_finish` takes a plain decimal by `number_codes/2` and runs the lexer
+only on the rest. Measured on the B-tree, in-process, the source touched
+so it is read: C++ mode 0.38 -> 0.47 s (the run 0.045, the three `.mac`
+files 0.05), C mode over a fresh store 0.37 -> 0.46 s; the eager forms
+cost 0.27. A file's time is asked of the system at every key (0.4 ms a
+call, 36 per header's table): a per-process memo of it served a touched
+file stale within the gate's one process, and bought nothing measurable. `_FORTIFY_SOURCE` is predefined 0, so `strcpy`
+stays a function (the SDK's `secure/_string.h` would make it
+`__builtin___strcpy_chk`, which nothing lowers), and C++'s `NULL`,
+`__null`, reads as C's cast. Gated by `k86` over `test/c/macros.c` and
+`test/c/run/macros.c` in the compile gate (the file's own macros, the
+headers' NULL, EOF, INT_MAX and stdin, `__LP64__`, `__LINE__`); the
+reader's version was bumped for it (28), since the store keyed by the
+old one served the old read of an unchanged fixture.
 Not done: `#elifdef`, `__has_embed`, `#embed`, trigraphs, a `//` comment
-ending in a backslash; the user's own file is still read raw (its macros
-are cocolog's), and a summary does not yet carry a header's macros.
+ending in a backslash; a summary carries a header's macros in the C++
+mode only (a C header's live in the store).
 
 ## How the lowering is implemented
 
@@ -807,6 +872,12 @@ module (a segfault that looked like the error path's). The build mirrors `module
 * **cocolog's `term_to_atom(-T, +A)` fails past some tens of KB of atom**
   (`type_error(atom, …)` on a 37 KB line): a summary file keeps a term per
   LINE, its dependencies one each, never a list of hundreds in one term.
+* **`term_to_atom(+T, +A)` with T bound, even partially, writes T and
+  compares the texts; it does not parse A and unify** (`term_to_atom(mnames(Ns),
+  'mnames([a])')` fails; `term_to_atom(T, A), T = mnames(Ns)` gives `[a]`).
+  Every parse in this repository goes into a FRESH variable first; the
+  summary's validity check passed its pattern in and read every summary as
+  invalid, rewriting it at every run (14 s a read) before this was found.
 * **cocolog's reader refuses a clause with `is` as a plain atom argument**
   (`var(is, …)`: an operator where an atom is meant), and a check name with
   `"` inside a quoted atom did not read either; `ensure_loaded/1` then says

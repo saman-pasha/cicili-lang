@@ -69,8 +69,10 @@ acts like `phrase/2`: it reads the file entirely and, through a DCG, answers
 its AST; `cicili_ast/3` is the `phrase/3` form, answering what remained. The
 grammars are `library/ccl_syntax.pl`: a lexer over character codes into
 tokens that carry their line, and a parser over tokens into terms. The
-preprocessor is not expanded; a `#` line is a node, and typedef names from
-unseen headers are recognised from the tokens around them. This is M1, and
+preprocessor is cocolog's own (M5): the file and its headers go through
+it, a `#define` or an `#include` stays a node so the macro files and the
+`#cocolog` blocks are the reader's, and typedef names from unseen headers
+are recognised from the tokens around them. This is M1, and
 it is done (see below); the checker and the lowering take the AST from here.
 
 ## Milestones
@@ -193,7 +195,9 @@ it is done (see below); the checker and the lowering take the AST from here.
   groups, macro expansion, `#include_next`, the built-ins, the target's
   predefined macros as data; it replaced every `clang -E` and `clang++
   -E`, and the inclusion path comes from the SDK's and LLVM's conventional
-  places. A library header is flattened by
+  places. The user's own file goes through it too, its macros and the
+  headers' expanded, a header's macro table kept beside its unit in the
+  store or in its summary. A library header is flattened by
   it, read once, and SUMMARIZED to one file under `~/.cicili/cpp`
   -- its declarations, not its text -- which the next run loads instead:
   cocolog's store cannot hold units that size (the finding in

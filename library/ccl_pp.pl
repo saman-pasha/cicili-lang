@@ -28,49 +28,98 @@
 %% invocation.
 
 %% ---- a run --------------------------------------------------------------------
-ccl_pp_file(Path, Tokens, Files) :-
-    ccl_ensure_globals, pp_reset, pp_predefine,
+ccl_pp_file(Path, Tokens, Files) :- ccl_pp_run(Path, no, Tokens, Files).
+%% THE USER'S OWN FILE (Top = yes): its directives run and its macros expanded
+%% like a header's, but an #include is passed on as the directive token for
+%% the reader to resolve and read (the declarations come from the reader's
+%% cache, the summaries and the store), with the header's MACROS loaded at
+%% that point (ccl_header_macros/2 in ccl_include: from the summary, the
+%% store, or one standalone run, made ready before this run begins, since a
+%% run is not re-entrant); a #define or #undef is done and kept as a
+%% directive item; a `#cocolog ... #end' block is the reader's, one token of
+%% its raw lines; a `.pl' include is the reader's macro file. A line that
+%% does not lex whole is the lexical error it always was.
+ccl_pp_top(Path, Tokens, Files) :- ccl_pp_prescan(Path), ccl_pp_run(Path, yes, Tokens, Files).
+ccl_pp_run(Path, Top, Tokens, Files) :-
+    ccl_ensure_globals, pp_reset, nb_setval('$pp_top', Top),
     nb_setval('$ccl_hash', punct),                                                   % the run lexes in the preprocessor's mode: `#' a punctuator, a number as spelled
     ( once(catch(pp_include_file(Path, Out, []), E, true)) -> true ; E = failed ),
-    nb_setval('$ccl_hash', line),
+    nb_setval('$ccl_hash', line), nb_setval('$pp_top', no),
     ( var(E) -> true ; E == failed -> fail ; throw(E) ),
     pp_finish(Out, Tokens),
     nb_getval('$pp_files', Fs), reverse(Fs, Files).
+%% the includes a file names, their headers read and their macros made ready
+ccl_pp_prescan(Path) :- pp_source(Path, Lines), pp_prescan_lines(Lines, Path).
+pp_prescan_lines([], _).
+pp_prescan_lines([line(_, A)|Ls], Path) :-
+    (   pp_directive_line(A, Body), pp_ws(Body, B1), pp_word(B1, W, Rest), atom_codes(D, W), ( D == include ; D == include_next ),
+        pp_ws(Rest, R1), pp_inc_name(R1, Spec0)
+    ->  ( D == include_next -> Spec = next(Spec0) ; Spec = Spec0 ), ( catch(ccl_header_macros_ready(Spec, Path), _, true) -> true ; true )
+    ;   true ),
+    pp_prescan_lines(Ls, Path).
+%% the macros defined when the run ended, macro(Name, Params, text(Body)) --
+%% the run's own, not the predefined: what a header's summary or store keeps
 ccl_pp_macros(Macros) :-
-    nb_getval('$pp_names', Ns), sort(Ns, Names), pp_macro_terms(Names, Macros).
-pp_macro_terms([], []).
-pp_macro_terms([N|Ns], Ms) :- pp_macro_terms(Ns, Ms1), ( pp_macro(N, Ps, B) -> Ms = [macro(N, Ps, B)|Ms1] ; Ms = Ms1 ).
+    nb_getval('$pp_names', Ns), sort(Ns, Names), nb_getval('$pp_gen', G), pp_macro_terms(Names, G, Macros).
+pp_macro_terms([], _, []).
+pp_macro_terms([N|Ns], G, Ms) :-
+    pp_macro_terms(Ns, G, Ms1),
+    ( pp_key(N, K), catch(nb_getval(K, V), _, fail), V = mac(G, Ps, codes(Cs), _) -> atom_codes(A, Cs), Ms = [macro(N, Ps, text(A))|Ms1] ; Ms = Ms1 ).
+%% a header's macros reach the run on their first use (pp_header_macro/3):
+%% <stdio.h> brings 1200 and a file names a dozen
 
+%% a run is a GENERATION: a macro is mac(Gen, Params, codes(Cs), Tokens), and
+%% one from an earlier run is simply not this run's -- no walk undefines them
 pp_reset :-
-    ( catch(nb_getval('$pp_names', Old), _, fail) -> pp_undefine_all(Old) ; true ),
+    ( catch(nb_getval('$pp_gen', G0), _, fail) -> G is G0 + 1 ; G = 1 ), nb_setval('$pp_gen', G),
     nb_setval('$pp_names', []), nb_setval('$pp_files', []), nb_setval('$pp_once', []), nb_setval('$pp_stack', []),
-    nb_setval('$pp_counter', 0), nb_setval('$pp_errors', []), nb_setval('$pp_paste', no).
-pp_undefine_all([]).
-pp_undefine_all([N|Ns]) :- pp_key(N, K), nb_setval(K, none), pp_undefine_all(Ns).
+    nb_setval('$pp_counter', 0), nb_setval('$pp_errors', []), nb_setval('$pp_paste', no), nb_setval('$pp_top', no), nb_setval('$pp_hdrs', []), nb_setval('$pp_ninc', 0).
 pp_key(N, K) :- atom_concat('$pp:', N, K).
 %% a macro: its parameters (obj for an object-like one; va(N) the variadic
 %% one) and its body -- the codes as defined, the tokens once used
-pp_define(N, Ps, Cs) :- pp_key(N, K), nb_setval(K, mac(Ps, codes(Cs))), nb_getval('$pp_names', Ns), nb_setval('$pp_names', [N|Ns]).   % a name twice is harmless: sorted where read
-pp_undefine(N) :- pp_key(N, K), nb_setval(K, none).
-pp_macro(N, Ps, Body) :-
-    pp_key(N, K), catch(nb_getval(K, V), _, fail), V = mac(Ps, B0),
-    ( B0 = codes(Cs) -> pp_lex_body(Cs, Body), nb_setval(K, mac(Ps, Body)) ; Body = B0 ).
-pp_defined(N) :- ( pp_builtin_name(N) -> true ; pp_key(N, K), catch(nb_getval(K, V), _, fail), V = mac(_, _) ).
+pp_define(N, Ps, Cs) :- pp_set_macro(N, Ps, Cs), nb_getval('$pp_names', Ns), nb_setval('$pp_names', [N|Ns]).   % a name twice is harmless: sorted where read
+pp_set_macro(N, Ps, Cs) :- nb_getval('$pp_gen', G), pp_key(N, K), nb_setval(K, mac(G, Ps, codes(Cs), none)).
+pp_undefine(N) :- nb_getval('$pp_gen', G), pp_key(N, K), nb_setval(K, undef(G)).
+%% a name's macro: this run's, or, in the user's file, one of its headers'
+%% (the tables made ready before the run; '$pp_hdrs' the headers passed
+%% through, the last first), defined into the run on that first use; one
+%% undefined in this run stays so
+pp_macro(N, Ps, Body) :- pp_key(N, K), nb_getval('$pp_gen', G), ( catch(nb_getval(K, V), _, fail) -> true ; V = none ), pp_macro_(V, G, N, K, Ps, Body).
+pp_macro_(mac(G, Ps, C, T0), G, _, K, Ps, Body) :- !, ( T0 == none -> C = codes(Cs), pp_lex_body(Cs, Body), nb_setval(K, mac(G, Ps, C, Body)) ; Body = T0 ).
+pp_macro_(undef(G), G, _, _, _, _) :- !, fail.
+pp_macro_(nomac(G, I), G, _, _, _, _) :- nb_getval('$pp_ninc', I), !, fail.                 % a miss remembered, good until the next include
+pp_macro_(_, G, N, K, Ps, Body) :- ( pp_outer_macro(N, Ps, Cs) -> pp_macro_(mac(G, Ps, codes(Cs), none), G, N, K, Ps, Body) ; pp_note_miss(K, G), fail ).
+pp_note_miss(K, G) :- nb_getval('$pp_ninc', I), nb_setval(K, nomac(G, I)).
+pp_defined(N) :- ( pp_builtin_name(N) -> true ; pp_key(N, K), nb_getval('$pp_gen', G), ( catch(nb_getval(K, V), _, fail) -> true ; V = none ), pp_defined_(V, G, N) ).
+pp_defined_(mac(G, _, _, _), G, _) :- !.
+pp_defined_(undef(G), G, _) :- !, fail.
+pp_defined_(nomac(G, I), G, _) :- nb_getval('$pp_ninc', I), !, fail.
+pp_defined_(_, G, N) :- ( pp_outer_macro(N, _, _) -> true ; pp_key(N, K), pp_note_miss(K, G), fail ).
+%% a macro from outside the run, defined into it: a header's (the run's own
+%% name list takes it, as a #define would) or a predefined one (never listed:
+%% a header's table is the header's own)
+pp_outer_macro(N, Ps, Cs) :-                                                       % the predefined first: no header redefines one
+    (   pp_predef_macro(N, Ps, Cs) -> pp_set_macro(N, Ps, Cs)
+    ;   pp_header_macro(N, Ps, Cs), pp_define(N, Ps, Cs) ).
+pp_predef_macro(N, obj, Cs) :- ( pp_predef(N, any, T) -> true ; pp_arch(A), pp_predef(N, A, T) -> true ; ccl_lang(cpp), pp_predef(N, cpp, T) ), atom_codes(T, Cs).
+%% the headers' tables, the last included first, by the table's kind
+%% (ccl_header_macros/2): the summary's facts, the store's rows, or a list
+pp_header_macro(N, Ps, Cs) :- nb_getval('$pp_hdrs', Hs), Hs \== [], pp_header_macro_(Hs, N, Ps, Cs).
+pp_header_macro_([H|Hs], N, Ps, Cs) :-
+    (   ccl_header_macros_known(H, Kind), pp_header_macro_in(Kind, H, N, Ps, A) -> atom_codes(A, Cs)
+    ;   pp_header_macro_(Hs, N, Ps, Cs) ).
+pp_header_macro_in(indexed, H, N, Ps, A) :- '$ccl_hml'(N, H, raw(L)), !, pp_raw_macro(L, N, Ps, A).
+pp_header_macro_in(store(K), H, N, Ps, A) :- ccl_kb_macro(H, K, N, Ps, A).
+pp_header_macro_in(list, H, N, Ps, A) :- ccl_hml_list(H, N, Ps, A).
+pp_raw_macro(L, N, Ps, A) :-                                                       % the line as written, its `.' off; parsed into a FRESH term: term_to_atom given a bound one compares
+    atom_length(L, Len), L1 is Len - 1, sub_atom(L, 0, L1, 1, A0), term_to_atom(T, A0), T = macro(N, Ps, text(A)).
 pp_builtin_name(N) :- memberchk(N, ['__has_include', '__has_include_next', '__has_feature', '__has_extension', '__has_attribute', '__has_cpp_attribute',
     '__has_c_attribute', '__has_declspec_attribute', '__has_builtin', '__has_warning', '__is_identifier', '__building_module', '__FILE__', '__LINE__',
     '__COUNTER__', '__DATE__', '__TIME__', '__is_target_arch', '__is_target_vendor', '__is_target_os', '__is_target_environment']).
 
-%% the predefined macros: the architecture's and the language's
-pp_predefine :-
-    pp_arch(A), ccl_lang(L),
-    forall(pp_predef(any, N, T), pp_predefine_one(N, T)),
-    forall(pp_predef(A, N, T), pp_predefine_one(N, T)),
-    ( L == cpp -> forall(pp_predef(cpp, N, T), pp_predefine_one(N, T)) ; true ).
-pp_predefine_one(Name, Text) :-
-    atom_codes(Name, NCs),
-    (   append(N1, [0'(|PCs], NCs) -> atom_codes(N, N1), append(PCs0, [0')], PCs), pp_param_names(PCs0, Ps)
-    ;   N = Name, Ps = obj ),
-    atom_codes(Text, TCs), pp_define(N, Ps, TCs).
+%% the predefined macros, pp_predef(Name, any | Arch | cpp, Text) at the end of
+%% the file, are answered by name on a miss (pp_predef_macro/3): 580 of them,
+%% defined at every run they cost 25 ms, and a file names ten
 pp_arch(A) :-                                                                    % the module's compile-time arch; uname only without the module
     (   catch(nb_getval('$pp_arch', A0), _, fail) -> A = A0
     ;   once(catch(ccl_host_arch(A1), _, fail)) -> A = A1, nb_setval('$pp_arch', A)
@@ -125,7 +174,9 @@ pp_quoted([C|R], Q, R1, [C|S]) :- pp_quoted(R, Q, R1, S).
 pp_directive_line(A, Body) :- atom_codes(A, Cs), pp_ws(Cs, [35|Body]).
 %% a text line's tokens, at its line; a macro body or a directive's tail --
 %% all in the preprocessor's mode: `#' and `##' punctuators, a number as spelled
-pp_lex_line(N, A, Toks) :- ( ccl_lex_atom(A, N, T, _) -> Toks = T ; Toks = [] ).
+pp_lex_line(N, A, Toks) :-
+    (   ccl_lex_atom(A, N, T, Rest) -> Toks = T, ( Rest \== [], nb_getval('$pp_top', yes) -> throw(lexical(N)) ; true )
+    ;   Toks = [] ).
 pp_lex_body(Codes, Toks) :- atom_codes(A, Codes), ( ccl_lex_atom(A, 0, T, _) -> Toks = T ; Toks = [] ).
 
 %% ---- the run: files, lines, tokens ----------------------------------------------
@@ -268,6 +319,7 @@ pp_escape([C|Cs], [C|Es]) :- pp_escape(Cs, Es).
 %% the output: bare tokens, a number from a macro body read as the reader has it
 pp_finish([], []).
 pp_finish([X|Xs], [T|Ts]) :- pp_unwrap(X, T0, _), pp_norm(T0, T), pp_finish(Xs, Ts).
+pp_norm(tok(num, Cs, L), tok(int, V, L)) :- pp_plain_int(Cs), !, number_codes(V, Cs).   % a plain decimal, most of them: no lexer run
 pp_norm(tok(num, Cs, L), T) :- !, nb_getval('$ccl_hash', M), nb_setval('$ccl_hash', line), atom_codes(A, Cs), ( ccl_lex_atom(A, 0, [tok(K, V, _)], []) -> T = tok(K, V, L) ; T = tok(int, 0, L) ), nb_setval('$ccl_hash', M).
 pp_norm(T, T).
 
@@ -275,10 +327,28 @@ pp_norm(T, T).
 pp_directive(Body, L, Ls, Ls1, Out0, Out) :-
     pp_ws(Body, B1), pp_word(B1, W, Rest), atom_codes(D, W),
     pp_directive_(D, Rest, Body, L, Ls, Ls1, Out0, Out).
-pp_directive_(define, Rest, _, _, Ls, Ls, Out, Out) :- !, ( pp_do_define(Rest) -> true ; true ).
-pp_directive_(undef, Rest, _, _, Ls, Ls, Out, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), atom_codes(N, W), pp_undefine(N).
-pp_directive_(include, Rest, Body, _, Ls, Ls, Out0, Out) :- !, pp_do_include(Rest, plain, Body, Out0, Out).
-pp_directive_(include_next, Rest, Body, _, Ls, Ls, Out0, Out) :- !, pp_do_include(Rest, next, Body, Out0, Out).
+pp_directive_(define, Rest, Body, L, Ls, Ls, Out0, Out) :- !, ( pp_do_define(Rest) -> true ; true ), pp_pass(Body, L, Out0, Out).
+pp_directive_(undef, Rest, Body, L, Ls, Ls, Out0, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), atom_codes(N, W), pp_undefine(N), pp_pass(Body, L, Out0, Out).
+pp_directive_(include, Rest, Body, L, Ls, Ls, Out0, Out) :- !, pp_do_include(Rest, plain, Body, L, Out0, Out).
+pp_directive_(include_next, Rest, Body, L, Ls, Ls, Out0, Out) :- !, pp_do_include(Rest, next, Body, L, Out0, Out).
+pp_directive_(cocolog, _, _, L, Ls, Ls1, Out0, Out) :- nb_getval('$pp_top', yes), !, pp_cocolog_block(Ls, L, Ls1, Out0, Out).
+%% in the user's file a directive is kept as the token the reader has always read
+pp_pass(Body, L, Out0, Out) :- ( nb_getval('$pp_top', yes) -> atom_codes(Text, [35|Body]), Out0 = [tok(pp, Text, L)|Out] ; Out0 = Out ).
+%% #cocolog ... #end in the user's file: the raw lines between, one token
+pp_cocolog_block(Ls, L, Ls1, [tok(cocolog, Text, L)|Out], Out) :-
+    pp_block_end(Ls, L, EndN, Ls1), pp_current_file(F), pp_raw_lines(F, Raw), From is L + 1, To is EndN - 1,
+    pp_raw_slice(Raw, 1, From, To, Cs), atom_codes(Text, Cs).
+pp_block_end([], L, E, []) :- E is L + 1000000.
+pp_block_end([line(N, A)|Ls], L, EndN, Ls1) :-
+    (   pp_directive_line(A, Body), pp_ws(Body, B1), pp_word(B1, W, _), atom_codes(end, W) -> EndN = N, Ls1 = Ls
+    ;   pp_block_end(Ls, L, EndN, Ls1) ).
+pp_raw_lines(F, Raw) :- read_file_to_codes(F, Codes), atom_codes(A, Codes), atomic_list_concat(Raw, '\n', A).
+pp_raw_slice([], _, _, _, []).
+pp_raw_slice([R|Rs], N, From, To, Cs) :-
+    N1 is N + 1,
+    (   N >= From, N =< To -> atom_codes(R, C1), append(C1, [10|C2], Cs), pp_raw_slice(Rs, N1, From, To, C2)
+    ;   N > To -> Cs = []
+    ;   pp_raw_slice(Rs, N1, From, To, Cs) ).
 pp_directive_(if, Rest, _, _, Ls, Ls1, Out, Out) :- !, pp_lex_body(Rest, Ts), ( pp_eval(Ts) -> Ls1 = Ls ; pp_skip_false(Ls, Ls1) ).
 pp_directive_(ifdef, Rest, _, _, Ls, Ls1, Out, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), atom_codes(N, W), ( pp_defined(N) -> Ls1 = Ls ; pp_skip_false(Ls, Ls1) ).
 pp_directive_(ifndef, Rest, _, _, Ls, Ls1, Out, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), atom_codes(N, W), ( pp_defined(N) -> pp_skip_false(Ls, Ls1) ; Ls1 = Ls ).
@@ -311,7 +381,7 @@ pp_param_names_([P|Ps], Names) :-
 %% #include: the name as written, or through the macros; resolved on the
 %% reader's path from the including file; once per #pragma once; a `.pl'
 %% is a macro file, the reader's own: the directive is passed on as a token
-pp_do_include(Rest, How, Body, Out0, Out) :-
+pp_do_include(Rest, How, Body, L, Out0, Out) :-
     pp_ws(Rest, R1),
     (   pp_inc_name(R1, Spec0) -> true
     ;   pp_lex_body(R1, Ts), pp_expand_all(Ts, Es), pp_spell_all(Es, ECs), pp_inc_name(ECs, Spec0) ),
@@ -319,11 +389,14 @@ pp_do_include(Rest, How, Body, Out0, Out) :-
     ( How == next -> Spec = next(Spec0) ; Spec = Spec0 ),
     pp_current_file(From),
     (   ccl_resolve_include(Spec, From, Path)
-    ->  (   sub_atom(Path, _, 3, 0, '.pl') -> atom_codes(Text, [35|Body]), Out0 = [tok(pp, Text, 0)|Out]
+    ->  (   sub_atom(Path, _, 3, 0, '.pl') -> atom_codes(Text, [35|Body]), Out0 = [tok(pp, Text, L)|Out]
+        ;   nb_getval('$pp_top', yes) -> atom_codes(Text, [35|Body]), Out0 = [tok(pp, Text, L)|Out],
+                                        ( ccl_header_macros_known(Path, _) -> nb_getval('$pp_hdrs', Hs), nb_setval('$pp_hdrs', [Path|Hs]), nb_getval('$pp_ninc', I0), I1 is I0 + 1, nb_setval('$pp_ninc', I1) ; true )
         ;   nb_getval('$pp_once', O), memberchk(Path, O) -> Out0 = Out
         ;   pp_include_file(Path, Out0, Out) )
+    ;   nb_getval('$pp_top', yes) -> atom_codes(Text, [35|Body]), Out0 = [tok(pp, Text, L)|Out]      % nowhere: the reader says `missing'
     ;   Out0 = Out ).
-pp_do_include(_, _, _, Out, Out).
+pp_do_include(_, _, _, _, Out, Out).
 pp_inc_name([34|R], local(N)) :- pp_upto(R, 34, Cs), atom_codes(N, Cs).
 pp_inc_name([0'<|R], system(N)) :- pp_upto(R, 0'>, Cs), atom_codes(N, Cs).
 pp_upto([End|_], End, []) :- !.
@@ -381,589 +454,597 @@ pp_angle_name([tok(p, '<', _)|Ts], N) :- pp_angle_(Ts, Cs), atom_codes(N, Cs).
 pp_angle_([tok(p, '>', _)], []) :- !.
 pp_angle_([T|Ts], Cs) :- pp_spell(T, C1), pp_angle_(Ts, C2), append(C1, C2, Cs).
 %% what is left is numbers: an unknown name is 0, true 1, a spelled number its value
+pp_plain_int([0'0]) :- !.
+pp_plain_int([C|Cs]) :- C >= 0'1, C =< 0'9, pp_digits(Cs).                         % a leading 0 is octal or hex, a suffix or a point the lexer's
+pp_digits([]).
+pp_digits([C|Cs]) :- C >= 0'0, C =< 0'9, pp_digits(Cs).
 pp_normalize([], []).
 pp_normalize([tok(kw, true, L)|Ts], [tok(int, 1, L)|Os]) :- !, pp_normalize(Ts, Os).
 pp_normalize([tok(id, _, L)|Ts], [tok(int, 0, L)|Os]) :- !, pp_normalize(Ts, Os).
 pp_normalize([tok(kw, _, L)|Ts], [tok(int, 0, L)|Os]) :- !, pp_normalize(Ts, Os).
 pp_normalize([T|Ts], [T1|Os]) :- pp_norm(T, T1), pp_normalize(Ts, Os).
-pp_predef(any, 'TARGET_IPHONE_SIMULATOR', '0').
-pp_predef(any, 'TARGET_OS_DRIVERKIT', '0').
-pp_predef(any, 'TARGET_OS_EMBEDDED', '0').
-pp_predef(any, 'TARGET_OS_FIRMWARE', '0').
-pp_predef(any, 'TARGET_OS_IOS', '0').
-pp_predef(any, 'TARGET_OS_IPHONE', '0').
-pp_predef(any, 'TARGET_OS_LINUX', '0').
-pp_predef(any, 'TARGET_OS_MAC', '1').
-pp_predef(any, 'TARGET_OS_MACCATALYST', '0').
-pp_predef(any, 'TARGET_OS_NANO', '0').
-pp_predef(any, 'TARGET_OS_OSX', '1').
-pp_predef(any, 'TARGET_OS_SIMULATOR', '0').
-pp_predef(any, 'TARGET_OS_TV', '0').
-pp_predef(any, 'TARGET_OS_UEFI', '0').
-pp_predef(any, 'TARGET_OS_UIKITFORMAC', '0').
-pp_predef(any, 'TARGET_OS_UNIX', '0').
-pp_predef(any, 'TARGET_OS_VISION', '0').
-pp_predef(any, 'TARGET_OS_WATCH', '0').
-pp_predef(any, 'TARGET_OS_WIN32', '0').
-pp_predef(any, 'TARGET_OS_WINDOWS', '0').
-pp_predef(any, '_LP64', '1').
-pp_predef(any, '__APPLE_CC__', '6000').
-pp_predef(any, '__APPLE__', '1').
-pp_predef(any, '__ATOMIC_ACQUIRE', '2').
-pp_predef(any, '__ATOMIC_ACQ_REL', '4').
-pp_predef(any, '__ATOMIC_CONSUME', '1').
-pp_predef(any, '__ATOMIC_RELAXED', '0').
-pp_predef(any, '__ATOMIC_RELEASE', '3').
-pp_predef(any, '__ATOMIC_SEQ_CST', '5').
-pp_predef(any, '__BLOCKS__', '1').
-pp_predef(any, '__BOOL_WIDTH__', '1').
-pp_predef(any, '__BYTE_ORDER__', '__ORDER_LITTLE_ENDIAN__').
-pp_predef(any, '__CHAR16_TYPE__', 'unsigned short').
-pp_predef(any, '__CHAR32_TYPE__', 'unsigned int').
-pp_predef(any, '__CHAR_BIT__', '8').
-pp_predef(any, '__CLANG_ATOMIC_BOOL_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_CHAR16_T_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_CHAR32_T_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_CHAR_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_INT_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_LLONG_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_LONG_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_POINTER_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_SHORT_LOCK_FREE', '2').
-pp_predef(any, '__CLANG_ATOMIC_WCHAR_T_LOCK_FREE', '2').
-pp_predef(any, '__CONSTANT_CFSTRINGS__', '1').
-pp_predef(any, '__DBL_DECIMAL_DIG__', '17').
-pp_predef(any, '__DBL_DENORM_MIN__', '4.9406564584124654e-324').
-pp_predef(any, '__DBL_DIG__', '15').
-pp_predef(any, '__DBL_EPSILON__', '2.2204460492503131e-16').
-pp_predef(any, '__DBL_HAS_DENORM__', '1').
-pp_predef(any, '__DBL_HAS_INFINITY__', '1').
-pp_predef(any, '__DBL_HAS_QUIET_NAN__', '1').
-pp_predef(any, '__DBL_MANT_DIG__', '53').
-pp_predef(any, '__DBL_MAX_10_EXP__', '308').
-pp_predef(any, '__DBL_MAX_EXP__', '1024').
-pp_predef(any, '__DBL_MAX__', '1.7976931348623157e+308').
-pp_predef(any, '__DBL_MIN_10_EXP__', '(-307)').
-pp_predef(any, '__DBL_MIN_EXP__', '(-1021)').
-pp_predef(any, '__DBL_MIN__', '2.2250738585072014e-308').
-pp_predef(any, '__DBL_NORM_MAX__', '1.7976931348623157e+308').
-pp_predef(any, '__DECIMAL_DIG__', '__LDBL_DECIMAL_DIG__').
-pp_predef(any, '__DYNAMIC__', '1').
-pp_predef(any, '__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__', '260000').
-pp_predef(any, '__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__', '260000').
-pp_predef(any, '__FINITE_MATH_ONLY__', '0').
-pp_predef(any, '__FLT16_DECIMAL_DIG__', '5').
-pp_predef(any, '__FLT16_DENORM_MIN__', '5.9604644775390625e-8F16').
-pp_predef(any, '__FLT16_DIG__', '3').
-pp_predef(any, '__FLT16_EPSILON__', '9.765625e-4F16').
-pp_predef(any, '__FLT16_HAS_DENORM__', '1').
-pp_predef(any, '__FLT16_HAS_INFINITY__', '1').
-pp_predef(any, '__FLT16_HAS_QUIET_NAN__', '1').
-pp_predef(any, '__FLT16_MANT_DIG__', '11').
-pp_predef(any, '__FLT16_MAX_10_EXP__', '4').
-pp_predef(any, '__FLT16_MAX_EXP__', '16').
-pp_predef(any, '__FLT16_MAX__', '6.5504e+4F16').
-pp_predef(any, '__FLT16_MIN_10_EXP__', '(-4)').
-pp_predef(any, '__FLT16_MIN_EXP__', '(-13)').
-pp_predef(any, '__FLT16_MIN__', '6.103515625e-5F16').
-pp_predef(any, '__FLT16_NORM_MAX__', '6.5504e+4F16').
-pp_predef(any, '__FLT_DECIMAL_DIG__', '9').
-pp_predef(any, '__FLT_DENORM_MIN__', '1.40129846e-45F').
-pp_predef(any, '__FLT_DIG__', '6').
-pp_predef(any, '__FLT_EPSILON__', '1.19209290e-7F').
-pp_predef(any, '__FLT_HAS_DENORM__', '1').
-pp_predef(any, '__FLT_HAS_INFINITY__', '1').
-pp_predef(any, '__FLT_HAS_QUIET_NAN__', '1').
-pp_predef(any, '__FLT_MANT_DIG__', '24').
-pp_predef(any, '__FLT_MAX_10_EXP__', '38').
-pp_predef(any, '__FLT_MAX_EXP__', '128').
-pp_predef(any, '__FLT_MAX__', '3.40282347e+38F').
-pp_predef(any, '__FLT_MIN_10_EXP__', '(-37)').
-pp_predef(any, '__FLT_MIN_EXP__', '(-125)').
-pp_predef(any, '__FLT_MIN__', '1.17549435e-38F').
-pp_predef(any, '__FLT_NORM_MAX__', '3.40282347e+38F').
-pp_predef(any, '__FLT_RADIX__', '2').
-pp_predef(any, '__FPCLASS_NEGINF', '0x0004').
-pp_predef(any, '__FPCLASS_NEGNORMAL', '0x0008').
-pp_predef(any, '__FPCLASS_NEGSUBNORMAL', '0x0010').
-pp_predef(any, '__FPCLASS_NEGZERO', '0x0020').
-pp_predef(any, '__FPCLASS_POSINF', '0x0200').
-pp_predef(any, '__FPCLASS_POSNORMAL', '0x0100').
-pp_predef(any, '__FPCLASS_POSSUBNORMAL', '0x0080').
-pp_predef(any, '__FPCLASS_POSZERO', '0x0040').
-pp_predef(any, '__FPCLASS_QNAN', '0x0002').
-pp_predef(any, '__FPCLASS_SNAN', '0x0001').
-pp_predef(any, '__GCC_ASM_FLAG_OUTPUTS__', '1').
-pp_predef(any, '__GCC_ATOMIC_BOOL_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_CHAR16_T_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_CHAR32_T_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_CHAR_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_INT_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_LLONG_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_LONG_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_POINTER_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_SHORT_LOCK_FREE', '2').
-pp_predef(any, '__GCC_ATOMIC_TEST_AND_SET_TRUEVAL', '1').
-pp_predef(any, '__GCC_ATOMIC_WCHAR_T_LOCK_FREE', '2').
-pp_predef(any, '__GCC_CONSTRUCTIVE_SIZE', '64').
-pp_predef(any, '__GCC_HAVE_DWARF2_CFI_ASM', '1').
-pp_predef(any, '__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1', '1').
-pp_predef(any, '__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16', '1').
-pp_predef(any, '__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2', '1').
-pp_predef(any, '__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4', '1').
-pp_predef(any, '__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8', '1').
-pp_predef(any, '__GNUC_MINOR__', '2').
-pp_predef(any, '__GNUC_PATCHLEVEL__', '1').
-pp_predef(any, '__GNUC_STDC_INLINE__', '1').
-pp_predef(any, '__GNUC__', '4').
-pp_predef(any, '__GXX_ABI_VERSION', '1002').
-pp_predef(any, '__INT16_C(c)', 'c').
-pp_predef(any, '__INT16_C_SUFFIX__', '').
-pp_predef(any, '__INT16_FMTd__', '"hd"').
-pp_predef(any, '__INT16_FMTi__', '"hi"').
-pp_predef(any, '__INT16_MAX__', '32767').
-pp_predef(any, '__INT16_TYPE__', 'short').
-pp_predef(any, '__INT32_C(c)', 'c').
-pp_predef(any, '__INT32_C_SUFFIX__', '').
-pp_predef(any, '__INT32_FMTd__', '"d"').
-pp_predef(any, '__INT32_FMTi__', '"i"').
-pp_predef(any, '__INT32_MAX__', '2147483647').
-pp_predef(any, '__INT32_TYPE__', 'int').
-pp_predef(any, '__INT64_C(c)', 'c##LL').
-pp_predef(any, '__INT64_C_SUFFIX__', 'LL').
-pp_predef(any, '__INT64_FMTd__', '"lld"').
-pp_predef(any, '__INT64_FMTi__', '"lli"').
-pp_predef(any, '__INT64_MAX__', '9223372036854775807LL').
-pp_predef(any, '__INT64_TYPE__', 'long long int').
-pp_predef(any, '__INT8_C(c)', 'c').
-pp_predef(any, '__INT8_C_SUFFIX__', '').
-pp_predef(any, '__INT8_FMTd__', '"hhd"').
-pp_predef(any, '__INT8_FMTi__', '"hhi"').
-pp_predef(any, '__INT8_MAX__', '127').
-pp_predef(any, '__INT8_TYPE__', 'signed char').
-pp_predef(any, '__INTMAX_C(c)', 'c##L').
-pp_predef(any, '__INTMAX_C_SUFFIX__', 'L').
-pp_predef(any, '__INTMAX_FMTd__', '"ld"').
-pp_predef(any, '__INTMAX_FMTi__', '"li"').
-pp_predef(any, '__INTMAX_MAX__', '9223372036854775807L').
-pp_predef(any, '__INTMAX_TYPE__', 'long int').
-pp_predef(any, '__INTMAX_WIDTH__', '64').
-pp_predef(any, '__INTPTR_FMTd__', '"ld"').
-pp_predef(any, '__INTPTR_FMTi__', '"li"').
-pp_predef(any, '__INTPTR_MAX__', '9223372036854775807L').
-pp_predef(any, '__INTPTR_TYPE__', 'long int').
-pp_predef(any, '__INTPTR_WIDTH__', '64').
-pp_predef(any, '__INT_FAST16_FMTd__', '"hd"').
-pp_predef(any, '__INT_FAST16_FMTi__', '"hi"').
-pp_predef(any, '__INT_FAST16_MAX__', '32767').
-pp_predef(any, '__INT_FAST16_TYPE__', 'short').
-pp_predef(any, '__INT_FAST16_WIDTH__', '16').
-pp_predef(any, '__INT_FAST32_FMTd__', '"d"').
-pp_predef(any, '__INT_FAST32_FMTi__', '"i"').
-pp_predef(any, '__INT_FAST32_MAX__', '2147483647').
-pp_predef(any, '__INT_FAST32_TYPE__', 'int').
-pp_predef(any, '__INT_FAST32_WIDTH__', '32').
-pp_predef(any, '__INT_FAST64_FMTd__', '"lld"').
-pp_predef(any, '__INT_FAST64_FMTi__', '"lli"').
-pp_predef(any, '__INT_FAST64_MAX__', '9223372036854775807LL').
-pp_predef(any, '__INT_FAST64_TYPE__', 'long long int').
-pp_predef(any, '__INT_FAST64_WIDTH__', '64').
-pp_predef(any, '__INT_FAST8_FMTd__', '"hhd"').
-pp_predef(any, '__INT_FAST8_FMTi__', '"hhi"').
-pp_predef(any, '__INT_FAST8_MAX__', '127').
-pp_predef(any, '__INT_FAST8_TYPE__', 'signed char').
-pp_predef(any, '__INT_FAST8_WIDTH__', '8').
-pp_predef(any, '__INT_LEAST16_FMTd__', '"hd"').
-pp_predef(any, '__INT_LEAST16_FMTi__', '"hi"').
-pp_predef(any, '__INT_LEAST16_MAX__', '32767').
-pp_predef(any, '__INT_LEAST16_TYPE__', 'short').
-pp_predef(any, '__INT_LEAST16_WIDTH__', '16').
-pp_predef(any, '__INT_LEAST32_FMTd__', '"d"').
-pp_predef(any, '__INT_LEAST32_FMTi__', '"i"').
-pp_predef(any, '__INT_LEAST32_MAX__', '2147483647').
-pp_predef(any, '__INT_LEAST32_TYPE__', 'int').
-pp_predef(any, '__INT_LEAST32_WIDTH__', '32').
-pp_predef(any, '__INT_LEAST64_FMTd__', '"lld"').
-pp_predef(any, '__INT_LEAST64_FMTi__', '"lli"').
-pp_predef(any, '__INT_LEAST64_MAX__', '9223372036854775807LL').
-pp_predef(any, '__INT_LEAST64_TYPE__', 'long long int').
-pp_predef(any, '__INT_LEAST64_WIDTH__', '64').
-pp_predef(any, '__INT_LEAST8_FMTd__', '"hhd"').
-pp_predef(any, '__INT_LEAST8_FMTi__', '"hhi"').
-pp_predef(any, '__INT_LEAST8_MAX__', '127').
-pp_predef(any, '__INT_LEAST8_TYPE__', 'signed char').
-pp_predef(any, '__INT_LEAST8_WIDTH__', '8').
-pp_predef(any, '__INT_MAX__', '2147483647').
-pp_predef(any, '__INT_WIDTH__', '32').
-pp_predef(any, '__LDBL_HAS_DENORM__', '1').
-pp_predef(any, '__LDBL_HAS_INFINITY__', '1').
-pp_predef(any, '__LDBL_HAS_QUIET_NAN__', '1').
-pp_predef(any, '__LITTLE_ENDIAN__', '1').
-pp_predef(any, '__LLONG_WIDTH__', '64').
-pp_predef(any, '__LONG_LONG_MAX__', '9223372036854775807LL').
-pp_predef(any, '__LONG_MAX__', '9223372036854775807L').
-pp_predef(any, '__LONG_WIDTH__', '64').
-pp_predef(any, '__LP64__', '1').
-pp_predef(any, '__MACH__', '1').
-pp_predef(any, '__MEMORY_SCOPE_CLUSTR', '5').
-pp_predef(any, '__MEMORY_SCOPE_DEVICE', '1').
-pp_predef(any, '__MEMORY_SCOPE_SINGLE', '4').
-pp_predef(any, '__MEMORY_SCOPE_SYSTEM', '0').
-pp_predef(any, '__MEMORY_SCOPE_WRKGRP', '2').
-pp_predef(any, '__MEMORY_SCOPE_WVFRNT', '3').
-pp_predef(any, '__NO_INLINE__', '1').
-pp_predef(any, '__NO_MATH_ERRNO__', '1').
-pp_predef(any, '__OPENCL_MEMORY_SCOPE_ALL_SVM_DEVICES', '3').
-pp_predef(any, '__OPENCL_MEMORY_SCOPE_DEVICE', '2').
-pp_predef(any, '__OPENCL_MEMORY_SCOPE_SUB_GROUP', '4').
-pp_predef(any, '__OPENCL_MEMORY_SCOPE_WORK_GROUP', '1').
-pp_predef(any, '__OPENCL_MEMORY_SCOPE_WORK_ITEM', '0').
-pp_predef(any, '__ORDER_BIG_ENDIAN__', '4321').
-pp_predef(any, '__ORDER_LITTLE_ENDIAN__', '1234').
-pp_predef(any, '__ORDER_PDP_ENDIAN__', '3412').
-pp_predef(any, '__PIC__', '2').
-pp_predef(any, '__POINTER_WIDTH__', '64').
-pp_predef(any, '__PRAGMA_REDEFINE_EXTNAME', '1').
-pp_predef(any, '__PTRDIFF_FMTd__', '"ld"').
-pp_predef(any, '__PTRDIFF_FMTi__', '"li"').
-pp_predef(any, '__PTRDIFF_MAX__', '9223372036854775807L').
-pp_predef(any, '__PTRDIFF_TYPE__', 'long int').
-pp_predef(any, '__PTRDIFF_WIDTH__', '64').
-pp_predef(any, '__REGISTER_PREFIX__', '').
-pp_predef(any, '__SCHAR_MAX__', '127').
-pp_predef(any, '__SHRT_MAX__', '32767').
-pp_predef(any, '__SHRT_WIDTH__', '16').
-pp_predef(any, '__SIG_ATOMIC_MAX__', '2147483647').
-pp_predef(any, '__SIG_ATOMIC_MIN__', '(-__SIG_ATOMIC_MAX__ - 1)').
-pp_predef(any, '__SIG_ATOMIC_TYPE__', 'int').
-pp_predef(any, '__SIG_ATOMIC_WIDTH__', '32').
-pp_predef(any, '__SIZEOF_DOUBLE__', '8').
-pp_predef(any, '__SIZEOF_FLOAT__', '4').
-pp_predef(any, '__SIZEOF_INT128__', '16').
-pp_predef(any, '__SIZEOF_INT__', '4').
-pp_predef(any, '__SIZEOF_LONG_LONG__', '8').
-pp_predef(any, '__SIZEOF_LONG__', '8').
-pp_predef(any, '__SIZEOF_POINTER__', '8').
-pp_predef(any, '__SIZEOF_PTRDIFF_T__', '8').
-pp_predef(any, '__SIZEOF_SHORT__', '2').
-pp_predef(any, '__SIZEOF_SIZE_T__', '8').
-pp_predef(any, '__SIZEOF_WCHAR_T__', '4').
-pp_predef(any, '__SIZEOF_WINT_T__', '4').
-pp_predef(any, '__SIZE_FMTX__', '"lX"').
-pp_predef(any, '__SIZE_FMTo__', '"lo"').
-pp_predef(any, '__SIZE_FMTu__', '"lu"').
-pp_predef(any, '__SIZE_FMTx__', '"lx"').
-pp_predef(any, '__SIZE_MAX__', '18446744073709551615UL').
-pp_predef(any, '__SIZE_TYPE__', 'long unsigned int').
-pp_predef(any, '__SIZE_WIDTH__', '64').
-pp_predef(any, '__SSP__', '1').
-pp_predef(any, '__STDC_EMBED_EMPTY__', '2').
-pp_predef(any, '__STDC_EMBED_FOUND__', '1').
-pp_predef(any, '__STDC_EMBED_NOT_FOUND__', '0').
-pp_predef(any, '__STDC_HOSTED__', '1').
-pp_predef(any, '__STDC_NO_THREADS__', '1').
-pp_predef(any, '__STDC_UTF_16__', '1').
-pp_predef(any, '__STDC_UTF_32__', '1').
-pp_predef(any, '__STDC_VERSION__', '201710L').
-pp_predef(any, '__STDC__', '1').
-pp_predef(any, '__UINT16_C(c)', 'c').
-pp_predef(any, '__UINT16_C_SUFFIX__', '').
-pp_predef(any, '__UINT16_FMTX__', '"hX"').
-pp_predef(any, '__UINT16_FMTo__', '"ho"').
-pp_predef(any, '__UINT16_FMTu__', '"hu"').
-pp_predef(any, '__UINT16_FMTx__', '"hx"').
-pp_predef(any, '__UINT16_MAX__', '65535').
-pp_predef(any, '__UINT16_TYPE__', 'unsigned short').
-pp_predef(any, '__UINT32_C(c)', 'c##U').
-pp_predef(any, '__UINT32_C_SUFFIX__', 'U').
-pp_predef(any, '__UINT32_FMTX__', '"X"').
-pp_predef(any, '__UINT32_FMTo__', '"o"').
-pp_predef(any, '__UINT32_FMTu__', '"u"').
-pp_predef(any, '__UINT32_FMTx__', '"x"').
-pp_predef(any, '__UINT32_MAX__', '4294967295U').
-pp_predef(any, '__UINT32_TYPE__', 'unsigned int').
-pp_predef(any, '__UINT64_C(c)', 'c##ULL').
-pp_predef(any, '__UINT64_C_SUFFIX__', 'ULL').
-pp_predef(any, '__UINT64_FMTX__', '"llX"').
-pp_predef(any, '__UINT64_FMTo__', '"llo"').
-pp_predef(any, '__UINT64_FMTu__', '"llu"').
-pp_predef(any, '__UINT64_FMTx__', '"llx"').
-pp_predef(any, '__UINT64_MAX__', '18446744073709551615ULL').
-pp_predef(any, '__UINT64_TYPE__', 'long long unsigned int').
-pp_predef(any, '__UINT8_C(c)', 'c').
-pp_predef(any, '__UINT8_C_SUFFIX__', '').
-pp_predef(any, '__UINT8_FMTX__', '"hhX"').
-pp_predef(any, '__UINT8_FMTo__', '"hho"').
-pp_predef(any, '__UINT8_FMTu__', '"hhu"').
-pp_predef(any, '__UINT8_FMTx__', '"hhx"').
-pp_predef(any, '__UINT8_MAX__', '255').
-pp_predef(any, '__UINT8_TYPE__', 'unsigned char').
-pp_predef(any, '__UINTMAX_C(c)', 'c##UL').
-pp_predef(any, '__UINTMAX_C_SUFFIX__', 'UL').
-pp_predef(any, '__UINTMAX_FMTX__', '"lX"').
-pp_predef(any, '__UINTMAX_FMTo__', '"lo"').
-pp_predef(any, '__UINTMAX_FMTu__', '"lu"').
-pp_predef(any, '__UINTMAX_FMTx__', '"lx"').
-pp_predef(any, '__UINTMAX_MAX__', '18446744073709551615UL').
-pp_predef(any, '__UINTMAX_TYPE__', 'long unsigned int').
-pp_predef(any, '__UINTMAX_WIDTH__', '64').
-pp_predef(any, '__UINTPTR_FMTX__', '"lX"').
-pp_predef(any, '__UINTPTR_FMTo__', '"lo"').
-pp_predef(any, '__UINTPTR_FMTu__', '"lu"').
-pp_predef(any, '__UINTPTR_FMTx__', '"lx"').
-pp_predef(any, '__UINTPTR_MAX__', '18446744073709551615UL').
-pp_predef(any, '__UINTPTR_TYPE__', 'long unsigned int').
-pp_predef(any, '__UINTPTR_WIDTH__', '64').
-pp_predef(any, '__UINT_FAST16_FMTX__', '"hX"').
-pp_predef(any, '__UINT_FAST16_FMTo__', '"ho"').
-pp_predef(any, '__UINT_FAST16_FMTu__', '"hu"').
-pp_predef(any, '__UINT_FAST16_FMTx__', '"hx"').
-pp_predef(any, '__UINT_FAST16_MAX__', '65535').
-pp_predef(any, '__UINT_FAST16_TYPE__', 'unsigned short').
-pp_predef(any, '__UINT_FAST32_FMTX__', '"X"').
-pp_predef(any, '__UINT_FAST32_FMTo__', '"o"').
-pp_predef(any, '__UINT_FAST32_FMTu__', '"u"').
-pp_predef(any, '__UINT_FAST32_FMTx__', '"x"').
-pp_predef(any, '__UINT_FAST32_MAX__', '4294967295U').
-pp_predef(any, '__UINT_FAST32_TYPE__', 'unsigned int').
-pp_predef(any, '__UINT_FAST64_FMTX__', '"llX"').
-pp_predef(any, '__UINT_FAST64_FMTo__', '"llo"').
-pp_predef(any, '__UINT_FAST64_FMTu__', '"llu"').
-pp_predef(any, '__UINT_FAST64_FMTx__', '"llx"').
-pp_predef(any, '__UINT_FAST64_MAX__', '18446744073709551615ULL').
-pp_predef(any, '__UINT_FAST64_TYPE__', 'long long unsigned int').
-pp_predef(any, '__UINT_FAST8_FMTX__', '"hhX"').
-pp_predef(any, '__UINT_FAST8_FMTo__', '"hho"').
-pp_predef(any, '__UINT_FAST8_FMTu__', '"hhu"').
-pp_predef(any, '__UINT_FAST8_FMTx__', '"hhx"').
-pp_predef(any, '__UINT_FAST8_MAX__', '255').
-pp_predef(any, '__UINT_FAST8_TYPE__', 'unsigned char').
-pp_predef(any, '__UINT_LEAST16_FMTX__', '"hX"').
-pp_predef(any, '__UINT_LEAST16_FMTo__', '"ho"').
-pp_predef(any, '__UINT_LEAST16_FMTu__', '"hu"').
-pp_predef(any, '__UINT_LEAST16_FMTx__', '"hx"').
-pp_predef(any, '__UINT_LEAST16_MAX__', '65535').
-pp_predef(any, '__UINT_LEAST16_TYPE__', 'unsigned short').
-pp_predef(any, '__UINT_LEAST32_FMTX__', '"X"').
-pp_predef(any, '__UINT_LEAST32_FMTo__', '"o"').
-pp_predef(any, '__UINT_LEAST32_FMTu__', '"u"').
-pp_predef(any, '__UINT_LEAST32_FMTx__', '"x"').
-pp_predef(any, '__UINT_LEAST32_MAX__', '4294967295U').
-pp_predef(any, '__UINT_LEAST32_TYPE__', 'unsigned int').
-pp_predef(any, '__UINT_LEAST64_FMTX__', '"llX"').
-pp_predef(any, '__UINT_LEAST64_FMTo__', '"llo"').
-pp_predef(any, '__UINT_LEAST64_FMTu__', '"llu"').
-pp_predef(any, '__UINT_LEAST64_FMTx__', '"llx"').
-pp_predef(any, '__UINT_LEAST64_MAX__', '18446744073709551615ULL').
-pp_predef(any, '__UINT_LEAST64_TYPE__', 'long long unsigned int').
-pp_predef(any, '__UINT_LEAST8_FMTX__', '"hhX"').
-pp_predef(any, '__UINT_LEAST8_FMTo__', '"hho"').
-pp_predef(any, '__UINT_LEAST8_FMTu__', '"hhu"').
-pp_predef(any, '__UINT_LEAST8_FMTx__', '"hhx"').
-pp_predef(any, '__UINT_LEAST8_MAX__', '255').
-pp_predef(any, '__UINT_LEAST8_TYPE__', 'unsigned char').
-pp_predef(any, '__USER_LABEL_PREFIX__', '_').
-pp_predef(any, '__WCHAR_MAX__', '2147483647').
-pp_predef(any, '__WCHAR_MIN__', '(-__WCHAR_MAX__ - 1)').
-pp_predef(any, '__WCHAR_TYPE__', 'int').
-pp_predef(any, '__WCHAR_WIDTH__', '32').
-pp_predef(any, '__WINT_MAX__', '2147483647').
-pp_predef(any, '__WINT_MIN__', '(-__WINT_MAX__ - 1)').
-pp_predef(any, '__WINT_TYPE__', 'int').
-pp_predef(any, '__WINT_WIDTH__', '32').
-pp_predef(any, '__block', '__attribute__((__blocks__(byref)))').
-pp_predef(any, '__clang__', '1').
-pp_predef(any, '__clang_major__', '23').
-pp_predef(any, '__clang_minor__', '1').
-pp_predef(any, '__clang_patchlevel__', '0').
-pp_predef(any, '__llvm__', '1').
-pp_predef(any, '__nonnull', '_Nonnull').
-pp_predef(any, '__null_unspecified', '_Null_unspecified').
-pp_predef(any, '__nullable', '_Nullable').
-pp_predef(any, '__pic__', '2').
-pp_predef(any, '__strong', '').
-pp_predef(any, '__unsafe_unretained', '').
-pp_predef(any, '__weak', '__attribute__((objc_gc(weak)))').
-pp_predef(x86_64, '__BIGGEST_ALIGNMENT__', '16').
-pp_predef(x86_64, '__BITINT_MAXWIDTH__', '8388608').
-pp_predef(x86_64, '__FXSR__', '1').
-pp_predef(x86_64, '__GCC_DESTRUCTIVE_SIZE', '64').
-pp_predef(x86_64, '__LAHF_SAHF__', '1').
-pp_predef(x86_64, '__LDBL_DECIMAL_DIG__', '21').
-pp_predef(x86_64, '__LDBL_DENORM_MIN__', '3.64519953188247460253e-4951L').
-pp_predef(x86_64, '__LDBL_DIG__', '18').
-pp_predef(x86_64, '__LDBL_EPSILON__', '1.08420217248550443401e-19L').
-pp_predef(x86_64, '__LDBL_MANT_DIG__', '64').
-pp_predef(x86_64, '__LDBL_MAX_10_EXP__', '4932').
-pp_predef(x86_64, '__LDBL_MAX_EXP__', '16384').
-pp_predef(x86_64, '__LDBL_MAX__', '1.18973149535723176502e+4932L').
-pp_predef(x86_64, '__LDBL_MIN_10_EXP__', '(-4931)').
-pp_predef(x86_64, '__LDBL_MIN_EXP__', '(-16381)').
-pp_predef(x86_64, '__LDBL_MIN__', '3.36210314311209350626e-4932L').
-pp_predef(x86_64, '__LDBL_NORM_MAX__', '1.18973149535723176502e+4932L').
-pp_predef(x86_64, '__MMX__', '1').
-pp_predef(x86_64, '__NO_MATH_INLINES', '1').
-pp_predef(x86_64, '__OBJC_BOOL_IS_BOOL', '0').
-pp_predef(x86_64, '__SEG_FS', '1').
-pp_predef(x86_64, '__SEG_GS', '1').
-pp_predef(x86_64, '__SIZEOF_LONG_DOUBLE__', '16').
-pp_predef(x86_64, '__SSE2_MATH__', '1').
-pp_predef(x86_64, '__SSE2__', '1').
-pp_predef(x86_64, '__SSE3__', '1').
-pp_predef(x86_64, '__SSE4_1__', '1').
-pp_predef(x86_64, '__SSE_MATH__', '1').
-pp_predef(x86_64, '__SSE__', '1').
-pp_predef(x86_64, '__SSSE3__', '1').
-pp_predef(x86_64, '__amd64', '1').
-pp_predef(x86_64, '__amd64__', '1').
-pp_predef(x86_64, '__code_model_small__', '1').
-pp_predef(x86_64, '__core2', '1').
-pp_predef(x86_64, '__core2__', '1').
-pp_predef(x86_64, '__seg_fs', '__attribute__((address_space(257)))').
-pp_predef(x86_64, '__seg_gs', '__attribute__((address_space(256)))').
-pp_predef(x86_64, '__tune_core2__', '1').
-pp_predef(x86_64, '__x86_64', '1').
-pp_predef(x86_64, '__x86_64__', '1').
-pp_predef(arm64, '__AARCH64EL__', '1').
-pp_predef(arm64, '__AARCH64_CMODEL_SMALL__', '1').
-pp_predef(arm64, '__AARCH64_SIMD__', '1').
-pp_predef(arm64, '__ARM64_ARCH_8__', '1').
-pp_predef(arm64, '__ARM_64BIT_STATE', '1').
-pp_predef(arm64, '__ARM_ACLE', '202420').
-pp_predef(arm64, '__ARM_ACLE_VERSION(year,quarter,patch)', '(100 * (year) + 10 * (quarter) + (patch))').
-pp_predef(arm64, '__ARM_ALIGN_MAX_STACK_PWR', '4').
-pp_predef(arm64, '__ARM_ARCH', '8').
-pp_predef(arm64, '__ARM_ARCH_ISA_A64', '1').
-pp_predef(arm64, '__ARM_ARCH_PROFILE', '\'A\'').
-pp_predef(arm64, '__ARM_FEATURE_AES', '1').
-pp_predef(arm64, '__ARM_FEATURE_ATOMICS', '1').
-pp_predef(arm64, '__ARM_FEATURE_CLZ', '1').
-pp_predef(arm64, '__ARM_FEATURE_COMPLEX', '1').
-pp_predef(arm64, '__ARM_FEATURE_CRC32', '1').
-pp_predef(arm64, '__ARM_FEATURE_CRYPTO', '1').
-pp_predef(arm64, '__ARM_FEATURE_DIRECTED_ROUNDING', '1').
-pp_predef(arm64, '__ARM_FEATURE_DIV', '1').
-pp_predef(arm64, '__ARM_FEATURE_DOTPROD', '1').
-pp_predef(arm64, '__ARM_FEATURE_FMA', '1').
-pp_predef(arm64, '__ARM_FEATURE_FP16_FML', '1').
-pp_predef(arm64, '__ARM_FEATURE_FP16_SCALAR_ARITHMETIC', '1').
-pp_predef(arm64, '__ARM_FEATURE_FP16_VECTOR_ARITHMETIC', '1').
-pp_predef(arm64, '__ARM_FEATURE_IDIV', '1').
-pp_predef(arm64, '__ARM_FEATURE_JCVT', '1').
-pp_predef(arm64, '__ARM_FEATURE_LDREX', '0xF').
-pp_predef(arm64, '__ARM_FEATURE_NUMERIC_MAXMIN', '1').
-pp_predef(arm64, '__ARM_FEATURE_PAUTH', '1').
-pp_predef(arm64, '__ARM_FEATURE_QRDMX', '1').
-pp_predef(arm64, '__ARM_FEATURE_RCPC', '1').
-pp_predef(arm64, '__ARM_FEATURE_SHA2', '1').
-pp_predef(arm64, '__ARM_FEATURE_SHA3', '1').
-pp_predef(arm64, '__ARM_FEATURE_SHA512', '1').
-pp_predef(arm64, '__ARM_FEATURE_UNALIGNED', '1').
-pp_predef(arm64, '__ARM_FP', '0xE').
-pp_predef(arm64, '__ARM_FP16_ARGS', '1').
-pp_predef(arm64, '__ARM_FP16_FORMAT_IEEE', '1').
-pp_predef(arm64, '__ARM_NEON', '1').
-pp_predef(arm64, '__ARM_NEON_FP', '0xE').
-pp_predef(arm64, '__ARM_NEON_SVE_BRIDGE', '1').
-pp_predef(arm64, '__ARM_NEON__', '1').
-pp_predef(arm64, '__ARM_PCS_AAPCS64', '1').
-pp_predef(arm64, '__ARM_PREFETCH_RANGE', '1').
-pp_predef(arm64, '__ARM_SIZEOF_MINIMAL_ENUM', '4').
-pp_predef(arm64, '__ARM_SIZEOF_WCHAR_T', '4').
-pp_predef(arm64, '__ARM_STATE_ZA', '1').
-pp_predef(arm64, '__ARM_STATE_ZT0', '1').
-pp_predef(arm64, '__BIGGEST_ALIGNMENT__', '8').
-pp_predef(arm64, '__BITINT_MAXWIDTH__', '128').
-pp_predef(arm64, '__FP_FAST_FMA', '1').
-pp_predef(arm64, '__FP_FAST_FMAF', '1').
-pp_predef(arm64, '__FUNCTION_MULTI_VERSIONING_SUPPORT_LEVEL', '202430').
-pp_predef(arm64, '__GCC_DESTRUCTIVE_SIZE', '128').
-pp_predef(arm64, '__HAVE_FUNCTION_MULTI_VERSIONING', '1').
-pp_predef(arm64, '__LDBL_DECIMAL_DIG__', '17').
-pp_predef(arm64, '__LDBL_DENORM_MIN__', '4.9406564584124654e-324L').
-pp_predef(arm64, '__LDBL_DIG__', '15').
-pp_predef(arm64, '__LDBL_EPSILON__', '2.2204460492503131e-16L').
-pp_predef(arm64, '__LDBL_MANT_DIG__', '53').
-pp_predef(arm64, '__LDBL_MAX_10_EXP__', '308').
-pp_predef(arm64, '__LDBL_MAX_EXP__', '1024').
-pp_predef(arm64, '__LDBL_MAX__', '1.7976931348623157e+308L').
-pp_predef(arm64, '__LDBL_MIN_10_EXP__', '(-307)').
-pp_predef(arm64, '__LDBL_MIN_EXP__', '(-1021)').
-pp_predef(arm64, '__LDBL_MIN__', '2.2250738585072014e-308L').
-pp_predef(arm64, '__LDBL_NORM_MAX__', '1.7976931348623157e+308L').
-pp_predef(arm64, '__OBJC_BOOL_IS_BOOL', '1').
-pp_predef(arm64, '__SIZEOF_LONG_DOUBLE__', '8').
-pp_predef(arm64, '__aarch64__', '1').
-pp_predef(arm64, '__arm64', '1').
-pp_predef(arm64, '__arm64__', '1').
-pp_predef(cpp, '__DEPRECATED', '1').
-pp_predef(cpp, '__EXCEPTIONS', '1').
-pp_predef(cpp, '__GLIBCXX_BITSIZE_INT_N_0', '128').
-pp_predef(cpp, '__GLIBCXX_TYPE_INT_N_0', '__int128').
-pp_predef(cpp, '__GNUC_GNU_INLINE__', '1').
-pp_predef(cpp, '__GNUG__', '4').
-pp_predef(cpp, '__GXX_EXPERIMENTAL_CXX0X__', '1').
-pp_predef(cpp, '__GXX_RTTI', '1').
-pp_predef(cpp, '__GXX_WEAK__', '1').
-pp_predef(cpp, '__STDCPP_DEFAULT_NEW_ALIGNMENT__', '16UL').
-pp_predef(cpp, '__STDCPP_THREADS__', '1').
-pp_predef(cpp, '__cplusplus', '201703L').
-pp_predef(cpp, '__cpp_aggregate_bases', '201603L').
-pp_predef(cpp, '__cpp_aggregate_nsdmi', '201304L').
-pp_predef(cpp, '__cpp_alias_templates', '200704L').
-pp_predef(cpp, '__cpp_aligned_new', '201606L').
-pp_predef(cpp, '__cpp_attributes', '200809L').
-pp_predef(cpp, '__cpp_binary_literals', '201304L').
-pp_predef(cpp, '__cpp_capture_star_this', '201603L').
-pp_predef(cpp, '__cpp_constexpr', '201603L').
-pp_predef(cpp, '__cpp_constexpr_in_decltype', '201711L').
-pp_predef(cpp, '__cpp_decltype', '200707L').
-pp_predef(cpp, '__cpp_decltype_auto', '201304L').
-pp_predef(cpp, '__cpp_deduction_guides', '201703L').
-pp_predef(cpp, '__cpp_delegating_constructors', '200604L').
-pp_predef(cpp, '__cpp_deleted_function', '202403L').
-pp_predef(cpp, '__cpp_digit_separators', '201309L').
-pp_predef(cpp, '__cpp_enumerator_attributes', '201411L').
-pp_predef(cpp, '__cpp_exceptions', '199711L').
-pp_predef(cpp, '__cpp_fold_expressions', '201603L').
-pp_predef(cpp, '__cpp_generic_lambdas', '201304L').
-pp_predef(cpp, '__cpp_guaranteed_copy_elision', '201606L').
-pp_predef(cpp, '__cpp_hex_float', '201603L').
-pp_predef(cpp, '__cpp_if_constexpr', '201606L').
-pp_predef(cpp, '__cpp_impl_destroying_delete', '201806L').
-pp_predef(cpp, '__cpp_inheriting_constructors', '201511L').
-pp_predef(cpp, '__cpp_init_captures', '201304L').
-pp_predef(cpp, '__cpp_initializer_lists', '200806L').
-pp_predef(cpp, '__cpp_inline_variables', '201606L').
-pp_predef(cpp, '__cpp_lambdas', '200907L').
-pp_predef(cpp, '__cpp_named_character_escapes', '202606L').
-pp_predef(cpp, '__cpp_namespace_attributes', '201411L').
-pp_predef(cpp, '__cpp_nested_namespace_definitions', '201411L').
-pp_predef(cpp, '__cpp_noexcept_function_type', '201510L').
-pp_predef(cpp, '__cpp_nontype_template_args', '201411L').
-pp_predef(cpp, '__cpp_nontype_template_parameter_auto', '201606L').
-pp_predef(cpp, '__cpp_nsdmi', '200809L').
-pp_predef(cpp, '__cpp_pack_indexing', '202311L').
-pp_predef(cpp, '__cpp_placeholder_variables', '202306L').
-pp_predef(cpp, '__cpp_range_based_for', '201603L').
-pp_predef(cpp, '__cpp_raw_strings', '200710L').
-pp_predef(cpp, '__cpp_ref_qualifiers', '200710L').
-pp_predef(cpp, '__cpp_return_type_deduction', '201304L').
-pp_predef(cpp, '__cpp_rtti', '199711L').
-pp_predef(cpp, '__cpp_rvalue_references', '200610L').
-pp_predef(cpp, '__cpp_sized_deallocation', '201309L').
-pp_predef(cpp, '__cpp_static_assert', '202306L').
-pp_predef(cpp, '__cpp_static_call_operator', '202207L').
-pp_predef(cpp, '__cpp_structured_bindings', '202411L').
-pp_predef(cpp, '__cpp_template_auto', '201606L').
-pp_predef(cpp, '__cpp_template_template_args', '201611L').
-pp_predef(cpp, '__cpp_threadsafe_static_init', '200806L').
-pp_predef(cpp, '__cpp_trivial_relocatability', '202502L').
-pp_predef(cpp, '__cpp_unicode_characters', '200704L').
-pp_predef(cpp, '__cpp_unicode_literals', '200710L').
-pp_predef(cpp, '__cpp_user_defined_literals', '200809L').
-pp_predef(cpp, '__cpp_variable_templates', '201304L').
-pp_predef(cpp, '__cpp_variadic_friend', '202403L').
-pp_predef(cpp, '__cpp_variadic_templates', '200704L').
-pp_predef(cpp, '__cpp_variadic_using', '201611L').
-pp_predef(cpp, '__private_extern__', 'extern').
+pp_predef('TARGET_IPHONE_SIMULATOR', any, '0').
+pp_predef('TARGET_OS_DRIVERKIT', any, '0').
+pp_predef('TARGET_OS_EMBEDDED', any, '0').
+pp_predef('TARGET_OS_FIRMWARE', any, '0').
+pp_predef('TARGET_OS_IOS', any, '0').
+pp_predef('TARGET_OS_IPHONE', any, '0').
+pp_predef('TARGET_OS_LINUX', any, '0').
+pp_predef('TARGET_OS_MAC', any, '1').
+pp_predef('TARGET_OS_MACCATALYST', any, '0').
+pp_predef('TARGET_OS_NANO', any, '0').
+pp_predef('TARGET_OS_OSX', any, '1').
+pp_predef('TARGET_OS_SIMULATOR', any, '0').
+pp_predef('TARGET_OS_TV', any, '0').
+pp_predef('TARGET_OS_UEFI', any, '0').
+pp_predef('TARGET_OS_UIKITFORMAC', any, '0').
+pp_predef('TARGET_OS_UNIX', any, '0').
+pp_predef('TARGET_OS_VISION', any, '0').
+pp_predef('TARGET_OS_WATCH', any, '0').
+pp_predef('TARGET_OS_WIN32', any, '0').
+pp_predef('TARGET_OS_WINDOWS', any, '0').
+pp_predef('_LP64', any, '1').
+pp_predef('__APPLE_CC__', any, '6000').
+pp_predef('__APPLE__', any, '1').
+pp_predef('__ATOMIC_ACQUIRE', any, '2').
+pp_predef('__ATOMIC_ACQ_REL', any, '4').
+pp_predef('__ATOMIC_CONSUME', any, '1').
+pp_predef('__ATOMIC_RELAXED', any, '0').
+pp_predef('__ATOMIC_RELEASE', any, '3').
+pp_predef('__ATOMIC_SEQ_CST', any, '5').
+pp_predef('__BLOCKS__', any, '1').
+pp_predef('__BOOL_WIDTH__', any, '1').
+pp_predef('__BYTE_ORDER__', any, '__ORDER_LITTLE_ENDIAN__').
+pp_predef('__CHAR16_TYPE__', any, 'unsigned short').
+pp_predef('__CHAR32_TYPE__', any, 'unsigned int').
+pp_predef('__CHAR_BIT__', any, '8').
+pp_predef('__CLANG_ATOMIC_BOOL_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_CHAR16_T_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_CHAR32_T_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_CHAR_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_INT_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_LLONG_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_LONG_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_POINTER_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_SHORT_LOCK_FREE', any, '2').
+pp_predef('__CLANG_ATOMIC_WCHAR_T_LOCK_FREE', any, '2').
+pp_predef('__CONSTANT_CFSTRINGS__', any, '1').
+pp_predef('__DBL_DECIMAL_DIG__', any, '17').
+pp_predef('__DBL_DENORM_MIN__', any, '4.9406564584124654e-324').
+pp_predef('__DBL_DIG__', any, '15').
+pp_predef('__DBL_EPSILON__', any, '2.2204460492503131e-16').
+pp_predef('__DBL_HAS_DENORM__', any, '1').
+pp_predef('__DBL_HAS_INFINITY__', any, '1').
+pp_predef('__DBL_HAS_QUIET_NAN__', any, '1').
+pp_predef('__DBL_MANT_DIG__', any, '53').
+pp_predef('__DBL_MAX_10_EXP__', any, '308').
+pp_predef('__DBL_MAX_EXP__', any, '1024').
+pp_predef('__DBL_MAX__', any, '1.7976931348623157e+308').
+pp_predef('__DBL_MIN_10_EXP__', any, '(-307)').
+pp_predef('__DBL_MIN_EXP__', any, '(-1021)').
+pp_predef('__DBL_MIN__', any, '2.2250738585072014e-308').
+pp_predef('__DBL_NORM_MAX__', any, '1.7976931348623157e+308').
+pp_predef('__DECIMAL_DIG__', any, '__LDBL_DECIMAL_DIG__').
+pp_predef('__DYNAMIC__', any, '1').
+pp_predef('__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__', any, '260000').
+pp_predef('__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__', any, '260000').
+pp_predef('__FINITE_MATH_ONLY__', any, '0').
+pp_predef('__FLT16_DECIMAL_DIG__', any, '5').
+pp_predef('__FLT16_DENORM_MIN__', any, '5.9604644775390625e-8F16').
+pp_predef('__FLT16_DIG__', any, '3').
+pp_predef('__FLT16_EPSILON__', any, '9.765625e-4F16').
+pp_predef('__FLT16_HAS_DENORM__', any, '1').
+pp_predef('__FLT16_HAS_INFINITY__', any, '1').
+pp_predef('__FLT16_HAS_QUIET_NAN__', any, '1').
+pp_predef('__FLT16_MANT_DIG__', any, '11').
+pp_predef('__FLT16_MAX_10_EXP__', any, '4').
+pp_predef('__FLT16_MAX_EXP__', any, '16').
+pp_predef('__FLT16_MAX__', any, '6.5504e+4F16').
+pp_predef('__FLT16_MIN_10_EXP__', any, '(-4)').
+pp_predef('__FLT16_MIN_EXP__', any, '(-13)').
+pp_predef('__FLT16_MIN__', any, '6.103515625e-5F16').
+pp_predef('__FLT16_NORM_MAX__', any, '6.5504e+4F16').
+pp_predef('__FLT_DECIMAL_DIG__', any, '9').
+pp_predef('__FLT_DENORM_MIN__', any, '1.40129846e-45F').
+pp_predef('__FLT_DIG__', any, '6').
+pp_predef('__FLT_EPSILON__', any, '1.19209290e-7F').
+pp_predef('__FLT_HAS_DENORM__', any, '1').
+pp_predef('__FLT_HAS_INFINITY__', any, '1').
+pp_predef('__FLT_HAS_QUIET_NAN__', any, '1').
+pp_predef('__FLT_MANT_DIG__', any, '24').
+pp_predef('__FLT_MAX_10_EXP__', any, '38').
+pp_predef('__FLT_MAX_EXP__', any, '128').
+pp_predef('__FLT_MAX__', any, '3.40282347e+38F').
+pp_predef('__FLT_MIN_10_EXP__', any, '(-37)').
+pp_predef('__FLT_MIN_EXP__', any, '(-125)').
+pp_predef('__FLT_MIN__', any, '1.17549435e-38F').
+pp_predef('__FLT_NORM_MAX__', any, '3.40282347e+38F').
+pp_predef('__FLT_RADIX__', any, '2').
+pp_predef('__FPCLASS_NEGINF', any, '0x0004').
+pp_predef('__FPCLASS_NEGNORMAL', any, '0x0008').
+pp_predef('__FPCLASS_NEGSUBNORMAL', any, '0x0010').
+pp_predef('__FPCLASS_NEGZERO', any, '0x0020').
+pp_predef('__FPCLASS_POSINF', any, '0x0200').
+pp_predef('__FPCLASS_POSNORMAL', any, '0x0100').
+pp_predef('__FPCLASS_POSSUBNORMAL', any, '0x0080').
+pp_predef('__FPCLASS_POSZERO', any, '0x0040').
+pp_predef('__FPCLASS_QNAN', any, '0x0002').
+pp_predef('__FPCLASS_SNAN', any, '0x0001').
+pp_predef('__GCC_ASM_FLAG_OUTPUTS__', any, '1').
+pp_predef('__GCC_ATOMIC_BOOL_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_CHAR16_T_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_CHAR32_T_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_CHAR_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_INT_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_LLONG_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_LONG_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_POINTER_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_SHORT_LOCK_FREE', any, '2').
+pp_predef('__GCC_ATOMIC_TEST_AND_SET_TRUEVAL', any, '1').
+pp_predef('__GCC_ATOMIC_WCHAR_T_LOCK_FREE', any, '2').
+pp_predef('__GCC_CONSTRUCTIVE_SIZE', any, '64').
+pp_predef('__GCC_HAVE_DWARF2_CFI_ASM', any, '1').
+pp_predef('__GCC_HAVE_SYNC_COMPARE_AND_SWAP_1', any, '1').
+pp_predef('__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16', any, '1').
+pp_predef('__GCC_HAVE_SYNC_COMPARE_AND_SWAP_2', any, '1').
+pp_predef('__GCC_HAVE_SYNC_COMPARE_AND_SWAP_4', any, '1').
+pp_predef('__GCC_HAVE_SYNC_COMPARE_AND_SWAP_8', any, '1').
+pp_predef('__GNUC_MINOR__', any, '2').
+pp_predef('__GNUC_PATCHLEVEL__', any, '1').
+pp_predef('__GNUC_STDC_INLINE__', any, '1').
+pp_predef('__GNUC__', any, '4').
+pp_predef('__GXX_ABI_VERSION', any, '1002').
+pp_predef('__INT16_C(c)', any, 'c').
+pp_predef('__INT16_C_SUFFIX__', any, '').
+pp_predef('__INT16_FMTd__', any, '"hd"').
+pp_predef('__INT16_FMTi__', any, '"hi"').
+pp_predef('__INT16_MAX__', any, '32767').
+pp_predef('__INT16_TYPE__', any, 'short').
+pp_predef('__INT32_C(c)', any, 'c').
+pp_predef('__INT32_C_SUFFIX__', any, '').
+pp_predef('__INT32_FMTd__', any, '"d"').
+pp_predef('__INT32_FMTi__', any, '"i"').
+pp_predef('__INT32_MAX__', any, '2147483647').
+pp_predef('__INT32_TYPE__', any, 'int').
+pp_predef('__INT64_C(c)', any, 'c##LL').
+pp_predef('__INT64_C_SUFFIX__', any, 'LL').
+pp_predef('__INT64_FMTd__', any, '"lld"').
+pp_predef('__INT64_FMTi__', any, '"lli"').
+pp_predef('__INT64_MAX__', any, '9223372036854775807LL').
+pp_predef('__INT64_TYPE__', any, 'long long int').
+pp_predef('__INT8_C(c)', any, 'c').
+pp_predef('__INT8_C_SUFFIX__', any, '').
+pp_predef('__INT8_FMTd__', any, '"hhd"').
+pp_predef('__INT8_FMTi__', any, '"hhi"').
+pp_predef('__INT8_MAX__', any, '127').
+pp_predef('__INT8_TYPE__', any, 'signed char').
+pp_predef('__INTMAX_C(c)', any, 'c##L').
+pp_predef('__INTMAX_C_SUFFIX__', any, 'L').
+pp_predef('__INTMAX_FMTd__', any, '"ld"').
+pp_predef('__INTMAX_FMTi__', any, '"li"').
+pp_predef('__INTMAX_MAX__', any, '9223372036854775807L').
+pp_predef('__INTMAX_TYPE__', any, 'long int').
+pp_predef('__INTMAX_WIDTH__', any, '64').
+pp_predef('__INTPTR_FMTd__', any, '"ld"').
+pp_predef('__INTPTR_FMTi__', any, '"li"').
+pp_predef('__INTPTR_MAX__', any, '9223372036854775807L').
+pp_predef('__INTPTR_TYPE__', any, 'long int').
+pp_predef('__INTPTR_WIDTH__', any, '64').
+pp_predef('__INT_FAST16_FMTd__', any, '"hd"').
+pp_predef('__INT_FAST16_FMTi__', any, '"hi"').
+pp_predef('__INT_FAST16_MAX__', any, '32767').
+pp_predef('__INT_FAST16_TYPE__', any, 'short').
+pp_predef('__INT_FAST16_WIDTH__', any, '16').
+pp_predef('__INT_FAST32_FMTd__', any, '"d"').
+pp_predef('__INT_FAST32_FMTi__', any, '"i"').
+pp_predef('__INT_FAST32_MAX__', any, '2147483647').
+pp_predef('__INT_FAST32_TYPE__', any, 'int').
+pp_predef('__INT_FAST32_WIDTH__', any, '32').
+pp_predef('__INT_FAST64_FMTd__', any, '"lld"').
+pp_predef('__INT_FAST64_FMTi__', any, '"lli"').
+pp_predef('__INT_FAST64_MAX__', any, '9223372036854775807LL').
+pp_predef('__INT_FAST64_TYPE__', any, 'long long int').
+pp_predef('__INT_FAST64_WIDTH__', any, '64').
+pp_predef('__INT_FAST8_FMTd__', any, '"hhd"').
+pp_predef('__INT_FAST8_FMTi__', any, '"hhi"').
+pp_predef('__INT_FAST8_MAX__', any, '127').
+pp_predef('__INT_FAST8_TYPE__', any, 'signed char').
+pp_predef('__INT_FAST8_WIDTH__', any, '8').
+pp_predef('__INT_LEAST16_FMTd__', any, '"hd"').
+pp_predef('__INT_LEAST16_FMTi__', any, '"hi"').
+pp_predef('__INT_LEAST16_MAX__', any, '32767').
+pp_predef('__INT_LEAST16_TYPE__', any, 'short').
+pp_predef('__INT_LEAST16_WIDTH__', any, '16').
+pp_predef('__INT_LEAST32_FMTd__', any, '"d"').
+pp_predef('__INT_LEAST32_FMTi__', any, '"i"').
+pp_predef('__INT_LEAST32_MAX__', any, '2147483647').
+pp_predef('__INT_LEAST32_TYPE__', any, 'int').
+pp_predef('__INT_LEAST32_WIDTH__', any, '32').
+pp_predef('__INT_LEAST64_FMTd__', any, '"lld"').
+pp_predef('__INT_LEAST64_FMTi__', any, '"lli"').
+pp_predef('__INT_LEAST64_MAX__', any, '9223372036854775807LL').
+pp_predef('__INT_LEAST64_TYPE__', any, 'long long int').
+pp_predef('__INT_LEAST64_WIDTH__', any, '64').
+pp_predef('__INT_LEAST8_FMTd__', any, '"hhd"').
+pp_predef('__INT_LEAST8_FMTi__', any, '"hhi"').
+pp_predef('__INT_LEAST8_MAX__', any, '127').
+pp_predef('__INT_LEAST8_TYPE__', any, 'signed char').
+pp_predef('__INT_LEAST8_WIDTH__', any, '8').
+pp_predef('__INT_MAX__', any, '2147483647').
+pp_predef('__INT_WIDTH__', any, '32').
+pp_predef('__LDBL_HAS_DENORM__', any, '1').
+pp_predef('__LDBL_HAS_INFINITY__', any, '1').
+pp_predef('__LDBL_HAS_QUIET_NAN__', any, '1').
+pp_predef('__LITTLE_ENDIAN__', any, '1').
+pp_predef('__LLONG_WIDTH__', any, '64').
+pp_predef('__LONG_LONG_MAX__', any, '9223372036854775807LL').
+pp_predef('__LONG_MAX__', any, '9223372036854775807L').
+pp_predef('__LONG_WIDTH__', any, '64').
+pp_predef('__LP64__', any, '1').
+pp_predef('__MACH__', any, '1').
+pp_predef('__MEMORY_SCOPE_CLUSTR', any, '5').
+pp_predef('__MEMORY_SCOPE_DEVICE', any, '1').
+pp_predef('__MEMORY_SCOPE_SINGLE', any, '4').
+pp_predef('__MEMORY_SCOPE_SYSTEM', any, '0').
+pp_predef('__MEMORY_SCOPE_WRKGRP', any, '2').
+pp_predef('__MEMORY_SCOPE_WVFRNT', any, '3').
+pp_predef('__NO_INLINE__', any, '1').
+pp_predef('__NO_MATH_ERRNO__', any, '1').
+pp_predef('__OPENCL_MEMORY_SCOPE_ALL_SVM_DEVICES', any, '3').
+pp_predef('__OPENCL_MEMORY_SCOPE_DEVICE', any, '2').
+pp_predef('__OPENCL_MEMORY_SCOPE_SUB_GROUP', any, '4').
+pp_predef('__OPENCL_MEMORY_SCOPE_WORK_GROUP', any, '1').
+pp_predef('__OPENCL_MEMORY_SCOPE_WORK_ITEM', any, '0').
+pp_predef('__ORDER_BIG_ENDIAN__', any, '4321').
+pp_predef('__ORDER_LITTLE_ENDIAN__', any, '1234').
+pp_predef('__ORDER_PDP_ENDIAN__', any, '3412').
+pp_predef('__PIC__', any, '2').
+pp_predef('__POINTER_WIDTH__', any, '64').
+pp_predef('__PRAGMA_REDEFINE_EXTNAME', any, '1').
+pp_predef('__PTRDIFF_FMTd__', any, '"ld"').
+pp_predef('__PTRDIFF_FMTi__', any, '"li"').
+pp_predef('__PTRDIFF_MAX__', any, '9223372036854775807L').
+pp_predef('__PTRDIFF_TYPE__', any, 'long int').
+pp_predef('__PTRDIFF_WIDTH__', any, '64').
+pp_predef('__REGISTER_PREFIX__', any, '').
+pp_predef('__SCHAR_MAX__', any, '127').
+pp_predef('__SHRT_MAX__', any, '32767').
+pp_predef('__SHRT_WIDTH__', any, '16').
+pp_predef('__SIG_ATOMIC_MAX__', any, '2147483647').
+pp_predef('__SIG_ATOMIC_MIN__', any, '(-__SIG_ATOMIC_MAX__ - 1)').
+pp_predef('__SIG_ATOMIC_TYPE__', any, 'int').
+pp_predef('__SIG_ATOMIC_WIDTH__', any, '32').
+pp_predef('__SIZEOF_DOUBLE__', any, '8').
+pp_predef('__SIZEOF_FLOAT__', any, '4').
+pp_predef('__SIZEOF_INT128__', any, '16').
+pp_predef('__SIZEOF_INT__', any, '4').
+pp_predef('__SIZEOF_LONG_LONG__', any, '8').
+pp_predef('__SIZEOF_LONG__', any, '8').
+pp_predef('__SIZEOF_POINTER__', any, '8').
+pp_predef('__SIZEOF_PTRDIFF_T__', any, '8').
+pp_predef('__SIZEOF_SHORT__', any, '2').
+pp_predef('__SIZEOF_SIZE_T__', any, '8').
+pp_predef('__SIZEOF_WCHAR_T__', any, '4').
+pp_predef('__SIZEOF_WINT_T__', any, '4').
+pp_predef('__SIZE_FMTX__', any, '"lX"').
+pp_predef('__SIZE_FMTo__', any, '"lo"').
+pp_predef('__SIZE_FMTu__', any, '"lu"').
+pp_predef('__SIZE_FMTx__', any, '"lx"').
+pp_predef('__SIZE_MAX__', any, '18446744073709551615UL').
+pp_predef('__SIZE_TYPE__', any, 'long unsigned int').
+pp_predef('__SIZE_WIDTH__', any, '64').
+pp_predef('__SSP__', any, '1').
+pp_predef('__STDC_EMBED_EMPTY__', any, '2').
+pp_predef('__STDC_EMBED_FOUND__', any, '1').
+pp_predef('__STDC_EMBED_NOT_FOUND__', any, '0').
+pp_predef('__STDC_HOSTED__', any, '1').
+pp_predef('__STDC_NO_THREADS__', any, '1').
+pp_predef('__STDC_UTF_16__', any, '1').
+pp_predef('__STDC_UTF_32__', any, '1').
+pp_predef('__STDC_VERSION__', any, '201710L').
+pp_predef('__STDC__', any, '1').
+pp_predef('__UINT16_C(c)', any, 'c').
+pp_predef('__UINT16_C_SUFFIX__', any, '').
+pp_predef('__UINT16_FMTX__', any, '"hX"').
+pp_predef('__UINT16_FMTo__', any, '"ho"').
+pp_predef('__UINT16_FMTu__', any, '"hu"').
+pp_predef('__UINT16_FMTx__', any, '"hx"').
+pp_predef('__UINT16_MAX__', any, '65535').
+pp_predef('__UINT16_TYPE__', any, 'unsigned short').
+pp_predef('__UINT32_C(c)', any, 'c##U').
+pp_predef('__UINT32_C_SUFFIX__', any, 'U').
+pp_predef('__UINT32_FMTX__', any, '"X"').
+pp_predef('__UINT32_FMTo__', any, '"o"').
+pp_predef('__UINT32_FMTu__', any, '"u"').
+pp_predef('__UINT32_FMTx__', any, '"x"').
+pp_predef('__UINT32_MAX__', any, '4294967295U').
+pp_predef('__UINT32_TYPE__', any, 'unsigned int').
+pp_predef('__UINT64_C(c)', any, 'c##ULL').
+pp_predef('__UINT64_C_SUFFIX__', any, 'ULL').
+pp_predef('__UINT64_FMTX__', any, '"llX"').
+pp_predef('__UINT64_FMTo__', any, '"llo"').
+pp_predef('__UINT64_FMTu__', any, '"llu"').
+pp_predef('__UINT64_FMTx__', any, '"llx"').
+pp_predef('__UINT64_MAX__', any, '18446744073709551615ULL').
+pp_predef('__UINT64_TYPE__', any, 'long long unsigned int').
+pp_predef('__UINT8_C(c)', any, 'c').
+pp_predef('__UINT8_C_SUFFIX__', any, '').
+pp_predef('__UINT8_FMTX__', any, '"hhX"').
+pp_predef('__UINT8_FMTo__', any, '"hho"').
+pp_predef('__UINT8_FMTu__', any, '"hhu"').
+pp_predef('__UINT8_FMTx__', any, '"hhx"').
+pp_predef('__UINT8_MAX__', any, '255').
+pp_predef('__UINT8_TYPE__', any, 'unsigned char').
+pp_predef('__UINTMAX_C(c)', any, 'c##UL').
+pp_predef('__UINTMAX_C_SUFFIX__', any, 'UL').
+pp_predef('__UINTMAX_FMTX__', any, '"lX"').
+pp_predef('__UINTMAX_FMTo__', any, '"lo"').
+pp_predef('__UINTMAX_FMTu__', any, '"lu"').
+pp_predef('__UINTMAX_FMTx__', any, '"lx"').
+pp_predef('__UINTMAX_MAX__', any, '18446744073709551615UL').
+pp_predef('__UINTMAX_TYPE__', any, 'long unsigned int').
+pp_predef('__UINTMAX_WIDTH__', any, '64').
+pp_predef('__UINTPTR_FMTX__', any, '"lX"').
+pp_predef('__UINTPTR_FMTo__', any, '"lo"').
+pp_predef('__UINTPTR_FMTu__', any, '"lu"').
+pp_predef('__UINTPTR_FMTx__', any, '"lx"').
+pp_predef('__UINTPTR_MAX__', any, '18446744073709551615UL').
+pp_predef('__UINTPTR_TYPE__', any, 'long unsigned int').
+pp_predef('__UINTPTR_WIDTH__', any, '64').
+pp_predef('__UINT_FAST16_FMTX__', any, '"hX"').
+pp_predef('__UINT_FAST16_FMTo__', any, '"ho"').
+pp_predef('__UINT_FAST16_FMTu__', any, '"hu"').
+pp_predef('__UINT_FAST16_FMTx__', any, '"hx"').
+pp_predef('__UINT_FAST16_MAX__', any, '65535').
+pp_predef('__UINT_FAST16_TYPE__', any, 'unsigned short').
+pp_predef('__UINT_FAST32_FMTX__', any, '"X"').
+pp_predef('__UINT_FAST32_FMTo__', any, '"o"').
+pp_predef('__UINT_FAST32_FMTu__', any, '"u"').
+pp_predef('__UINT_FAST32_FMTx__', any, '"x"').
+pp_predef('__UINT_FAST32_MAX__', any, '4294967295U').
+pp_predef('__UINT_FAST32_TYPE__', any, 'unsigned int').
+pp_predef('__UINT_FAST64_FMTX__', any, '"llX"').
+pp_predef('__UINT_FAST64_FMTo__', any, '"llo"').
+pp_predef('__UINT_FAST64_FMTu__', any, '"llu"').
+pp_predef('__UINT_FAST64_FMTx__', any, '"llx"').
+pp_predef('__UINT_FAST64_MAX__', any, '18446744073709551615ULL').
+pp_predef('__UINT_FAST64_TYPE__', any, 'long long unsigned int').
+pp_predef('__UINT_FAST8_FMTX__', any, '"hhX"').
+pp_predef('__UINT_FAST8_FMTo__', any, '"hho"').
+pp_predef('__UINT_FAST8_FMTu__', any, '"hhu"').
+pp_predef('__UINT_FAST8_FMTx__', any, '"hhx"').
+pp_predef('__UINT_FAST8_MAX__', any, '255').
+pp_predef('__UINT_FAST8_TYPE__', any, 'unsigned char').
+pp_predef('__UINT_LEAST16_FMTX__', any, '"hX"').
+pp_predef('__UINT_LEAST16_FMTo__', any, '"ho"').
+pp_predef('__UINT_LEAST16_FMTu__', any, '"hu"').
+pp_predef('__UINT_LEAST16_FMTx__', any, '"hx"').
+pp_predef('__UINT_LEAST16_MAX__', any, '65535').
+pp_predef('__UINT_LEAST16_TYPE__', any, 'unsigned short').
+pp_predef('__UINT_LEAST32_FMTX__', any, '"X"').
+pp_predef('__UINT_LEAST32_FMTo__', any, '"o"').
+pp_predef('__UINT_LEAST32_FMTu__', any, '"u"').
+pp_predef('__UINT_LEAST32_FMTx__', any, '"x"').
+pp_predef('__UINT_LEAST32_MAX__', any, '4294967295U').
+pp_predef('__UINT_LEAST32_TYPE__', any, 'unsigned int').
+pp_predef('__UINT_LEAST64_FMTX__', any, '"llX"').
+pp_predef('__UINT_LEAST64_FMTo__', any, '"llo"').
+pp_predef('__UINT_LEAST64_FMTu__', any, '"llu"').
+pp_predef('__UINT_LEAST64_FMTx__', any, '"llx"').
+pp_predef('__UINT_LEAST64_MAX__', any, '18446744073709551615ULL').
+pp_predef('__UINT_LEAST64_TYPE__', any, 'long long unsigned int').
+pp_predef('__UINT_LEAST8_FMTX__', any, '"hhX"').
+pp_predef('__UINT_LEAST8_FMTo__', any, '"hho"').
+pp_predef('__UINT_LEAST8_FMTu__', any, '"hhu"').
+pp_predef('__UINT_LEAST8_FMTx__', any, '"hhx"').
+pp_predef('__UINT_LEAST8_MAX__', any, '255').
+pp_predef('__UINT_LEAST8_TYPE__', any, 'unsigned char').
+pp_predef('__USER_LABEL_PREFIX__', any, '_').
+pp_predef('__WCHAR_MAX__', any, '2147483647').
+pp_predef('__WCHAR_MIN__', any, '(-__WCHAR_MAX__ - 1)').
+pp_predef('__WCHAR_TYPE__', any, 'int').
+pp_predef('__WCHAR_WIDTH__', any, '32').
+pp_predef('__WINT_MAX__', any, '2147483647').
+pp_predef('__WINT_MIN__', any, '(-__WINT_MAX__ - 1)').
+pp_predef('__WINT_TYPE__', any, 'int').
+pp_predef('__WINT_WIDTH__', any, '32').
+pp_predef('__block', any, '__attribute__((__blocks__(byref)))').
+%% the plainest path through the SDK's string and stdio headers: no fortified
+%% forms (strcpy stays the function, not __builtin___strcpy_chk), as with the
+%% features and attributes answered 0
+pp_predef('_FORTIFY_SOURCE', any, '0').
+pp_predef('__clang__', any, '1').
+pp_predef('__clang_major__', any, '23').
+pp_predef('__clang_minor__', any, '1').
+pp_predef('__clang_patchlevel__', any, '0').
+pp_predef('__llvm__', any, '1').
+pp_predef('__nonnull', any, '_Nonnull').
+pp_predef('__null_unspecified', any, '_Null_unspecified').
+pp_predef('__nullable', any, '_Nullable').
+pp_predef('__pic__', any, '2').
+pp_predef('__strong', any, '').
+pp_predef('__unsafe_unretained', any, '').
+pp_predef('__weak', any, '__attribute__((objc_gc(weak)))').
+pp_predef('__BIGGEST_ALIGNMENT__', x86_64, '16').
+pp_predef('__BITINT_MAXWIDTH__', x86_64, '8388608').
+pp_predef('__FXSR__', x86_64, '1').
+pp_predef('__GCC_DESTRUCTIVE_SIZE', x86_64, '64').
+pp_predef('__LAHF_SAHF__', x86_64, '1').
+pp_predef('__LDBL_DECIMAL_DIG__', x86_64, '21').
+pp_predef('__LDBL_DENORM_MIN__', x86_64, '3.64519953188247460253e-4951L').
+pp_predef('__LDBL_DIG__', x86_64, '18').
+pp_predef('__LDBL_EPSILON__', x86_64, '1.08420217248550443401e-19L').
+pp_predef('__LDBL_MANT_DIG__', x86_64, '64').
+pp_predef('__LDBL_MAX_10_EXP__', x86_64, '4932').
+pp_predef('__LDBL_MAX_EXP__', x86_64, '16384').
+pp_predef('__LDBL_MAX__', x86_64, '1.18973149535723176502e+4932L').
+pp_predef('__LDBL_MIN_10_EXP__', x86_64, '(-4931)').
+pp_predef('__LDBL_MIN_EXP__', x86_64, '(-16381)').
+pp_predef('__LDBL_MIN__', x86_64, '3.36210314311209350626e-4932L').
+pp_predef('__LDBL_NORM_MAX__', x86_64, '1.18973149535723176502e+4932L').
+pp_predef('__MMX__', x86_64, '1').
+pp_predef('__NO_MATH_INLINES', x86_64, '1').
+pp_predef('__OBJC_BOOL_IS_BOOL', x86_64, '0').
+pp_predef('__SEG_FS', x86_64, '1').
+pp_predef('__SEG_GS', x86_64, '1').
+pp_predef('__SIZEOF_LONG_DOUBLE__', x86_64, '16').
+pp_predef('__SSE2_MATH__', x86_64, '1').
+pp_predef('__SSE2__', x86_64, '1').
+pp_predef('__SSE3__', x86_64, '1').
+pp_predef('__SSE4_1__', x86_64, '1').
+pp_predef('__SSE_MATH__', x86_64, '1').
+pp_predef('__SSE__', x86_64, '1').
+pp_predef('__SSSE3__', x86_64, '1').
+pp_predef('__amd64', x86_64, '1').
+pp_predef('__amd64__', x86_64, '1').
+pp_predef('__code_model_small__', x86_64, '1').
+pp_predef('__core2', x86_64, '1').
+pp_predef('__core2__', x86_64, '1').
+pp_predef('__seg_fs', x86_64, '__attribute__((address_space(257)))').
+pp_predef('__seg_gs', x86_64, '__attribute__((address_space(256)))').
+pp_predef('__tune_core2__', x86_64, '1').
+pp_predef('__x86_64', x86_64, '1').
+pp_predef('__x86_64__', x86_64, '1').
+pp_predef('__AARCH64EL__', arm64, '1').
+pp_predef('__AARCH64_CMODEL_SMALL__', arm64, '1').
+pp_predef('__AARCH64_SIMD__', arm64, '1').
+pp_predef('__ARM64_ARCH_8__', arm64, '1').
+pp_predef('__ARM_64BIT_STATE', arm64, '1').
+pp_predef('__ARM_ACLE', arm64, '202420').
+pp_predef('__ARM_ACLE_VERSION(year,quarter,patch)', arm64, '(100 * (year) + 10 * (quarter) + (patch))').
+pp_predef('__ARM_ALIGN_MAX_STACK_PWR', arm64, '4').
+pp_predef('__ARM_ARCH', arm64, '8').
+pp_predef('__ARM_ARCH_ISA_A64', arm64, '1').
+pp_predef('__ARM_ARCH_PROFILE', arm64, '\'A\'').
+pp_predef('__ARM_FEATURE_AES', arm64, '1').
+pp_predef('__ARM_FEATURE_ATOMICS', arm64, '1').
+pp_predef('__ARM_FEATURE_CLZ', arm64, '1').
+pp_predef('__ARM_FEATURE_COMPLEX', arm64, '1').
+pp_predef('__ARM_FEATURE_CRC32', arm64, '1').
+pp_predef('__ARM_FEATURE_CRYPTO', arm64, '1').
+pp_predef('__ARM_FEATURE_DIRECTED_ROUNDING', arm64, '1').
+pp_predef('__ARM_FEATURE_DIV', arm64, '1').
+pp_predef('__ARM_FEATURE_DOTPROD', arm64, '1').
+pp_predef('__ARM_FEATURE_FMA', arm64, '1').
+pp_predef('__ARM_FEATURE_FP16_FML', arm64, '1').
+pp_predef('__ARM_FEATURE_FP16_SCALAR_ARITHMETIC', arm64, '1').
+pp_predef('__ARM_FEATURE_FP16_VECTOR_ARITHMETIC', arm64, '1').
+pp_predef('__ARM_FEATURE_IDIV', arm64, '1').
+pp_predef('__ARM_FEATURE_JCVT', arm64, '1').
+pp_predef('__ARM_FEATURE_LDREX', arm64, '0xF').
+pp_predef('__ARM_FEATURE_NUMERIC_MAXMIN', arm64, '1').
+pp_predef('__ARM_FEATURE_PAUTH', arm64, '1').
+pp_predef('__ARM_FEATURE_QRDMX', arm64, '1').
+pp_predef('__ARM_FEATURE_RCPC', arm64, '1').
+pp_predef('__ARM_FEATURE_SHA2', arm64, '1').
+pp_predef('__ARM_FEATURE_SHA3', arm64, '1').
+pp_predef('__ARM_FEATURE_SHA512', arm64, '1').
+pp_predef('__ARM_FEATURE_UNALIGNED', arm64, '1').
+pp_predef('__ARM_FP', arm64, '0xE').
+pp_predef('__ARM_FP16_ARGS', arm64, '1').
+pp_predef('__ARM_FP16_FORMAT_IEEE', arm64, '1').
+pp_predef('__ARM_NEON', arm64, '1').
+pp_predef('__ARM_NEON_FP', arm64, '0xE').
+pp_predef('__ARM_NEON_SVE_BRIDGE', arm64, '1').
+pp_predef('__ARM_NEON__', arm64, '1').
+pp_predef('__ARM_PCS_AAPCS64', arm64, '1').
+pp_predef('__ARM_PREFETCH_RANGE', arm64, '1').
+pp_predef('__ARM_SIZEOF_MINIMAL_ENUM', arm64, '4').
+pp_predef('__ARM_SIZEOF_WCHAR_T', arm64, '4').
+pp_predef('__ARM_STATE_ZA', arm64, '1').
+pp_predef('__ARM_STATE_ZT0', arm64, '1').
+pp_predef('__BIGGEST_ALIGNMENT__', arm64, '8').
+pp_predef('__BITINT_MAXWIDTH__', arm64, '128').
+pp_predef('__FP_FAST_FMA', arm64, '1').
+pp_predef('__FP_FAST_FMAF', arm64, '1').
+pp_predef('__FUNCTION_MULTI_VERSIONING_SUPPORT_LEVEL', arm64, '202430').
+pp_predef('__GCC_DESTRUCTIVE_SIZE', arm64, '128').
+pp_predef('__HAVE_FUNCTION_MULTI_VERSIONING', arm64, '1').
+pp_predef('__LDBL_DECIMAL_DIG__', arm64, '17').
+pp_predef('__LDBL_DENORM_MIN__', arm64, '4.9406564584124654e-324L').
+pp_predef('__LDBL_DIG__', arm64, '15').
+pp_predef('__LDBL_EPSILON__', arm64, '2.2204460492503131e-16L').
+pp_predef('__LDBL_MANT_DIG__', arm64, '53').
+pp_predef('__LDBL_MAX_10_EXP__', arm64, '308').
+pp_predef('__LDBL_MAX_EXP__', arm64, '1024').
+pp_predef('__LDBL_MAX__', arm64, '1.7976931348623157e+308L').
+pp_predef('__LDBL_MIN_10_EXP__', arm64, '(-307)').
+pp_predef('__LDBL_MIN_EXP__', arm64, '(-1021)').
+pp_predef('__LDBL_MIN__', arm64, '2.2250738585072014e-308L').
+pp_predef('__LDBL_NORM_MAX__', arm64, '1.7976931348623157e+308L').
+pp_predef('__OBJC_BOOL_IS_BOOL', arm64, '1').
+pp_predef('__SIZEOF_LONG_DOUBLE__', arm64, '8').
+pp_predef('__aarch64__', arm64, '1').
+pp_predef('__arm64', arm64, '1').
+pp_predef('__arm64__', arm64, '1').
+pp_predef('__DEPRECATED', cpp, '1').
+pp_predef('__EXCEPTIONS', cpp, '1').
+pp_predef('__GLIBCXX_BITSIZE_INT_N_0', cpp, '128').
+pp_predef('__GLIBCXX_TYPE_INT_N_0', cpp, '__int128').
+pp_predef('__GNUC_GNU_INLINE__', cpp, '1').
+pp_predef('__GNUG__', cpp, '4').
+pp_predef('__GXX_EXPERIMENTAL_CXX0X__', cpp, '1').
+pp_predef('__GXX_RTTI', cpp, '1').
+pp_predef('__GXX_WEAK__', cpp, '1').
+pp_predef('__STDCPP_DEFAULT_NEW_ALIGNMENT__', cpp, '16UL').
+pp_predef('__STDCPP_THREADS__', cpp, '1').
+pp_predef('__cplusplus', cpp, '201703L').
+pp_predef('__cpp_aggregate_bases', cpp, '201603L').
+pp_predef('__cpp_aggregate_nsdmi', cpp, '201304L').
+pp_predef('__cpp_alias_templates', cpp, '200704L').
+pp_predef('__cpp_aligned_new', cpp, '201606L').
+pp_predef('__cpp_attributes', cpp, '200809L').
+pp_predef('__cpp_binary_literals', cpp, '201304L').
+pp_predef('__cpp_capture_star_this', cpp, '201603L').
+pp_predef('__cpp_constexpr', cpp, '201603L').
+pp_predef('__cpp_constexpr_in_decltype', cpp, '201711L').
+pp_predef('__cpp_decltype', cpp, '200707L').
+pp_predef('__cpp_decltype_auto', cpp, '201304L').
+pp_predef('__cpp_deduction_guides', cpp, '201703L').
+pp_predef('__cpp_delegating_constructors', cpp, '200604L').
+pp_predef('__cpp_deleted_function', cpp, '202403L').
+pp_predef('__cpp_digit_separators', cpp, '201309L').
+pp_predef('__cpp_enumerator_attributes', cpp, '201411L').
+pp_predef('__cpp_exceptions', cpp, '199711L').
+pp_predef('__cpp_fold_expressions', cpp, '201603L').
+pp_predef('__cpp_generic_lambdas', cpp, '201304L').
+pp_predef('__cpp_guaranteed_copy_elision', cpp, '201606L').
+pp_predef('__cpp_hex_float', cpp, '201603L').
+pp_predef('__cpp_if_constexpr', cpp, '201606L').
+pp_predef('__cpp_impl_destroying_delete', cpp, '201806L').
+pp_predef('__cpp_inheriting_constructors', cpp, '201511L').
+pp_predef('__cpp_init_captures', cpp, '201304L').
+pp_predef('__cpp_initializer_lists', cpp, '200806L').
+pp_predef('__cpp_inline_variables', cpp, '201606L').
+pp_predef('__cpp_lambdas', cpp, '200907L').
+pp_predef('__cpp_named_character_escapes', cpp, '202606L').
+pp_predef('__cpp_namespace_attributes', cpp, '201411L').
+pp_predef('__cpp_nested_namespace_definitions', cpp, '201411L').
+pp_predef('__cpp_noexcept_function_type', cpp, '201510L').
+pp_predef('__cpp_nontype_template_args', cpp, '201411L').
+pp_predef('__cpp_nontype_template_parameter_auto', cpp, '201606L').
+pp_predef('__cpp_nsdmi', cpp, '200809L').
+pp_predef('__cpp_pack_indexing', cpp, '202311L').
+pp_predef('__cpp_placeholder_variables', cpp, '202306L').
+pp_predef('__cpp_range_based_for', cpp, '201603L').
+pp_predef('__cpp_raw_strings', cpp, '200710L').
+pp_predef('__cpp_ref_qualifiers', cpp, '200710L').
+pp_predef('__cpp_return_type_deduction', cpp, '201304L').
+pp_predef('__cpp_rtti', cpp, '199711L').
+pp_predef('__cpp_rvalue_references', cpp, '200610L').
+pp_predef('__cpp_sized_deallocation', cpp, '201309L').
+pp_predef('__cpp_static_assert', cpp, '202306L').
+pp_predef('__cpp_static_call_operator', cpp, '202207L').
+pp_predef('__cpp_structured_bindings', cpp, '202411L').
+pp_predef('__cpp_template_auto', cpp, '201606L').
+pp_predef('__cpp_template_template_args', cpp, '201611L').
+pp_predef('__cpp_threadsafe_static_init', cpp, '200806L').
+pp_predef('__cpp_trivial_relocatability', cpp, '202502L').
+pp_predef('__cpp_unicode_characters', cpp, '200704L').
+pp_predef('__cpp_unicode_literals', cpp, '200710L').
+pp_predef('__cpp_user_defined_literals', cpp, '200809L').
+pp_predef('__cpp_variable_templates', cpp, '201304L').
+pp_predef('__cpp_variadic_friend', cpp, '202403L').
+pp_predef('__cpp_variadic_templates', cpp, '200704L').
+pp_predef('__cpp_variadic_using', cpp, '201611L').
+pp_predef('__private_extern__', cpp, 'extern').

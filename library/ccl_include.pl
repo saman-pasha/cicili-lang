@@ -87,7 +87,7 @@ ccl_macro_note(Path, Preds) :- ccl_global('$ccl_macro_files', L, []), nb_setval(
 %%    What is top | included(How) | included_partial(How, Line, Near); Deps is
 %%    [DepPath-DepKey ...], each checked against the header's current key on
 %%    load; a count that does not match (an item too big to store) is a miss.
-ccl_kb_ready :- ccl_ensure_globals, ( nb_getval('$ccl_kb_ready', yes) -> true ; dynamic('$ccl_ast'/3), nb_setval('$ccl_kb_ready', yes) ).
+ccl_kb_ready :- ccl_ensure_globals, ( nb_getval('$ccl_kb_ready', yes) -> true ; dynamic('$ccl_ast'/3), dynamic('$ccl_hmeta'/3), nb_setval('$ccl_kb_ready', yes) ).
 %% The items of a file are a predicate of their own, '$ccl_items:<Path>'(Key,
 %% Index, Item): the store grows, once per process that writes a predicate, by
 %% about 500 bytes per row THAT predicate holds, whatever the write -- one
@@ -97,7 +97,7 @@ ccl_kb_ready :- ccl_ensure_globals, ( nb_getval('$ccl_kb_ready', yes) -> true ; 
 ccl_kb_items(Path, F) :- atom_concat('$ccl_items:', Path, F), dynamic(F/3).
 ccl_kb_items_goal(Path, K, I, It, T) :- ccl_kb_items(Path, F), T =.. [F, K, I, It].
 ccl_kb_forget_items(Path) :- ccl_kb_items_goal(Path, _, _, _, T), retractall(T).
-ccl_kb_forget_file(Path) :- ccl_kb_ready, retractall('$ccl_ast'(Path, _, _)), ccl_kb_forget_items(Path).
+ccl_kb_forget_file(Path) :- ccl_kb_ready, retractall('$ccl_ast'(Path, _, _)), ccl_kb_forget_items(Path), retractall('$ccl_hmeta'(Path, _, _)), ccl_kb_hm(Path, F), T =.. [F, _, _, _], retractall(T).
 
 ccl_read_file(File, AST, Rest) :- ccl_ensure_globals, ccl_set_lang(File), ccl_read_file_(File, AST, Rest).
 %% the language of the file read: C++ by its extension (or forced, cicili++), C by .c
@@ -110,15 +110,12 @@ ccl_lang_of_file(F, c) :- sub_atom(F, _, _, 0, '.c'), !.
 ccl_read_file_(File, AST, Rest) :-
     ccl_kb_cached(File, top, AST0), !, AST = AST0, Rest = [], nb_setval('$ccl_far', 0).
 ccl_read_file_(File, AST, Rest) :-
-    read_file_to_codes(File, Codes),
-    ccl_tokens(Codes, Tokens, RestCodes),
-    ( RestCodes == [] -> true
-    ; ccl_line_of(Codes, RestCodes, L), throw(error(syntax_error(cicili_ast(File, lexical, line(L))), cicili_ast(File))) ),
+    catch(ccl_pp_top(File, Tokens, _), lexical(L), throw(error(syntax_error(cicili_ast(File, lexical, line(L))), cicili_ast(File)))),   % the user's file through the preprocessor
     ccl_with_file(File, ( ccl_unit(Tokens, AST, Rest), ccl_farthest(F) )),
     nb_setval('$ccl_far', F),
     ( Rest == [] -> ccl_kb_remember(File, top, AST) ; true ).
 
-ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V0), ( ccl_lang(cpp) -> V = cpp(V0) ; V = V0 ).   % a C++ read is not the C read
+ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V0), ( ccl_lang(cpp) -> V = cpp(V0) ; V = V0 ).   % a C++ read is not the C read; the time asked every time (0.4 ms): the gate touches a file mid-process and expects the miss
 ccl_kb_forget :- ccl_kb_ready, findall(P, '$ccl_ast'(P, _, _), Ps), ccl_kb_forget_each(Ps), retractall('$ccl_ast'(_, _, _)).
 ccl_kb_forget_each([]).
 ccl_kb_forget_each([P|Ps]) :- ccl_kb_forget_items(P), ccl_kb_forget_each(Ps).
@@ -401,7 +398,14 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
     ccl_sum_terms_out([sum(Path, key(V, cpp))], Out0), ccl_sum_deps(Deps, Out0b), append(Out0, Out0b, Out1),   % a term per dep: a line stays short
     ccl_sum_decls(Ds, Out2), ccl_sum_typedefs(Ts, Out3), ccl_sum_tags(Gs, Out4), ccl_sum_enums(Es, Out5),
     ccl_sum_names(Names, Out6), ccl_sum_tmpls(Tmpls, Out7),
-    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F).
+    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
+    ccl_pp_macros(Ms), ccl_sum_mnames(Ms, Out8), ccl_sum_terms_out(Ms, Out9),   % the macros the run defined, for the user's file, beside it
+    ccl_mac_file(F, M), append(Out8, Out9, MCodes), write_file_from_codes(M, MCodes).
+ccl_sum_mnames([], []) :- !.
+ccl_sum_mnames(Ms, Out) :- ccl_sum_mnames_(Ms, 100, Ns, Rest), ccl_sum_terms_out([mnames(Ns)], O1), ccl_sum_mnames(Rest, O2), append(O1, O2, Out).
+ccl_sum_mnames_([], _, [], []) :- !.
+ccl_sum_mnames_(Ms, 0, [], Ms) :- !.
+ccl_sum_mnames_([macro(N, _, _)|Ms], K, [N|Ns], Rest) :- K1 is K - 1, ccl_sum_mnames_(Ms, K1, Ns, Rest).
 ccl_sum_deps([], []).
 ccl_sum_deps([P-T|Ds], Out) :- ccl_sum_terms_out([dep(P, T)], O1), ccl_sum_deps(Ds, O2), append(O1, O2, Out).
 ccl_sum_decls([], []).
@@ -455,6 +459,18 @@ ccl_sum_lines([L|Ls], Ts) :-                                                  % 
     ;   atom_length(L, N), N1 is N - 1, sub_atom(L, N1, 1, 0, '.'), sub_atom(L, 0, N1, 1, A), catch(term_to_atom(T, A), _, fail) -> Ts = [T|Ts1]
     ;   Ts = Ts1 ),
     ccl_sum_lines(Ls, Ts1).
+%% the macros beside the summary, <name>-<fold>.mac: the names by the hundred
+%% (mnames lines, parsed), then a line per macro AS WRITTEN, parsed on its
+%% first use -- 1200 come with <stdio.h>, 30 us each to parse, a file uses a
+%% dozen. Read: the lines split, the mnames taken off the front, the rest raw.
+ccl_mac_file(F, M) :- atom_length(F, N), N1 is N - 4, sub_atom(F, 0, N1, 4, B), atom_concat(B, '.mac', M).
+ccl_mac_lines(M, Names, Raws) :-
+    read_file_to_codes(M, Codes), atom_codes(A, Codes), atomic_list_concat(Lines, '\n', A),
+    ccl_mac_names(Lines, Names, Raws0), ( append(Raws, [''], Raws0) -> true ; Raws = Raws0 ).
+ccl_mac_names([L|Ls], Names, Raws) :-
+    atom_length(L, N), N1 is N - 1, sub_atom(L, 0, 7, _, 'mnames('), sub_atom(L, 0, N1, 1, A), catch(term_to_atom(T, A), _, fail), T = mnames(Ns), !,   % a fresh T: term_to_atom compares a bound one
+    ccl_mac_names(Ls, Names1, Raws), append(Ns, Names1, Names).
+ccl_mac_names(Ls, [], Ls).
 %% a summary's four tables, its templates and its names, split once per process
 ccl_sum_load(F, D, T, G, E, Tmpls, Names) :-
     ccl_cached_named('$ccl_sumload:', F, sum(D, T, G, E, Tmpls, Names), ccl_sum_load_nocache(F, D, T, G, E, Tmpls, Names)).
@@ -481,7 +497,7 @@ ccl_new_names([N|Ns], Have, New) :- ( atom(N), \+ memberchk(N, Have) -> New = [N
 ccl_read_unit(Path, How, Unit) :-
     ccl_parse_file(Path, U0, Info0),
     (   Info0 == whole -> How = raw, Unit = U0
-    ;   ccl_pp_parse(Path, U1, Info1, _) -> How = preprocessed, ccl_partial(U1, Info1, Unit)
+    ;   ccl_pp_parse(Path, U1, Info1, Files) -> How = preprocessed, ccl_partial(U1, Info1, Unit), ccl_pp_macros(Ms), ccl_kb_remember_macros(Path, Files, Ms)
     ;   How = raw, ccl_partial(U0, Info0, Unit) ).
 ccl_partial(U, whole, U) :- !.
 ccl_partial(U, stopped(L, near(F)), partial(U, line(L), near(F))).
@@ -499,6 +515,69 @@ ccl_rest_info([tok(_, _, L)|_], stopped(L, near(F))) :- ccl_farthest(F).
 ccl_pp_parse(Path, unit(Is), Info, Files) :-
     ccl_pp_file(Path, Tokens, Files),
     ccl_with_file(Path, ( ccl_unit(Tokens, unit(Is), Rest), ccl_rest_info(Rest, Info) )).
+
+%% ---- a header's macros, for the user's file -----------------------------------
+%% Made ready before the file's run (ccl_pp_prescan): the header read through
+%% the reader's door -- its unit cached, its summary written -- then its macro
+%% table from the summary (C++), the store ('$ccl_hmacros:<Path>' rows beside
+%% the items, keyed like them), or one standalone run of the preprocessor
+%% (a raw-read header, once per store); kept per process in '$ccl_hm:<Path>'.
+ccl_header_macros_ready(Spec, From) :-
+    (   ccl_resolve_include(Spec, From, Path), \+ sub_atom(Path, _, 3, 0, '.pl')
+    ->  ccl_inc_kind(Spec, Kind), nb_setval('$ccl_inc_kind', Kind),
+        ( ccl_include_read(Path, _) -> true ; true ),
+        ( ccl_header_macros(Path, _) -> true ; true )
+    ;   true ).
+%% the table's kind: indexed (every name in '$ccl_hml:<Name>', Path-Def) or
+%% store(Key) (answered by name from the rows); nothing of a header in neither
+ccl_header_macros(Path, Kind) :-
+    atom_concat('$ccl_hm:', Path, K),
+    (   catch(nb_getval(K, K0), _, fail), K0 \== none -> Kind = K0
+    ;   ccl_header_macros_(Path, Kind), nb_setval(K, Kind) ).
+ccl_header_macros_known(Path, Kind) :- atom_concat('$ccl_hm:', Path, K), catch(nb_getval(K, Kind), _, fail), Kind \== none.
+%% indexed: a summary's, as facts '$ccl_hml'(Name, Path, raw(Line)) -- an
+%% assert is 2 us and the lookup by name 3 us, where a global per name cost
+%% 25 us each for 1200 names; a fact is a store row under --embed, which the
+%% C++ mode never runs over (cicili++ is --no-kb). store(Key): the rows.
+%% list: a header the store would not take, its macros in a global, searched.
+ccl_header_macros_(Path, indexed) :- ccl_lang(cpp), ccl_sum_file(Path, F), ccl_sum_valid(F), ccl_mac_file(F, M), exists_file(M), !, ccl_mac_lines(M, Names, Raws), dynamic('$ccl_hml'/3), ccl_hml_assert(Names, Raws, Path).
+ccl_header_macros_(Path, store(K)) :- ccl_kb_macros_cached(Path, K), !.
+ccl_header_macros_(Path, Kind) :-
+    ccl_pp_file(Path, _, Files), ccl_pp_macros(Ms), ccl_kb_remember_macros(Path, Files, Ms),
+    (   ccl_kb_macros_cached(Path, K) -> Kind = store(K)
+    ;   atom_concat('$ccl_hmlist:', Path, KL), nb_setval(KL, Ms), Kind = list ).
+ccl_hml_assert([], _, _) :- !.
+ccl_hml_assert(_, [], _) :- !.
+ccl_hml_assert([N|Ns], [R|Rs], Path) :- assertz('$ccl_hml'(N, Path, raw(R))), ccl_hml_assert(Ns, Rs, Path).
+ccl_hml_list(Path, N, Ps, A) :- atom_concat('$ccl_hmlist:', Path, KL), nb_getval(KL, Ms), memberchk(macro(N, Ps, text(A)), Ms).
+%% the store's rows for a header's macros: one predicate per header, as the
+%% items, a row per macro under its NAME (the lookup is by name) and a dep row
+%% per file of the closure under '$dep' (no identifier)
+ccl_kb_hm_name(Path, F) :- atom_concat('$ccl_hmacros:', Path, F).
+ccl_kb_hm(Path, F) :- ccl_kb_hm_name(Path, F), dynamic(F/3).
+ccl_kb_macro(Path, K, N, Ps, A) :- ccl_kb_hm_name(Path, F), T =.. [F, N, K, macro(N, Ps, text(A))], once(T).
+%% the deps -- every file of the header's closure, 38 for <stdio.h> -- are rows
+%% too, dep(I), since one clause naming them all is over the store's budget
+ccl_kb_remember_macros(Path, Files, Ms) :-
+    ccl_kb_ready,
+    (   ccl_kb_key(Path, K)
+    ->  findall(P-PK, ( member(P, Files), ccl_kb_key(P, PK) ), Deps),
+        retractall('$ccl_hmeta'(Path, _, _)), ccl_kb_hm(Path, F), T0 =.. [F, _, _, _], retractall(T0),
+        (   catch(( ccl_kb_store_macros(Ms, F, K, 0, N), ccl_kb_store_deps(Deps, F, K, 0, ND), assertz('$ccl_hmeta'(Path, K, meta(N, ND))) ),
+                  error(resource_error(clause_length), _), fail)
+        ->  true
+        ;   T1 =.. [F, _, _, _], retractall(T1), retractall('$ccl_hmeta'(Path, _, _)) )
+    ;   true ).
+ccl_kb_store_macros([], _, _, N, N).
+ccl_kb_store_macros([macro(N, Ps, B)|Ms], F, K, C0, C) :- T =.. [F, N, K, macro(N, Ps, B)], assertz(T), C1 is C0 + 1, ccl_kb_store_macros(Ms, F, K, C1, C).
+ccl_kb_store_deps([], _, _, N, N).
+ccl_kb_store_deps([D|Ds], F, K, N0, N) :- T =.. [F, '$dep', K, D], assertz(T), N1 is N0 + 1, ccl_kb_store_deps(Ds, F, K, N1, N).   % one key for the dep rows: the store indexes an atom, not dep(I)
+%% valid when the meta row is there under the header's key and every dep is at
+%% its remembered time; the macro rows are not counted (a partial write was
+%% retracted where it failed)
+ccl_kb_macros_cached(Path, K) :-
+    ccl_kb_ready, ccl_kb_key(Path, K), '$ccl_hmeta'(Path, K, meta(_, ND)), !,
+    ccl_kb_hm(Path, F), TD =.. [F, '$dep', K, D], findall(D, TD, Deps), length(Deps, ND), ccl_kb_deps_fresh(Deps).
 
 %% ---- the path ----------------------------------------------------------------
 ccl_resolve_include(local(N), From, Path) :-

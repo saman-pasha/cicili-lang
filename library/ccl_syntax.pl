@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(23).
+ccl_reader_version(28).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1061,6 +1061,7 @@ ccl_primary_(kw, K, ccast(functional, base([], [K]), E)) --> ccl_cpp, { ccl_basi
 ccl_primary_(p, '[', lambda(Caps, Ps, Ret, Body)) --> ccl_cpp, !, ccl_p('['), ccl_lambda_caps(Caps), ccl_p(']'), { nb_getval('$ccl_env', Env) },
     ( ccl_p('('), !, ccl_params(Env, Ps, _), ccl_p(')') ; { Ps = [] } ), ( ccl_kw(mutable), ! ; [] ), ( ccl_p('->'), !, ccl_type_name(Env, Ret) ; { Ret = none } ),
     ccl_push_scope, { ccl_declare_params(Ps) }, ccl_compound(Env, Body), ccl_pop_scope.
+ccl_primary_(id, '__null', cast(ptr([], base([], [void])), int(0))) --> ccl_cpp, !, ccl_id('__null').   % C++'s NULL: what C's gives
 ccl_primary_(id, _, E) --> ccl_cpp, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
 ccl_primary_(p, '::', E) --> ccl_cpp, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
 ccl_cast_kw(static_cast, static). ccl_cast_kw(dynamic_cast, dynamic). ccl_cast_kw(reinterpret_cast, reinterpret). ccl_cast_kw(const_cast, const).

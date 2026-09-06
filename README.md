@@ -44,7 +44,10 @@ what runs today.
   built-ins, the target's predefined macros as data -- and the inclusion
   path comes from the SDK's and LLVM's conventional places. `<stdio.h>`'s
   closure of 38 files in two seconds, the declarations the same as
-  clang's; GREEN in every gate, `test/c/run/pp.c` the proof.
+  clang's; GREEN in every gate, `test/c/run/pp.c` the proof. The user's
+  own file goes through it as well: its conditional groups decided, its
+  macros and the headers' expanded, a header's macro table kept beside
+  its unit in the store; `test/c/run/macros.c` the proof.
 * **M4 -- the cache.** Every file read whole is in the user's store,
   `~/.cicili/KB`, keyed by its time and the reader's version, and so is
   the IR of every file built, keyed by everything it came from; a rebuild
@@ -249,6 +252,16 @@ files takes two seconds. `__has_feature`, `__has_attribute` and kin
 answer 0 so a header takes its plainest path, `__has_builtin` 1 (libc++'s
 other branch is an `#error`). A header nowhere on the path is `missing`;
 a header that includes itself through another is cut as `cyclic(Path)`.
+**The user's own file goes through the same preprocessor first:** its
+conditional groups are decided, its macros and the headers' (`NULL`,
+`EOF`, `INT_MAX`, `stdin`, `__LP64__`, `__LINE__` ...) expanded, while its
+`#define`, `#undef` and `#include` lines still come out as items, so a
+macro file and a `#cocolog` block are read as before. A header's macro
+table is kept in the store beside its unit (beside its summary, in C++),
+made once by one run of the preprocessor over the header, and asked by
+name: `<stdio.h>` brings 1200 macros and a file uses a dozen, so none is
+parsed before it is named. `_FORTIFY_SOURCE` is 0: `strcpy` stays a
+function.
 The typedef names an included unit declares are known to the rest of the
 including file, and `ccl_declares(+Unit, +Name, -Item)` finds a declaration
 anywhere under a unit -- `printf` under `<stdio.h>`, `malloc` under
@@ -269,15 +282,14 @@ slows every predicate's first call in a process (`KB.version` beside the
 store is the reader's version; `bin/cicili` and `test/config.sh` start
 afresh when it differs).
 
-Otherwise the preprocessor is not expanded: any other `#` line is kept
-whole as `directive(Line, Text)`, and a typedef name from a header the
-reader has not seen is recognised from the tokens around it (`name x;`,
-`name *p;` where an expression cannot stand, `(name *)`, `(name){`). What
-it reads is C11 plus the GNU and Apple forms system headers and Cicili's
-emitted C carry (`__attribute__`, `__asm`, `typeof`, `({ ... })`, `_Nonnull`,
-`(^block)`); the C++ forms are not read yet -- they come after the C part
-of the compiler is finished, because the libraries are in C++ (`DESIGN.md`,
-M5) -- and `cicili_ast/3` says where a file stopped.
+A `#define` or `#undef` line is done and kept whole as `directive(Line,
+Text)`, and a typedef name from a header the reader has not seen is
+recognised from the tokens around it (`name x;`, `name *p;` where an
+expression cannot stand, `(name *)`, `(name){`). What it reads is C11 plus
+the GNU and Apple forms system headers and Cicili's emitted C carry
+(`__attribute__`, `__asm`, `typeof`, `({ ... })`, `_Nonnull`, `(^block)`),
+and the C++ forms in `cicili++`'s mode (below); `cicili_ast/3` says where
+a file stopped.
 
 ## Macros: `#include "m.pl"`
 
@@ -628,25 +640,26 @@ same i9-9880H, the minimum of five, in seconds:
 
 | | hello `-O0` | hello `-O3` | B-tree `-O0` | B-tree `-O3` | B-tree `-c` | B-tree, read only |
 |---|---|---|---|---|---|---|
-| `cicili++`, the first run (init phase) | 3.0 | | 8.2 | | | |
-| `cicili++`, after it | 0.82 | 0.83 | 1.38 | 1.49 | 1.07 | 0.68 |
-| `clang++` | 1.08 | 1.09 | 1.12 | 1.25 | 0.39 | 0.39 |
-| `rustc` | 0.52 | 0.54 | 0.61 | 0.79 | 0.32 | |
+| `cicili++`, the first run (init phase) | 3.1 | | 8.3 | | | |
+| `cicili++`, after it | 0.73 | 0.74 | 1.40 | 1.50 | 1.11 | 0.76 |
+| `clang++` | 0.96 | 1.01 | 1.04 | 1.14 | 0.39 | 0.37 |
+| `rustc` | 0.45 | 0.46 | 0.54 | 0.71 | 0.29 | |
 
 `rustc` is the fastest on both programs; `cicili++` after its init phase
-builds the hello faster than `clang++` and takes 1.23 times `clang++` on
-the B-tree (the run of 2026-09-06 evening, `cicili-lang` 0.29). For scale, a compiler written in another interpreted
+builds the hello faster than `clang++` and takes 1.35 times `clang++` on
+the B-tree (the run of 2026-09-06 night, `cicili-lang` 0.31, the user's
+file through the preprocessor: 0.09 s of the read). For scale, a compiler written in another interpreted
 language: the script also runs the Python ones this Mac can, when `PY`
 names a python3 with them installed. `pycparser`, the C parser in Python
 (a parser only, `clang -E` over its fake headers inside), reads the hello
-in 0.30 s and the B-tree in 0.33 s where `cicili++ -fsyntax-only` takes
-0.46 s and 0.68 s -- with the check, the C++ headers' summaries and
-cocolog's start in those. ShivyC, a C compiler in Python to x86-64
+in 0.29 s and the B-tree in 0.31 s where `cicili++ -fsyntax-only` takes
+0.53 s and 0.76 s -- with the check, the C++ headers' summaries, the
+preprocessing and cocolog's start in those. ShivyC, a C compiler in Python to x86-64
 assembly, refuses macOS and takes a small subset of C (no `enum`, no
 `?:`, no `sizeof` of a type, no variadic prototype: the B-tree does not
 compile); its front end driven to assembly past the check turns the
-hello in 3 ms, plus 0.07 s to start Python, where `cicili++ -S` takes
-0.50 s. Where `cicili++`'s time goes, measured piece by piece: cocolog
+hello in 3 ms, plus 0.08 s to start Python, where `cicili++ -S` takes
+0.58 s. Where `cicili++`'s time goes, measured piece by piece: cocolog
 starts in 0.06 s and the library's clauses load in 0.03 s; the command's
 shell is a floor of its own, a fork per `$(...)` and per pipe, so
 `bin/cicili` forks six times where it forked twenty; a header's summary
@@ -683,8 +696,13 @@ as arrays; the walk's clauses ordered by what a node most often is, a
 name, an operator, a member, an index, a wrapper, none of them through a
 univ; 86 ms to 65, the rest twenty thousand small calls) -- and the
 B-tree's build went from 3.64 to 1.35 s, `test/compile.sh`'s eighteen
-programs and forty refusals from 37 to 25 s. What is left is the two
-walks, the check's and the lowering's, at cocolog's 5 µs a call.
+programs and forty refusals from 37 to 25 s. Then the user's file went
+through the preprocessor too, which cost 0.27 s a read done the plain
+way -- every header's 1200 macros defined into the run, the 580
+predefined ones with them -- and 0.09 s done by name: a table asked on
+a name's first use, a miss remembered, the predefined ones facts looked
+up by name, a plain decimal taken without the lexer. What is left is the
+two walks, the check's and the lowering's, at cocolog's 5 µs a call.
 
 `test/c/run/btree.c` and `btree_del.c` are the ownership test case: a
 B-tree whose every node owns its children through an own array, fixed in
@@ -743,7 +761,7 @@ module/cicili.cicili     the module: registration, ccl_version/1, the native lex
 library/ccl_syntax.pl    the two grammars: the lexer (the DCG, the specification the native one
                          follows token for token) and the parser; the symbol table
 library/ccl_include.pl   #include: the inclusion path, headers read raw or preprocessed, .pl macro
-                         files, the knowledge-base cache
+                         files, the knowledge-base cache, the headers' macro tables by name
 library/ccl_infer.pl     what a macro can ask: type inference over the symbol table, sizes, lookups
 library/ccl_format.pl    the global macros format, print, println
 library/ccl_ir.pl        cicili_ir: the lowering, the AST to LLVM IR text

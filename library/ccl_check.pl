@@ -367,6 +367,8 @@ ck_strip_move(E, E).
 %% a null constant
 ck_null(int(0)).
 ck_null(id('NULL')).
+ck_null(cast(ptr(_, base(_, [void])), int(0))).                                  % NULL expanded: ((void *)0)
+ck_null(int(0)).
 ck_null(cast(_, E)) :- ck_null(E).
 %% a value that lives as long as the program: a string literal, a global's
 %% address, a global array or function used as a pointer
