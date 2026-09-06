@@ -25,14 +25,14 @@ s1=$(date +%s); "$ROOT/bin/cicili++" "$ROOT/test/cpp/hello.cpp" -o hello2 >/dev/
 if [ "$t1" -lt 8 ] && [ "$n" -ge 1 ]; then echo "ok   a second build reads stdio.h's summary from ~/.cicili/cpp, no preprocessing ($t1 s, $n summaries)"; else echo "FAIL a second build is served from the summary cache"; echo "     got  $t1 s, $n summaries"; failures=$((failures + 1)); fi
 got=$("$ROOT/bin/cicili++" -fsyntax-only "$ROOT/test/cpp/classes.cpp" 2>&1; echo "exit $?")
 if [ "$got" = "exit 0" ]; then echo "ok   cicili++ -fsyntax-only reads a file of classes, and says nothing"; else echo "FAIL cicili++ -fsyntax-only classes.cpp"; echo "     got  $got"; failures=$((failures + 1)); fi
-echo "-- M6, the first step: C++ that is C with names, built and run (test/cpp/run/NAME.cpp against NAME.expect)"
+echo "-- M6, in steps: C++ that is C with names, then classes -- built and run (test/cpp/run/NAME.cpp against NAME.expect)"
 for src in "$ROOT"/test/cpp/run/*.cpp; do
   n=$(basename "$src" .cpp)
   got=$("$ROOT/bin/cicili++" "$src" -o "$n" 2>&1 && { "./$n"; echo "exit $?"; })
   if [ "$got" = "$(cat "$ROOT/test/cpp/run/$n.expect")" ]; then echo "ok   $n.cpp: built through cicili++, runs, and prints what it should"; else echo "FAIL $n.cpp"; echo "$got" | diff "$ROOT/test/cpp/run/$n.expect" - 2>&1 | head -6 | sed 's/^/     /'; failures=$((failures + 1)); fi
 done
 echo "-- and the forms of the later steps are refused by name, not dropped"
-for pair in "control:try" "classes:class" "templates:template"; do
+for pair in "control:try" "classes:virtual" "templates:template"; do
   n=${pair%%:*}; what=${pair#*:}
   got=$("$ROOT/bin/cicili++" -c "$ROOT/test/cpp/$n.cpp" -o "$n.o" 2>&1; echo "exit $?")
   case "$got" in *"not lowered yet: $what"*"exit 1"*) echo "ok   $n.cpp is refused: not lowered yet: $what" ;; *) echo "FAIL $n.cpp should be refused with 'not lowered yet: $what'"; echo "     got  $got" | head -3; failures=$((failures + 1)) ;; esac

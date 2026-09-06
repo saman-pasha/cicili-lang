@@ -215,21 +215,25 @@ it is done (see below); the checker and the lowering take the AST from here.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
 * **M6 — the check and the lowering of the C++ forms, IN STEPS: the
-  first DONE.** The forms that are C with names: a namespace flattened
+  first two DONE.** The forms that are C with names: a namespace flattened
   to its bare names, `extern "C"`, `using`, `bool`, `nullptr`, the casts,
   `enum class`, a range-for over an array as the `for` it stands for, a
   reference as a pointer bound once (a borrow to the check, an address
   loaded through by the lowering), `new` and `delete` as `malloc` and
   `free` under the ownership check; two programs built through
-  `cicili++`, run and checked in `test/cpp.sh`, and every later form --
-  a class with members, a template, a lambda, `try` -- refused by name.
-  The steps to come, each with a program that runs: classes (data
-  members, methods as functions over `this`, constructors at the
-  declaration and destructors as the scope's defers, inheritance as the
-  first member, `virtual` through a table), templates (instantiated on
-  use, function and class), lambdas (a struct of captures and a
-  function), exceptions last, if at all, since the safe part has no
-  unwinding to offer.
+  `cicili++`, run and checked in `test/cpp.sh`. Then classes, DESUGARED
+  to that C before the check by one typed rewrite of the AST
+  (`library/ccl_cpp.pl`): a class a struct of its data members with its
+  base first, a method a function over `this`, a constructor called at
+  the declaration and a destructor a defer of the scope, a static member
+  a global, `new` and `delete` constructing and destroying, operators and
+  default arguments by name and arity -- so the check and the lowering
+  see only the C they have. Every later form -- `virtual`, a template, a
+  lambda, `try` -- is refused by name. The steps to come, each with a
+  program that runs, the same way, as rewrites to C: `virtual` through a
+  table of function pointers, templates instantiated on use (function
+  and class), lambdas as a struct of captures and a function; exceptions
+  last, if at all, since the safe part has no unwinding to offer.
 * **Later — the objects layer's fate (below)**, and, on the LLVM module
   already here, ORC JIT: a macro running C at compile time.
 

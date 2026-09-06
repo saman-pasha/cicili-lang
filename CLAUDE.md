@@ -44,6 +44,8 @@ library/ccl_format.pl    format, print, println: the global macros, Rust's holes
 library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause per construct
 library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, nothing else), cicili_link/3 (cc)
 library/ccl_check.pl     the safe part: owners (own), move, the flow walk; run first by cicili_ir
+library/ccl_cpp.pl       M6: the C++ forms desugared to that C before the check (ccl_cpp_units/2):
+                         classes as structs, methods over this, constructors, destructors as defers
 test/c/safe/             programs the check must REFUSE, each with the error its .expect names
 bin/cicili               the command: clang's arguments, one cocolog run over ~/.cicili/KB (ccl_drive/2);
                          six forks, since each is a floor (the findings)
@@ -419,9 +421,70 @@ defined out of its class (`Counter::made`, `Shape::scale`: a compound
 name), which crashed `atom_concat` before. Gated by `test/cpp.sh`:
 `test/cpp/run/names.cpp` and `loops.cpp` built through `cicili++`, run
 against their `.expect`, and `control.cpp`, `classes.cpp`,
-`templates.cpp` refused with `try`, `class`, `template`. Not done: two
+`templates.cpp` refused with `try`, `virtual`, `template`. Not done: two
 namespaces with one name, a reference member, a reference to a class,
 `auto` the reader could not infer (`ir_fail(auto)`).
+
+**M6's second step (0.33): classes, DESUGARED to that C** by
+`library/ccl_cpp.pl`, one typed rewrite of the units that `ccl_ir_units`
+runs in cpp mode between the first symbol-table build and the check
+(`ccl_cpp_units/2`; the table is built again from what comes out, since
+the classes became structs). The design rule: every C++ form of the
+steps to come is a rewrite to the C the check and the lowering have,
+never new lowering, so the safe part reads C++ programs as it reads C.
+`cpp_register_units/1` collects `'$cpp_classes'` (`C-cls(Base, Data,
+Members, Statics, Defaults)`) from the `declare(_, base(_, [class(...)]))`
+items, refusing `virtual(C)` and `multiple_inheritance(C)`, and DECLARES
+every method, constructor, destructor, static member and free operator
+in the table under its mangled name at once, so a rewritten call has a
+type while the walk goes on. Names: `C.m.k` (k the arity), a
+constructor `C.C.k`, the destructor `C.dtor.0`, an operator by its word
+(`cpp_op_word/2`: `C.op.plus_assign.1`, a free one `op.plus.2`), a
+static member `C.N` -- dots only, so LLVM takes them unquoted and no C
+name collides. A class item becomes `declare(L, base(Q, [struct(C,
+Data)]))` with the base's sub-object the first member, `'$base'`, then
+`extern` declarations of the statics, then a function per method (`this`
+the first parameter, `const C *` for a const method), per constructor
+(void; its body the base's constructor over `&this->$base`, then every
+data member from its initializer, else its `default_init`, in the
+members' order, then the body), and the destructor; a class with no
+constructor but defaults or a constructed base gets `C.C.0`
+(`cpp_implicit_ctor`). Out of class: `int Counter::made = 0` is the
+global `Counter.made`, `Shape::scale` and `Counter::~Counter`
+(`dtor_def/4`) the functions. Bodies are walked with the symbol table's
+scopes kept as the check keeps them (`cpp_method_body`, `cpp_stmt`,
+`cpp_expr`, bottom up), so `ccl_type_of/2` tells a class-typed operand:
+inside a method an unqualified data member is `this->n`, an inherited
+one `(*this).$base.n` (`cpp_data_member/3` gives the hops), a static
+`id('C.N')`; `o.m(a)` is `C.m.k(&o, a)` and `p->m(a)` `C.m.k(p, a)` with
+the default arguments filled (`'$cpp_defaults'`, by mangled name), an
+inherited method over the base sub-object's address, an unqualified
+`m(a)` inside a method over `this`; `Counter(v)` and the functional cast
+build a temporary in a statement expression; `o += v`, `o[i]`, `a + b`
+go to the class's member operator, else a free one registered
+(`'$cpp_free_ops'`), else stay the form. A local of a class with a
+constructor becomes a `'$splice'` of the declaration, the constructor
+call over its address (from `ctor(As)`, `init(Items)`, no initializer,
+or a single value not of the class -- a value of the class is COPIED,
+`Counter e = c + d`), and, when the class has a destructor, a
+`defer(L, [], block([expr(L, call(id('C.dtor.0'), [addr(id(N))]))]))`:
+the existing defer machinery runs it at every exit of the scope, last
+declared first, as C++ does. `new C(As)` is a statement expression
+constructing into `new(T, [])`'s block (the check: a loose pointer out,
+as before), `delete p` of a class with a destructor
+`comma(call(dtor, [p]), delete(p))` (a temporary for a non-name, since
+the check would see a borrow freed). `ccl_members_of/2` answers a
+class's data members (the raw `class(...)` spec, before the rewrite;
+statics excluded) so member types resolve during the walk. Gated by
+`test/cpp/run/counter.cpp`: two classes with a base, initializers,
+defaults, a static, `operator+=`, `operator[]`, a free `operator+`, a
+temporary returned by value, `new`/`delete`, destructors counted -- the
+numbers agree with clang++'s. Not done: `virtual` (a table of function
+pointers next), a member of class type with a constructor, an array or a
+global of a class with a constructor, a temporary's destructor,
+`operator=` and copy constructors (a struct copies), nested classes,
+`static` methods, `friend`, access control (ignored), a method called
+before the class is complete.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

@@ -40,15 +40,18 @@
 
 :- use_module(library(ccl_infer)).
 :- use_module(library(ccl_check)).
+:- use_module(library(ccl_cpp)).                                          % M6: the C++ forms desugared to the C below
 
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
 ccl_lowering_version(8).
 
-ccl_ir_units(Units, IR) :-
-    ir_reset, ccl_scope_init, ir_note_units(Units),                     % the symbol table, once
-    ( ccl_lang(cpp) -> ir_cpp_prelude ; true ),                          % C++: new and delete are malloc and free
+ccl_ir_units(Units0, IR) :-
+    ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
+    (   ccl_lang(cpp)                                                    % C++ (M6): classes and kin desugared to the C below, over that table,
+    ->  ccl_cpp_units(Units0, Units), ccl_scope_init, ir_note_units(Units), ir_cpp_prelude   % then the table again from what came out; new and delete are malloc and free
+    ;   Units = Units0 ),
     ccl_check_noted(Units),                                             % the safe part first: a violation is a compile error
     nb_setval('$ir_fdefs', []), nb_setval('$ir_gdefs', []),
     ir_drain_functions(Drains), ccl_items_note(Drains),                 % one drain per struct with an own array (below)

@@ -46,9 +46,16 @@ what runs today.
   reference is a pointer bound once -- the check sees a borrow (a
   parameter's, an element's, a local's address), the lowering loads
   through it and passes and returns the address; `new` is malloc and
-  `delete` free, an owner to the check. `test/cpp.sh`: two programs
-  built through `cicili++`, run and checked; classes, templates,
-  lambdas and try are refused by name until their step. GREEN.
+  `delete` free, an owner to the check. **The second step DONE:
+  classes**, desugared to that C by `library/ccl_cpp.pl` before the
+  check: a class is a struct of its data members with its base first,
+  a method a function over `this`, a constructor called at the
+  declaration, a destructor a defer of the scope (the exits run it,
+  last declared first), a static member a global, `new` and `delete`
+  construct and destroy, operators and default arguments resolve by
+  name and arity. `test/cpp.sh`: three programs built through
+  `cicili++`, run and checked; `virtual`, templates, lambdas and try
+  are refused by name until their step. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -109,9 +116,10 @@ reader: a C++ file is read whole, `-ast-dump` shows it, `-fsyntax-only`
 says nothing when it reads, and a C++ file that is C builds; the check and
 the lowering of the C++ forms are M6, in steps: the first, the forms that
 are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
-the casts, `enum class`, range-for, `new` and `delete`), builds and runs,
-and a file using a later step's form -- a class with members, a template,
-a lambda, `try` -- is refused at that form by its name. What is read, each
+the casts, `enum class`, range-for, `new` and `delete`), and the second,
+classes without `virtual`, build and run, and a file using a later step's
+form -- `virtual`, a template, a lambda, `try` -- is refused at that form
+by its name. What is read, each
 with its AST node:
 
 | C++ | AST |
