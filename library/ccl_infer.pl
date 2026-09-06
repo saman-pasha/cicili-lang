@@ -28,21 +28,31 @@
 ccl_scope(Fs) :- nb_getval('$ccl_scope', Ls), nb_getval('$ccl_gscope', G), append(Ls, [G], Fs).   % every frame, the file scope's last
 ccl_locals(Ls) :- nb_getval('$ccl_scope', Ls).                                                   % the open frames alone, innermost first
 ccl_declared(N, T) :- nb_getval('$ccl_scope', Ls), ( ccl_in_frames(Ls, N, T0) -> T = T0 ; ccl_gdeclared(N, T) ).
-ccl_gdeclared(N, T) :- ccl_cached('$ccl_gcache', N, T, ( nb_getval('$ccl_gscope', G), memberchk(N-T, G) )).
+ccl_gdeclared(N, T) :- ccl_cached_named('$ccl_g:', N, T, ( nb_getval('$ccl_gscope', G), memberchk(N-T, G) )).
 %% a small answer cache in a global -- the Key-Value pairs found so far; a
-%% copy of a dozen pairs is microseconds where the table's is a millisecond
+%% copy of a dozen pairs is microseconds where the table's is a millisecond.
+%% For keys that are terms (a type, a member list) whose values are small.
 ccl_cached(Cache, Key, Value, Goal) :-
     nb_getval(Cache, C),
     (   memberchk(Key-V0, C) -> Value = V0
     ;   call(Goal), nb_setval(Cache, [Key-Value|C]) ).
+%% the same for a NAME whose value may be large -- a tag's members, a
+%% typedef's resolution, a function's type: a global per name, so a lookup
+%% copies that one value and not every value found so far (nb_getval/2
+%% copies what it answers); the names found are an index of atoms
+ccl_cached_named(Prefix, Name, Value, Goal) :-
+    atom_concat(Prefix, names, IK), nb_getval(IK, Names),
+    (   memberchk(Name, Names) -> atom_concat(Prefix, Name, K), nb_getval(K, Value)
+    ;   call(Goal), atom_concat(Prefix, Name, K), nb_setval(K, Value), nb_setval(IK, [Name|Names]) ).
+ccl_named_caches(['$ccl_td:', '$ccl_tag:', '$ccl_r:', '$ccl_g:', '$ck_oa:']).
 ccl_in_frames([F|Fs], N, T) :- ( memberchk(N-T0, F) -> T = T0 ; ccl_in_frames(Fs, N, T) ).
 %% nb_getval/2 COPIES the term it answers, 0.05 ms for the typedef table and
 %% 0.15 ms for the tags, and the lowering of 170 lines asks 2000 typedefs
 %% and 1100 tags; the names a file uses are a dozen, so each answer is kept
 %% in a small cache (a copy of a dozen pairs is microseconds), emptied by
 %% ccl_tables_changed/0 wherever a table is written
-ccl_typedef_of(N, T) :- ccl_cached('$ccl_tdcache', N, T, ( nb_getval('$ccl_typedefs', L), memberchk(N-T, L) )).
-ccl_tag(Tag, Ms) :- ccl_cached('$ccl_tagcache', Tag, Ms, ( nb_getval('$ccl_tags', L), memberchk(Tag-Ms, L) )).
+ccl_typedef_of(N, T) :- ccl_cached_named('$ccl_td:', N, T, ( nb_getval('$ccl_typedefs', L), memberchk(N-T, L) )).
+ccl_tag(Tag, Ms) :- ccl_cached_named('$ccl_tag:', Tag, Ms, ( nb_getval('$ccl_tags', L), memberchk(Tag-Ms, L) )).
 
 %% ---- constants ---------------------------------------------------------------------
 ccl_enum_value(N, V) :- nb_getval('$ccl_enums', L), memberchk(N-V, L).
@@ -90,10 +100,11 @@ ccl_macro_error(Msg) :- ccl_here(F, L), throw(error(macro_error(Msg, here(F, L))
 %% asked 16,600 resolutions, most of them links of a chain)
 %% (asked 12,000 times in the lowering of 170 lines, most for a pointer or a
 %% plain base type: the functor decides the clause, one try)
+ccl_resolve_type(base(Q, [S|Ss]), base(Q, [S|Ss])) :- atom(S), !.               % a plain specifier list, the commonest: one call
 ccl_resolve_type(base(Q, S), T) :- !, ccl_resolve_base(S, Q, T).
 ccl_resolve_type(T, T).
 ccl_resolve_base([S|Ss], Q, base(Q, [S|Ss])) :- atom(S), !.                      % a plain specifier list, the common case: one try
-ccl_resolve_base([typedef(N)], Q, T) :- ccl_cached('$ccl_rcache', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
+ccl_resolve_base([typedef(N)], Q, T) :- ccl_cached_named('$ccl_r:', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
 ccl_resolve_base([struct(Tag, none)], Q, base(Q, [struct(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base([union(Tag, none)], Q, base(Q, [union(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base(S, Q, base(Q, S)).

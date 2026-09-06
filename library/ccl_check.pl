@@ -263,6 +263,9 @@ ck_set_fields_([K-S|Ps], Mode, St0, St) :-
 %% ---- own arrays ---------------------------------------------------------------------------
 %% `own node *c[4]': the key is the array's (a local's name, a field's path,
 %% listed in '$ck_arrays'), its state `array'; an element is index(Path, _)
+ck_own_array_type(arr(_, ET)) :- !, ck_own_type(ET).                            % asked of every type the lowering meets: the shape first
+ck_own_array_type(ptr(_, _)) :- !, fail.
+ck_own_array_type(base(_, [S|_])) :- atom(S), !, fail.
 ck_own_array_type(T) :- ccl_resolve_type(T, arr(_, ET)), ck_own_type(ET), !.
 ck_const(E, N) :- ccl_const_eval(E, N), !.                          % a literal, an enumerator, a constant expression
 ck_note_array(K) :- nb_getval('$ck_arrays', As), ( memberchk(K, As) -> true ; nb_setval('$ck_arrays', [K|As]) ).
@@ -301,7 +304,13 @@ ck_members_ok([member(MT, F, _)|Ms], Seen, Form) :-
     ;   ck_bounds_ok(MT, F, Form) ),
     ( ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]) -> ck_array_struct_ok(MT1, F, Form) ; true ),
     ck_members_ok(Ms, [F-MT|Seen], Form).
+%% answered once per tag: the lowering asks it of every struct in the symbol
+%% table, the headers' too, and walks their members with a resolution each
 ck_has_own_array(T) :-
+    (   ccl_resolve_type(T, base(_, [struct(Tag, _)])), Tag \== anon
+    ->  ccl_cached_named('$ck_oa:', Tag, V, ( ck_has_own_array_nocache(T) -> V = yes ; V = no )), V == yes
+    ;   ck_has_own_array_nocache(T) ).
+ck_has_own_array_nocache(T) :-
     ccl_members_of(T, Ms), member(member(MT, _, _), Ms),
     ( ck_own_array_type(MT) -> true ; ccl_resolve_type(MT, MT1), MT1 = base(_, [struct(_, _)]), ck_has_own_array(MT1) ), !.
 ck_no_array_copy(St, K, Form) :- ( ck_has_array_under(St, K) -> ck_fail(own_array_by_value, K, Form) ; true ).

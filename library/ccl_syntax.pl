@@ -331,7 +331,11 @@ ccl_scope_add(Ds) :- nb_getval('$ccl_scope', S), ( S = [F|S1] -> append(Ds, F, F
 ccl_note_typedef(N, T) :- nb_getval('$ccl_typedefs', L), nb_setval('$ccl_typedefs', [N-T|L]), ccl_tables_changed.
 ccl_note_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), nb_setval('$ccl_tags', [Tag-Ms|L]), ccl_tables_changed.
 %% the answer caches of ccl_typedef_of/2, ccl_tag/2 and ccl_members_layout/4 (ccl_infer), emptied when a table is written
-ccl_tables_changed :- nb_setval('$ccl_tdcache', []), nb_setval('$ccl_rcache', []), nb_setval('$ccl_tagcache', []), nb_setval('$ccl_laycache', []), nb_setval('$ccl_gcache', []), nb_setval('$ir_tcache', []), nb_setval('$ir_abicache', []).
+ccl_tables_changed :-
+    ccl_named_caches(Ps), ccl_forget_named(Ps),
+    nb_setval('$ccl_laycache', []), nb_setval('$ir_tcache', []), nb_setval('$ir_abicache', []).
+ccl_forget_named([]).
+ccl_forget_named([P|Ps]) :- atom_concat(P, names, IK), nb_setval(IK, []), ccl_forget_named(Ps).
 %% ---- the bulk noter: a whole unit tree into the tables, each set once ------------
 %% ccl_note_item/1 above is the parser's, one item at a time. Rebuilding the
 %% table from units -- the checker, the lowering, an included unit's scope --

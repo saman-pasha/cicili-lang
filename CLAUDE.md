@@ -229,7 +229,20 @@ being microseconds -- for `ccl_typedef_of/2`, `ccl_tag/2`, a typedef's
 full resolution (`ccl_resolve_type`, the chain walked once), a struct's
 layout (`ccl_members_layout/4`), the file scope's names and `ir_type/2`;
 `ccl_tables_changed/0` empties every cache and is called wherever a table
-is written (the noters, the summaries, `ccl_with_file`'s restore).
+is written (the noters, the summaries, `ccl_with_file`'s restore). **A
+cache keyed by a NAME whose values may be large -- a tag's members, a
+typedef's resolution, a function's type -- is a global per name**
+(`ccl_cached_named/4`: `'$ccl_tag:node'`, `'$ccl_r:size_t'`, `'$ccl_g:f'`,
+`'$ck_oa:node'`, each prefix with a `names` index of atoms), because
+`nb_getval/2` copies what it answers and a list of every pair found so far
+would be copied at every lookup -- the lowering's scan of the headers'
+92 tags would have put their member lists into the tag cache and every
+later `ccl_tag/2` would have copied them all. `ck_has_own_array/1` is
+answered per tag the same way (the lowering asks it of every struct in
+the symbol table for the drains). Where a resolution can be answered by
+the term's shape it is: `ccl_resolve_type/2`'s first clause takes a plain
+specifier list, `ck_own_array_type/1` an array, a pointer or a plain type
+in one head each.
 Measured on the B-tree: the check 0.28 -> 0.07 s, the lowering 0.7 ->
 0.4 s -> 0.21 s. The second half of the lowering's gain was three
 things found by ranking every predicate's calls (an instrumented copy of
@@ -799,6 +812,16 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `"` inside a quoted atom did not read either; `ensure_loaded/1` then says
   only `its clauses would not consult`, no line. Bisect by splitting the
   file into clauses (`test/cpp.pl` needed that twice).
+* **A cache in a global copies its whole content at every read**, so a
+  cache of pairs is for SMALL values only; a value that may be large (a
+  struct's members) goes in a global of its own keyed by name, with an
+  index of names (`ccl_cached_named/4`). Sped up this way, the inference
+  round (2026-09-06) took `ccl_resolve_type` from 10,500 calls to 6,300,
+  `ck_own_array_type` from 3,200 to 1,200 and `ck_has_own_array` from 800
+  to 400 on the B-tree, and moved the clock little: those calls were
+  one-clause answers already, 5 µs each. The inference is at its floor;
+  what remains is the check's walk (`ck_anchor_addrs` over every
+  statement, `ck_in` per state lookup) and the lowering's emission.
 * **Rank every predicate's calls before touching a pass**: an
   instrumented copy of the library first on `COCOLOG_LIBRARY`, every rule
   head renamed and wrapped with a counter (heads only), a query that

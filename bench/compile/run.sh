@@ -57,3 +57,26 @@ measure "cicili++ -fsyntax-only btree_cicili.cpp" "$ROOT/bin/cicili++" -fsyntax-
 measure "clang++ -fsyntax-only btree.cpp"         clang++ -fsyntax-only "$D/btree.cpp"
 echo "-- the binaries agree: each B-tree run on 100000 keys"
 for b in b4 b5 b6; do "$D/$b" 100000 | sed 's/.*ms //'; done
+# a compiler written in an interpreted language, for scale: the Python ones
+# this Mac can run. PY names a python3 with pycparser and shivyc installed
+# (pip install pycparser shivyc), PYCPARSER_FAKE pycparser's
+# utils/fake_libc_include directory (its wheel ships none); without them
+# the rows are skipped
+PY=${PY:-python3}
+if "$PY" -c "import pycparser" 2>/dev/null && [ -n "$PYCPARSER_FAKE" ] && [ -d "$PYCPARSER_FAKE" ]; then
+    echo "-- in Python: pycparser, the C parser (clang -E over its fake headers inside), read only ($K runs each)"
+    cp "$ROOT/bench/btree/btree_c.c" "$D/btree_py.c"
+    printf '#include <stdio.h>\nint main() { printf("hello, python\\n"); return 0; }\n' > "$D/hello_py.c"
+    for f in hello_py.c btree_py.c; do t=$("$PY" "$HERE/pycparser_parse.py" "$PYCPARSER_FAKE" "$D/$f" "$K"); printf "%-40s min %6.3f s\n" "pycparser $f" "$t"; done
+    measure "cicili++ -fsyntax-only hello.cpp" "$ROOT/bin/cicili++" -fsyntax-only "$D/hello.cpp"
+else
+    echo "-- in Python: pycparser skipped (PY=python3 with pycparser, PYCPARSER_FAKE=its utils/fake_libc_include)"
+fi
+if "$PY" -c "import shivyc" 2>/dev/null; then
+    echo "-- in Python: ShivyC, a C compiler, to assembly (its front end alone: it refuses macOS and the B-tree's C)"
+    printf 'int printf(const char *fmt);\nint main() { printf("hello, python\\n"); return 0; }\n' > "$D/hello_sh.c"
+    t=$("$PY" "$HERE/shivyc_asm.py" "$D/hello_sh.c" "$K" 2>/dev/null); printf "%-40s min %6.3f s   (plus %s to start python and import it)\n" "shivyc hello_sh.c" "$t" "$( { /usr/bin/time -p "$PY" -c 'import shivyc' ; } 2>&1 | awk '/real/ {print $2 " s"}')"
+    measure "cicili++ -S hello.cpp" "$ROOT/bin/cicili++" -S "$D/hello.cpp" -o "$D/h.s"
+else
+    echo "-- in Python: ShivyC skipped (pip install shivyc into PY)"
+fi
