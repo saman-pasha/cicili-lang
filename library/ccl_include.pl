@@ -449,7 +449,11 @@ ccl_sum_terms(F, Terms) :-
     ;   read_file_to_codes(F, Codes), atom_codes(A, Codes), atomic_list_concat(Lines, '\n', A), ccl_sum_lines(Lines, Terms), nb_setval(K, Terms) ).
 ccl_sum_forget(F) :- atom_concat('$ccl_sum:', F, K), nb_setval(K, none).
 ccl_sum_lines([], []).
-ccl_sum_lines([L|Ls], Ts) :- ( L == '' -> Ts = Ts1 ; sub_atom(L, _, 1, 0, '.'), sub_atom(L, 0, _, 1, A), catch(term_to_atom(T, A), _, fail) -> Ts = [T|Ts1] ; Ts = Ts1 ), ccl_sum_lines(Ls, Ts1).
+ccl_sum_lines([L|Ls], Ts) :-                                                  % every position bound: a free one enumerates, 0.7 ms a line
+    (   L == '' -> Ts = Ts1
+    ;   atom_length(L, N), N1 is N - 1, sub_atom(L, N1, 1, 0, '.'), sub_atom(L, 0, N1, 1, A), catch(term_to_atom(T, A), _, fail) -> Ts = [T|Ts1]
+    ;   Ts = Ts1 ),
+    ccl_sum_lines(Ls, Ts1).
 ccl_sum_load(F, D, T, G, E, Tmpls, Names) :-
     ccl_sum_terms(F, Terms),
     findall(N-Ty, member(decl(N, Ty), Terms), D), findall(N-Ty, member(typedef(N, Ty), Terms), T),

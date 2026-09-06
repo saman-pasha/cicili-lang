@@ -24,9 +24,10 @@ reads them and puts this checkout's `library/` at the FRONT of
 
 ```
 module/cicili.cicili     the module: the C side (registration, ccl_version/1,
-                         ccl_cocolog_version/1 over the engine's coco_version_text, and THE LEXER,
-                         ccl_lex_native/6 in Cicili) and the Prolog half -- cicili_ast/2,3 (the
-                         reader's door) and the objects layer
+                         ccl_cocolog_version/1 over the engine's coco_version_text, THE LEXER,
+                         ccl_lex_native/6 in Cicili, and ccl_host_arch/1, the arch it was compiled
+                         on) and the Prolog half -- cicili_ast/2,3 (the reader's door) and the
+                         objects layer
 library/ccl_syntax.pl    the lexer (the DCG: the specification and the fallback) and the parser;
                          COMMITTED (library/*.so is not)
 library/ccl_include.pl   #include: the inclusion path (the SDK's and LLVM's conventional
@@ -43,7 +44,8 @@ library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause p
 library/ccl_build.pl     cicili_compile/3 (the embedded LLVM, nothing else), cicili_link/3 (cc)
 library/ccl_check.pl     the safe part: owners (own), move, the flow walk; run first by cicili_ir
 test/c/safe/             programs the check must REFUSE, each with the error its .expect names
-bin/cicili               the command: clang's arguments, one cocolog run over ./KB (ccl_drive/2)
+bin/cicili               the command: clang's arguments, one cocolog run over ~/.cicili/KB (ccl_drive/2);
+                         six forks, since each is a floor (the findings)
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 21 checks over test/cpp/*.cpp, the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
@@ -742,10 +744,31 @@ module (a segfault that looked like the error path's). The build mirrors `module
 * **A summary's terms are parsed once per process** (`ccl_sum_terms/2`
   caches them in `'$ccl_sum:<File>'`, `ccl_sum_write/4` forgets its own):
   every consumer of an include asked for them again -- the validity check,
-  the Env, the symbol table, the bulk rebuild, the driver's deps -- and a
-  600-line summary costs 0.15 s to parse, 0.26 s more when `ccl_split/3`
-  cut the lines (now `atomic_list_concat/3`); the B-tree's read went from
-  3.0 s to 2.0 s, its build from 5.2 s to 3.6 s (`bench/compile/run.sh`).
+  the Env, the symbol table, the bulk rebuild, the driver's deps. And the
+  parse itself is 20 ms for 622 lines: `term_to_atom/2` is the engine's
+  reader in C. What made it 0.5 s was the line-end test, `sub_atom(L, _, 1,
+  0, '.')` with a free position, 0.7 ms a line (the finding below); with
+  `atom_length/2` and every position bound, 30 ms. The B-tree's read: 3.0 s
+  when the terms were parsed five times, 2.0 s parsed once, 0.8 s parsed
+  right.
+* **A process spawn costs 0.14 s** (`proc_run/4` through the shell), and
+  `uname -m` was spawned once by the preprocessor for the predefined
+  macros and once by the lowering for the ABI -- 0.28 s of every build.
+  `ccl_host_arch/1` in the module answers the arch it was COMPILED on
+  (`@ifdef __aarch64__`), and both ask it first, `uname` only without the
+  module. The one spawn left in a build is the link.
+* **The command's shell is a floor of its own: a fork per `$(...)` and per
+  pipe, 10 ms each on macOS (50 ms under this session's sandbox, where
+  `sh -c true` alone takes 0.11 s).** `bin/cicili` forked twenty times --
+  `dirname`, `cd`, `sed | head` twice for the store's stamp, `cat` twice,
+  `printf | sed` per argument, four `printf | grep` passes over the answer
+  -- and forks six now: one `cd`, one `awk` for both versions, `read` for
+  the stamp, `case` for the exit, one `awk` pass that splits diagnostics
+  from the `cicili:` lines. An empty file's syntax check: 0.62 -> 0.39 s in
+  C++ mode, 1.05 -> 0.1 s in C mode over the store; the B-tree's read
+  1.89 -> 0.82 s, its build 3.45 -> 2.32 s. What is left of the C++ floor
+  is cocolog's start (0.06 s), the libraries' consult (0.03 s), the
+  driver's own work (0.12 s for an empty file) and the shell.
 * **A lexer in cocolog's DCG costs 0.15 ms a token, whatever is done to
   its clauses** (per-code recursion, a clause try per token kind, an atom
   per word); the way out is a cocolog module in Cicili -- the language

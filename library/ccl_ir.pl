@@ -71,8 +71,9 @@ ir_reset :-
     ir_arch_init.
 ir_get(K, V) :- nb_getval(K, V).                                       % every '$ir_*' key is set by ir_reset / ir_function
 %% the host's architecture, once per process: sysv (x86-64) or aapcs (arm64)
-ir_arch_init :-
+ir_arch_init :-                                                                  % the module's compile-time arch (ccl_host_arch/1); uname only without it
     (   once(catch(nb_getval('$ir_arch', _), _, fail)) -> true
+    ;   once(catch(ccl_host_arch(M0), _, fail)) -> ( M0 == arm64 -> A = aapcs ; A = sysv ), nb_setval('$ir_arch', A)
     ;   ( once(catch(proc_run('uname -m', 5000, Out, 0), _, fail)), ir_text_atom(Out, M), ( sub_atom(M, _, _, _, arm64) ; sub_atom(M, _, _, _, aarch64) ) -> A = aapcs ; A = sysv ),
         nb_setval('$ir_arch', A) ).
 ir_text_atom(Out, A) :- ( atom(Out) -> A = Out ; is_list(Out) -> atom_codes(A, Out) ; A = '' ).

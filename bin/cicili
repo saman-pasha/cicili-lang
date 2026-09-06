@@ -14,8 +14,11 @@
 # included, is served from it as static data, until the SDK or the reader's
 # grammar changes. --no-kb keeps everything in memory.
 # Diagnostics are file:line: error: what, the exit status 1 when any.
-HERE=$(cd "$(dirname "$0")" && pwd)
-ROOT=$(cd "$HERE/.." && pwd)
+# every $(...) and every pipe is a fork, 10 ms each on macOS: the script
+# forks six times where it forked twenty, and the floor of a build fell by
+# a quarter of a second (bench/compile/run.sh)
+case $0 in */*) HERE=$(cd "${0%/*}" && pwd) ;; *) HERE=$(cd "$(dirname "$(command -v "$0")")" && pwd) ;; esac
+ROOT=${HERE%/*}
 COCOLOG=${COCOLOG:-$HOME/Projects/GitHub/cocolog}
 if [ -x "$COCOLOG/cocolog" ]; then C="$COCOLOG/cocolog"; elif command -v cocolog >/dev/null 2>&1; then C=$(command -v cocolog); else echo "cicili: no cocolog (set COCOLOG)" >&2; exit 1; fi
 export COCOLOG_LIBRARY="$ROOT/library${COCOLOG_LIBRARY:+:$COCOLOG_LIBRARY}"
@@ -26,16 +29,18 @@ store="--embed $KB"
 # it): a new version makes every row dead, and cocolog's store never reclaims
 # a retracted row -- a store grown fat slows every predicate's first call --
 # so a new version starts a new store. test/config.sh is this function's twin.
-kb_prepare() {
-  v="$(sed -n 's/^ccl_reader_version(\([0-9]*\))\..*/\1/p' "$ROOT/library/ccl_syntax.pl" | head -1).$(sed -n 's/^ccl_lowering_version(\([0-9]*\))\..*/\1/p' "$ROOT/library/ccl_ir.pl" | head -1)"
-  stamp="$1.version"
-  [ -f "$1/data.bin" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$v" ] && rm -rf "$1"
-  mkdir -p "$1"; [ "$(cat "$stamp" 2>/dev/null)" = "$v" ] || echo "$v" > "$stamp"
+kb_prepare() {                        # one awk for both versions, read for the stamp
+  v=$(awk '/^ccl_reader_version\(/ { sub(/^ccl_reader_version\(/, ""); sub(/\).*/, ""); r = $0 } /^ccl_lowering_version\(/ { sub(/^ccl_lowering_version\(/, ""); sub(/\).*/, ""); l = $0 } END { print r "." l }' "$ROOT/library/ccl_syntax.pl" "$ROOT/library/ccl_ir.pl")
+  stamp="$1.version"; have=""
+  [ -f "$stamp" ] && read -r have < "$stamp"
+  if [ -f "$1/data.bin" ] && [ "$have" != "$v" ]; then rm -rf "$1"; have=""; fi
+  [ -d "$1" ] || mkdir -p "$1"
+  [ "$have" = "$v" ] || echo "$v" > "$stamp"
 }
 inputs=""; opts=""; out=""; opt=""; verbose=""
 [ "${CICILI_LANG:-c}" = cpp ] && opts="$opts lang(cpp),"
 need() { [ $# -ge 2 ] || { echo "$me: error: argument to '$1' is missing" >&2; exit 1; }; }
-q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/\\\\'/g")"; }
+q() { case $1 in *\'*) printf "'%s'" "$(printf '%s' "$1" | sed "s/'/\\\\'/g")" ;; *) printf "'%s'" "$1" ;; esac; }
 while [ $# -gt 0 ]; do
   case "$1" in
     --version) "$C" --local query "use_module(library(cicili)), ccl_version(V), ( catch(ccl_cocolog_version(CV), _, fail) -> true ; CV = '?' ), ( catch(use_module(library(ccl_llvm)), _, fail), catch(ccl_llvm_version(L), _, fail) -> true ; L = 'not built' ), write('cicili-lang '), write(V), write(' (cocolog '), write(CV), write('; LLVM '), write(L), write(')'), nl" 2>/dev/null | grep -a "^cicili-lang"; exit 0 ;;
@@ -65,8 +70,11 @@ done
 inputs="[${inputs%,}]"; opts="[${opts%,}]"
 case "$store" in --embed*) kb_prepare "$KB" ;; esac
 res=$("$C" $store query "use_module(library(cicili)), ccl_drive($inputs, $opts)" 2>&1)
-printf '%s\n' "$res" | grep -a ": error: \|: note: " >&2      # diagnostics on stderr, as clang
-printf '%s\n' "$res" | grep -a "^cicili: \|^unit(" | grep -av "^cicili: ok$"
-printf '%s\n' "$res" | grep -aq "^cicili: ok$" && exit 0
-printf '%s\n' "$res" | grep -aq "^cicili: [0-9]* error" || { printf '%s\n' "$res" | grep -a "ERROR\|error" | head -3 | sed 's/^/cicili: /'; }
+# one pass over the answer: diagnostics on stderr, as clang; `cicili: ...' and `unit(...)' lines on stdout
+printf '%s\n' "$res" | awk '/: error: |: note: / { print > "/dev/stderr"; next } /^cicili: ok$/ { next } /^cicili: |^unit\(/ { print }'
+case "$res" in
+  *"cicili: ok"*) exit 0 ;;
+  *"cicili: "[0-9]*" error"*) exit 1 ;;
+esac
+printf '%s\n' "$res" | grep -a "ERROR\|error" | head -3 | sed 's/^/cicili: /'
 exit 1

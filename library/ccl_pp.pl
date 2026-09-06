@@ -71,8 +71,9 @@ pp_predefine_one(Name, Text) :-
     (   append(N1, [0'(|PCs], NCs) -> atom_codes(N, N1), append(PCs0, [0')], PCs), pp_param_names(PCs0, Ps)
     ;   N = Name, Ps = obj ),
     atom_codes(Text, TCs), pp_define(N, Ps, TCs).
-pp_arch(A) :-
+pp_arch(A) :-                                                                    % the module's compile-time arch; uname only without the module
     (   catch(nb_getval('$pp_arch', A0), _, fail) -> A = A0
+    ;   once(catch(ccl_host_arch(A1), _, fail)) -> A = A1, nb_setval('$pp_arch', A)
     ;   ( once(catch(proc_run('uname -m', 5000, Out, _), _, fail)), atom_codes(A1, Out), sub_atom(A1, 0, _, _, arm) -> A = arm64 ; A = x86_64 ),
         nb_setval('$pp_arch', A) ).
 

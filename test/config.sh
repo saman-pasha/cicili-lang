@@ -18,9 +18,11 @@ export CICILI_KB="${CICILI_KB:-$HOME/.cicili/KB}"
 # store never reclaims a retracted row, and a fat store slows every
 # predicate's first call
 ccl_kb_prepare() {
-  v="$(sed -n 's/^ccl_reader_version(\([0-9]*\))\..*/\1/p' "$ROOT/library/ccl_syntax.pl" | head -1).$(sed -n 's/^ccl_lowering_version(\([0-9]*\))\..*/\1/p' "$ROOT/library/ccl_ir.pl" | head -1)"
-  stamp="$1.version"
-  [ -f "$1/data.bin" ] && [ "$(cat "$stamp" 2>/dev/null)" != "$v" ] && rm -rf "$1"
-  mkdir -p "$1"; [ "$(cat "$stamp" 2>/dev/null)" = "$v" ] || echo "$v" > "$stamp"
+  v=$(awk '/^ccl_reader_version\(/ { sub(/^ccl_reader_version\(/, ""); sub(/\).*/, ""); r = $0 } /^ccl_lowering_version\(/ { sub(/^ccl_lowering_version\(/, ""); sub(/\).*/, ""); l = $0 } END { print r "." l }' "$ROOT/library/ccl_syntax.pl" "$ROOT/library/ccl_ir.pl")
+  stamp="$1.version"; have=""
+  [ -f "$stamp" ] && read -r have < "$stamp"
+  if [ -f "$1/data.bin" ] && [ "$have" != "$v" ]; then rm -rf "$1"; have=""; fi
+  [ -d "$1" ] || mkdir -p "$1"
+  [ "$have" = "$v" ] || echo "$v" > "$stamp"
 }
 ccl_kb_prepare "$CICILI_KB"

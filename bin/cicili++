@@ -9,5 +9,5 @@
 # says nothing when it reads; the check and the lowering of the C++ forms are
 # M6, so a C++ file that is C builds, and one that is not is refused at the
 # first form the lowering does not have.
-HERE=$(cd "$(dirname "$0")" && pwd)
+case $0 in */*) HERE=${0%/*} ;; *) HERE=$(dirname "$(command -v "$0")") ;; esac
 CICILI_LANG=cpp CICILI_ME='cicili++' exec "$HERE/cicili" --no-kb "$@"
