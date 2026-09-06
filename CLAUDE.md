@@ -560,6 +560,37 @@ namespace's). Not done: partial and explicit specializations, a
 non-type argument deduced, `template` inside a class, a template
 template parameter, `typename T::x`, SFINAE.
 
+**M6's fifth step (0.36): lambdas, a class of the captures.** The
+reader gives `lambda(Caps, Params, Ret | none, Body)` with `cap(val, N)`,
+`cap(ref, N)`, `cap(default, '=' | '&')`, `cap(this)`. `cpp_lambda/6`
+makes the class `lambda.K` (`'$cpp_lambdas'` counts): a member per
+capture -- by value the local's type (decayed), by reference
+`ref([], T)` -- and the method `operator()` over the parameters with
+the body as written, registered and desugared like a class written out
+under `cpp_isolated` (so inside the body the captured names are
+members, `this->k`, and an enclosing local NOT captured is undeclared,
+as C++ has it); the expression becomes `compound_lit(base([],
+[typedef('lambda.K')]), init([...]))` of the captures' values, `&t` for
+a reference. A default capture takes every enclosing local the body
+names (`cpp_lambda_free/3`: the body's `id`s minus its parameters and
+its own declarations, kept when `cpp_local`); the result type is the
+first `return`'s, typed under the parameters (`cpp_lambda_ret/3`), or
+void. `auto f = <lambda>` -- `auto` the reader could not infer -- takes
+the initializer's type in `cpp_decl_pieces` (the initializer rewritten
+once; any `auto` does: a method's or a template's result). A call `f(a)`
+of a local whose class has `operator()` is `lambda.K.op.call.n(&f, a)`
+(the first `cpp_call` clause), which also serves a function template's
+parameter of the closure's type: `apply(addk, 1)` copies the closure
+(its reference member still the caller's `t`). THE LOWERING reads a
+REFERENCE MEMBER through (`ir_ref_member/4` in `ir_lval(member)` and
+`ir_lval(arrow)`: the slot's address loaded, then the referent), while
+an initializer stores the address as any pointer; the check's
+`ccl_type_of` already unrefs a member's type. Gated by
+`test/cpp/run/lambdas.cpp`. Not done: `[this]` (refused,
+`capture_this`), a lambda inside a template's body before its
+instantiation, `mutable` (every capture is mutable), a lambda's
+destructor, `std::function`.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

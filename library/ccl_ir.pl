@@ -722,8 +722,11 @@ ir_lval(index(A, I), Addr, T, LL) :- !,
     ir_fresh(Addr), ir_ins([Addr, ' = getelementptr inbounds ', LL, ', ptr ', P, ', i64 ', I1]).
 ir_lval(member(E, N), Slot, T, LL) :- !,
     ( ir_lval(E, Base0, ST, _) -> ir_slot_addr(Base0, Base) ; ir_expr(E, SV, ST, SLL), ir_fresh(Base), ir_alloca_typed(Base, ST), ir_ins(['store ', SLL, ' ', SV, ', ptr ', Base]) ),
-    ir_member_slot(Base, ST, N, Slot, T), ir_type(T, LL).
-ir_lval(arrow(E, N), Slot, T, LL) :- !, ir_expr(E, P, PT, _), ir_elem(PT, ST), ir_member_slot(P, ST, N, Slot, T), ir_type(T, LL).
+    ir_member_slot(Base, ST, N, Slot0, T0), ir_ref_member(Slot0, T0, Slot, T), ir_type(T, LL).
+ir_lval(arrow(E, N), Slot, T, LL) :- !, ir_expr(E, P, PT, _), ir_elem(PT, ST), ir_member_slot(P, ST, N, Slot0, T0), ir_ref_member(Slot0, T0, Slot, T), ir_type(T, LL).
+%% C++: a member that is a reference (a lambda's capture by reference) holds an address, read through
+ir_ref_member(Slot0, T0, Slot, T) :- ( T0 = ref(_, _) ; T0 = rref(_, _) ), !, ir_slot_addr(Slot0, A0), ir_ref_slot(A0, T0, Slot, T).
+ir_ref_member(Slot, T, Slot, T).
 ir_lval(compound_lit(T, Init), Addr, T, LL) :- !, ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_type(T, LL).
 ir_lval(E, _, _, _) :- ir_fail(lvalue(E)).
 %% an alloca for a value of a C type: a struct or a union aligned as C aligns it

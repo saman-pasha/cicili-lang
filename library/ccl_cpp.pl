@@ -40,11 +40,22 @@
 %% template item itself is nothing. A template from a header's summary has
 %% no body to copy and is refused.
 %%
+%% Lambdas, the fifth step: a lambda is a class `lambda.K' of its captures
+%% -- a member per capture, by value a copy, by reference a reference
+%% member (the lowering reads a reference member through, as a reference
+%% variable) -- with `operator()' its body, made and desugared like a class
+%% written out; the expression is a compound literal of the captures'
+%% values (`&t' for a reference), `auto f = ...' takes its type, and a call
+%% `f(a)' of a local of such a class goes to `lambda.K.op.call.n(&f, a)'.
+%% A default capture takes every enclosing local the body names; the
+%% result type is deduced from the first return when not given.
+%%
 %% Not this step (refused by name): more than one base, a member of class
 %% type with a constructor, an array of a class, a global of a class with a
 %% constructor, a temporary's destructor, operator= and copy constructors
 %% (a struct copies), a pure virtual method, partial and explicit
-%% specializations, a template's non-type argument deduced.
+%% specializations, a template's non-type argument deduced, `[this]' in a
+%% lambda, a lambda in a template's body before its instantiation.
 
 ccl_cpp_units(Units0, Units) :- cpp_register_units(Units0), cpp_units(Units0, Units).
 cpp_units([], []).
@@ -57,7 +68,7 @@ cpp_flush_instances(Is0, Is) :-
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
     nb_setval('$cpp_classes', []), nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []),
-    nb_setval('$cpp_templates', []), nb_setval('$cpp_instances', []), nb_setval('$cpp_instance_items', []),
+    nb_setval('$cpp_templates', []), nb_setval('$cpp_instances', []), nb_setval('$cpp_instance_items', []), nb_setval('$cpp_lambdas', 0),
     forall(member(unit(Is), Units), cpp_register_(Is)).
 cpp_register_([template(_, TPs, Item)|Is]) :- !, ( cpp_template_name(Item, N) -> nb_getval('$cpp_templates', Ts), nb_setval('$cpp_templates', [N-tmpl(TPs, Item)|Ts]) ; true ), cpp_register_(Is).
 cpp_register_([]).
@@ -319,6 +330,9 @@ cpp_decl_stmt(Ctx, L, Sto, B, Vs, S) :-
     cpp_decl_pieces(Ctx, L, Sto, B, Vs, Pieces),
     ( Pieces = [One] -> S = One ; S = '$splice'(Pieces) ).
 cpp_decl_pieces(_, _, _, _, [], []).
+cpp_decl_pieces(Ctx, L, Sto, B, [var(N, base(Q, [auto]), I0)|Vs], Pieces) :- !,           % auto the reader could not infer: a lambda, a call of a method or a template
+    cpp_expr(Ctx, I0, I), ( ccl_type_of(I, T0), T0 \== unknown -> cpp_decayed(T0, T1), T1 = base(_, S), T = base(Q, S) ; cpp_refuse(L, auto(N)) ),
+    cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T, I)|Vs], Pieces).
 cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T0, I)|Vs], Pieces) :-
     cpp_type(T0, T),
     (   Sto \== static, Sto \== extern, cpp_class_of_type(T, C), cpp_has_ctors(C), cpp_ctor_args(Ctx, I, C, Args)
@@ -362,7 +376,7 @@ cpp_expr(Ctx, delete(X), E) :- !, cpp_expr(Ctx, X, X1), cpp_delete(X1, E).
 cpp_expr(Ctx, ccast(functional, base(Q, [typedef(C)]), X), E) :- cpp_class(C, _), !, cpp_expr(Ctx, X, X1), cpp_temporary(base(Q, [typedef(C)]), C, [X1], E).
 cpp_expr(Ctx, ccast(K, T0, X), ccast(K, T, X1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1).
 cpp_expr(Ctx, stmt_expr(block(Is)), stmt_expr(block(Js))) :- !, ccl_scope_push, cpp_stmts(Ctx, Is, Js), ccl_scope_pop.
-cpp_expr(_, lambda(A, B, C, D), lambda(A, B, C, D)) :- !.
+cpp_expr(Ctx, lambda(Caps, Ps, Ret, Body), E) :- !, cpp_lambda(Ctx, Caps, Ps, Ret, Body, E).
 cpp_expr(_, str(S), str(S)) :- !.
 cpp_expr(Ctx, E, E1) :- E =.. [F|As], cpp_exprs(Ctx, As, Bs), E1 =.. [F|Bs].
 cpp_local(N) :- ccl_locals(Fs), member(F, Fs), memberchk(N-_, F), !.
@@ -395,6 +409,7 @@ cpp_dispatch(P, C, Slot, As, call(arrow(Vptr, Slot), [P|As])) :- cpp_data_member
 %% a value whose dynamic type is its static one: a named object, or a member of one; not a reference
 cpp_static_object(id(N)) :- ccl_declared(N, T), \+ T = ref(_, _), \+ T = rref(_, _).
 cpp_static_object(member(X, _)) :- cpp_static_object(X).
+cpp_call(_, id(F), As, call(id(Name), [addr(id(F))|As1])) :- cpp_local(F), cpp_class_of_type_of(id(F), C), length(As, N), cpp_method(C, operator('()'), N, Name, _), !, cpp_fill_defaults(Name, As, As1).   % a lambda, or any object with operator()
 cpp_call(_, tmpl(F, TArgs), As, call(id(Name), As)) :- cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_types(TArgs, TArgs1), cpp_instantiate_function(F, TArgs1, As, Name).
 cpp_call(_, id(F), As, call(id(Name), As)) :- \+ cpp_local(F), cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_instantiate_function(F, [], As, Name).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
@@ -521,3 +536,46 @@ cpp_subst_list([], _, []).
 cpp_subst_list([X|Xs], B, [Y|Ys]) :- cpp_subst(X, B, Y), cpp_subst_list(Xs, B, Ys).
 cpp_merge_quals(Q, base(Q2, S), base(Q3, S)) :- !, append(Q, Q2, Q3).
 cpp_merge_quals(_, A, A).
+
+%% ---- lambdas: a class of the captures, operator() the body ----------------------------------
+cpp_lambda(Ctx, Caps, Ps0, Ret0, Body, compound_lit(T, init(Items))) :-
+    ( memberchk(cap(this), Caps) -> cpp_refuse(0, capture_this) ; true ),
+    cpp_plain_params(Ps0, Ps),
+    cpp_captures(Caps, Ps, Body, Captures),
+    nb_getval('$cpp_lambdas', K0), K is K0 + 1, nb_setval('$cpp_lambdas', K), atomic_list_concat(['lambda.', K], Name),
+    T = base([], [typedef(Name)]),
+    ( Ret0 == none -> cpp_lambda_ret(Ps, Body, Ret) ; cpp_type(Ret0, Ret) ),
+    findall(member(MT, N, none), ( member(N-How, Captures), ( How = val(CT) -> MT = CT ; How = ref(CT), MT = ref([], CT) ) ), Ms0),
+    findall(item([], V), ( member(N-How, Captures), ( How = val(_) -> V0 = id(N) ; V0 = addr(id(N)) ), cpp_expr(Ctx, V0, V) ), Items),
+    append(Ms0, [method(0, [], Ret, operator('()'), Ps, false, Body)], Ms),
+    cpp_isolated(( cpp_register_class(0, Name, [], Ms), cpp_item(declare(0, base([], [class(struct, Name, [], Ms)])), Its) )),
+    cpp_add_instance_items(Its).
+%% the captures, Name-val(Type) | Name-ref(Type): the ones named, then, under a default, every enclosing local the body names
+cpp_captures(Caps, Ps, Body, Captures) :-
+    findall(N-How, ( member(cap(K, N), Caps), K \== default, ccl_type_of(id(N), CT), CT \== unknown, cpp_decayed(CT, CT1), ( K == val -> How = val(CT1) ; How = ref(CT1) ) ), Explicit),
+    (   memberchk(cap(default, D), Caps)
+    ->  cpp_lambda_free(Ps, Body, Names),
+        findall(N-How, ( member(N, Names), \+ memberchk(N-_, Explicit), cpp_local(N), ccl_type_of(id(N), CT), CT \== unknown, cpp_decayed(CT, CT1), ( D == '=' -> How = val(CT1) ; How = ref(CT1) ) ), Implicit)
+    ;   Implicit = [] ),
+    append(Explicit, Implicit, Captures).
+cpp_lambda_free(Ps, Body, Names) :-
+    cpp_ids(Body, Ids0), sort(Ids0, Ids), findall(N, member(param(_, N), Ps), PNs), cpp_bound(Body, Bs0), append(PNs, Bs0, Bound),
+    findall(N, ( member(N, Ids), \+ memberchk(N, Bound) ), Names).
+cpp_ids(id(N), [N]) :- atom(N), !.
+cpp_ids(T, Ns) :- compound(T), !, T =.. [_|As], cpp_ids_list(As, Ns).
+cpp_ids(_, []).
+cpp_ids_list([], []).
+cpp_ids_list([A|As], Ns) :- cpp_ids(A, N1), cpp_ids_list(As, N2), append(N1, N2, Ns).
+cpp_bound(var(N, _, _), [N]) :- atom(N), !.
+cpp_bound(T, Ns) :- compound(T), !, T =.. [_|As], cpp_bound_list(As, Ns).
+cpp_bound(_, []).
+cpp_bound_list([], []).
+cpp_bound_list([A|As], Ns) :- cpp_bound(A, N1), cpp_bound_list(As, N2), append(N1, N2, Ns).
+%% the result type when not written: the first return's, typed under the parameters
+cpp_lambda_ret(Ps, Body, Ret) :-
+    (   cpp_first_return(Body, E)
+    ->  ccl_scope_push, ccl_declare_params(Ps), ( ccl_type_of(E, T), T \== unknown -> Ret = T ; Ret = none ), ccl_scope_pop,
+        ( Ret == none -> cpp_refuse(0, lambda_result_type) ; true )
+    ;   Ret = base([], [void]) ).
+cpp_first_return(return(_, E), E) :- !.
+cpp_first_return(T, E) :- compound(T), T =.. [_|As], member(A, As), cpp_first_return(A, E), !.

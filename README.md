@@ -63,10 +63,15 @@ what runs today.
   (`Buf.int.4`, `max2.double`): a class template at every template-id
   the walk meets, a function template at a call with its arguments
   explicit or deduced from the arguments' types, the instances joining
-  the unit's items. `test/cpp.sh`: five programs built through
-  `cicili++`, run and checked, plus the reader's `classes.cpp` and
-  `templates.cpp`; lambdas and try are refused by name until their
-  step. GREEN.
+  the unit's items. **The fifth step DONE: lambdas**, a class of the
+  captures (by value a copy, by reference a reference member) with
+  `operator()` its body, the expression a compound literal of the
+  captures' values, `auto f = ...` taking its type, a call of it going
+  to the operator; a default capture takes every enclosing local the
+  body names, the result type is deduced from the first `return`.
+  `test/cpp.sh`: six programs built through `cicili++`, run and
+  checked, plus the reader's `classes.cpp` and `templates.cpp`; `try`
+  is refused by name. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -128,9 +133,8 @@ says nothing when it reads, and a C++ file that is C builds; the check and
 the lowering of the C++ forms are M6, in steps: the first, the forms that
 are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
 the casts, `enum class`, range-for, `new` and `delete`), the second,
-classes, the third, `virtual`, and the fourth, templates, build and run,
-and a file using a later step's form -- a lambda, `try` -- is refused at
-that form by its name. What is read, each
+classes, the third, `virtual`, the fourth, templates, and the fifth,
+lambdas, build and run; `try` is refused by its name. What is read, each
 with its AST node:
 
 | C++ | AST |
