@@ -25,11 +25,24 @@
 %% no catch on a read of a global here: the keys are set once per process
 %% (ccl_ensure_globals/0, library(ccl_include)), and a catch costs in
 %% proportion to the terms bound inside it (a cocolog finding, in CLAUDE.md)
-ccl_scope(Fs) :- nb_getval('$ccl_scope', Fs).                        % set by ccl_scope_init; bare: a catch would copy it
-ccl_declared(N, T) :- ccl_scope(Fs), ccl_in_frames(Fs, N, T).
+ccl_scope(Fs) :- nb_getval('$ccl_scope', Ls), nb_getval('$ccl_gscope', G), append(Ls, [G], Fs).   % every frame, the file scope's last
+ccl_locals(Ls) :- nb_getval('$ccl_scope', Ls).                                                   % the open frames alone, innermost first
+ccl_declared(N, T) :- nb_getval('$ccl_scope', Ls), ( ccl_in_frames(Ls, N, T0) -> T = T0 ; ccl_gdeclared(N, T) ).
+ccl_gdeclared(N, T) :- ccl_cached('$ccl_gcache', N, T, ( nb_getval('$ccl_gscope', G), memberchk(N-T, G) )).
+%% a small answer cache in a global -- the Key-Value pairs found so far; a
+%% copy of a dozen pairs is microseconds where the table's is a millisecond
+ccl_cached(Cache, Key, Value, Goal) :-
+    nb_getval(Cache, C),
+    (   memberchk(Key-V0, C) -> Value = V0
+    ;   call(Goal), nb_setval(Cache, [Key-Value|C]) ).
 ccl_in_frames([F|Fs], N, T) :- ( memberchk(N-T0, F) -> T = T0 ; ccl_in_frames(Fs, N, T) ).
-ccl_typedef_of(N, T) :- nb_getval('$ccl_typedefs', L), memberchk(N-T, L).
-ccl_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), memberchk(Tag-Ms, L).
+%% nb_getval/2 COPIES the term it answers, 0.05 ms for the typedef table and
+%% 0.15 ms for the tags, and the lowering of 170 lines asks 2000 typedefs
+%% and 1100 tags; the names a file uses are a dozen, so each answer is kept
+%% in a small cache (a copy of a dozen pairs is microseconds), emptied by
+%% ccl_tables_changed/0 wherever a table is written
+ccl_typedef_of(N, T) :- ccl_cached('$ccl_tdcache', N, T, ( nb_getval('$ccl_typedefs', L), memberchk(N-T, L) )).
+ccl_tag(Tag, Ms) :- ccl_cached('$ccl_tagcache', Tag, Ms, ( nb_getval('$ccl_tags', L), memberchk(Tag-Ms, L) )).
 
 %% ---- constants ---------------------------------------------------------------------
 ccl_enum_value(N, V) :- nb_getval('$ccl_enums', L), memberchk(N-V, L).
@@ -72,7 +85,11 @@ ccl_gensym(Prefix, Atom) :-
 ccl_macro_error(Msg) :- ccl_here(F, L), throw(error(macro_error(Msg, here(F, L)), _)).
 
 %% ---- resolving ------------------------------------------------------------------
-ccl_resolve_type(base(Q, [typedef(N)]), T) :- ccl_typedef_of(N, T0), !, ccl_resolve_type(T0, T1), ccl_add_quals(Q, T1, T).
+%% a typedef resolves to its end in one step: the chain (size_t -> __darwin_size_t
+%% -> unsigned long) is walked once per name and kept (the lowering of 170 lines
+%% asked 16,600 resolutions, most of them links of a chain)
+ccl_resolve_type(base(Q, [typedef(N)]), T) :- ccl_cached('$ccl_rcache', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
+ccl_resolve_typedef(N, T) :- ccl_typedef_of(N, T0), ccl_resolve_type(T0, T).
 ccl_resolve_type(base(Q, [struct(Tag, none)]), base(Q, [struct(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_type(base(Q, [union(Tag, none)]), base(Q, [union(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_type(T, T).
@@ -185,7 +202,9 @@ ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).
 %% a boundary of its declared type's alignment, then at that boundary; a zero
 %% width closes the unit; a plain member is aligned as usual; the struct's
 %% alignment counts every member's, a bitfield's declared type included.
-ccl_members_layout(Ms, Lays, Size, Align) :- ccl_members_layout_(Ms, 0, 1, Lays, Bits, Align), Bytes is (Bits + 7) // 8, ccl_round_up(Bytes, Align, Size).
+%% a struct's layout is asked at every member access: kept per member list
+ccl_members_layout(Ms, Lays, Size, Align) :- ccl_cached('$ccl_laycache', Ms, lay(Lays, Size, Align), ccl_members_layout_nocache(Ms, Lays, Size, Align)).
+ccl_members_layout_nocache(Ms, Lays, Size, Align) :- ccl_members_layout_(Ms, 0, 1, Lays, Bits, Align), Bytes is (Bits + 7) // 8, ccl_round_up(Bytes, Align, Size).
 ccl_members_layout_([], Bits, Al, [], Bits, Al).
 ccl_members_layout_([member(T, N, W0)|Ms], Bit0, Al0, Lays, Bits, Al) :-
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ABits is A * 8,

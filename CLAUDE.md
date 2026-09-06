@@ -112,6 +112,11 @@ grammar full of `expr` and `id` would collide with any program's. The AST's
 functors (`unit`, `function`, `id`, `expr` ...) are bare: they are data.
 Internals are `'$ccl_…'`. The repository is `cicili-lang`, the library
 `library(cicili)`, the language's C name in prose `cicili-lang`.
+**A pattern is written once** (owner's rule, 2026-09-06, on the DCG
+predicates): where several predicates share a shape -- a level per
+operator class, an answer cache per table, a token match per alternative
+-- the shape is one predicate over a table or an argument, not a copy per
+case (`ccl_binary/2` + `ccl_binop/2`, `ccl_cached/4`, `ccl_unary_/3`).
 
 ## How the reader is implemented, and why that way
 
@@ -136,9 +141,20 @@ SDK's headers, `k85` that the native one is in use. A change to the
 lexer's rules is made in BOTH, and k84 says when they part. (Its
 vocabulary is the file's header; every statement carries its line as its
 first argument, `expr(L, E)`, `if(L, C, T, E)`, `return(L, E)` ...).
-Precedence is a level per operator
-class; declarators are parsed inside out and folded onto the base type by
-`ccl_mk_type/4`. The preprocessor is NOT expanded -- a `#` line is a
+**The expression grammar is one rule
+for the ten binary levels** -- `ccl_binary(Min, E)`, precedence climbing
+over the table `ccl_binop(Op, Level)`, `ccl_lor` at level 1 and
+`ccl_shift` (a template argument's) at 8 -- and a unary, a primary or a
+postfix operator is chosen by ONE look at the next token (`ccl_unary_(V,
+K, E)`, `ccl_primary_(K, V, E)`, `ccl_postfix_p(V, A, E)`, the value or
+the kind first so indexing finds the clause), the assignment's left side
+read once as a conditional expression, the cast's type name tried once:
+the level-per-class cascade and the try-every-alternative clauses cost
+thirty token matches a token, this costs eight, and 2000 tokens parse in
+0.1 s where they took 0.3 (owner's rule, 2026-09-06: in DCG predicates,
+do not repeat a pattern across many predicates -- the ten levels were one
+pattern ten times). Declarators are parsed inside out and folded onto the
+base type by `ccl_mk_type/4`. The preprocessor is NOT expanded -- a `#` line is a
 `directive/2` node -- so a typedef name from a header is unknown; it is
 recognised from context instead (`name x`, `name *p` where an expression
 cannot stand, `(name *)`, `(name){`, `name *p = …` in a block), plus a seed
@@ -199,6 +215,24 @@ them; a whole unit tree (an included unit, the checker's and the lowering's
 rebuild) goes through the BULK noter `ccl_items_note/1`, which collects
 into difference lists and sets each table once -- per-item `nb_setval/2`
 copies the whole list and was quadratic over the headers' 40k items.
+**The file scope is a global of its own**, `'$ccl_gscope'` (the headers'
+hundreds of names), and `'$ccl_scope'` holds only the OPEN frames,
+`[]` at file scope: `nb_getval/2` copies what it answers, so a local
+declared (`ccl_declare/2`) or a name looked up (`ccl_declared/2`, the open
+frames first, then `ccl_gdeclared/2`) never copies the file scope;
+`ccl_scope/1` still answers every frame, the file scope's last, for the
+check's frame arithmetic, `ccl_locals/1` the open ones; `ccl_scope_add/1`
+puts a list of declarations where `ccl_declare` would. **Answers are
+cached** through ONE predicate, `ccl_cached(Cache, Key, Value, Goal)` in
+`ccl_infer` -- a small global of Key-Value pairs, a copy of a dozen pairs
+being microseconds -- for `ccl_typedef_of/2`, `ccl_tag/2`, a typedef's
+full resolution (`ccl_resolve_type`, the chain walked once), a struct's
+layout (`ccl_members_layout/4`), the file scope's names and `ir_type/2`;
+`ccl_tables_changed/0` empties every cache and is called wherever a table
+is written (the noters, the summaries, `ccl_with_file`'s restore).
+Measured on the B-tree: the check 0.28 -> 0.07 s, the lowering 0.7 ->
+0.4 s (what is left is 27,000 predicate calls of the type machinery and
+the emission, cocolog's interpretation itself).
 Never `memberchk` on the open accumulator: it binds the tail (the
 enumerators keep a closed list of their own). `library(ccl_infer)` reads them: `ccl_type_of/2` with the
 usual arithmetic conversions, `ccl_resolve_type/2`, `ccl_size_of/2` (LP64).
@@ -741,6 +775,23 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `"` inside a quoted atom did not read either; `ensure_loaded/1` then says
   only `its clauses would not consult`, no line. Bisect by splitting the
   file into clauses (`test/cpp.pl` needed that twice).
+* **`nb_getval/2` copies the term it answers** (0.63 ms for a list of
+  5000 pairs, 2 µs for a small one; `b_getval/2` exists and copies too),
+  and `nb_setval/2` copies alike; a `memberchk/2` step is 0.15 µs; an
+  asserted fact is found in 3 µs among 5000 (first-argument indexing) --
+  but under `--embed` a clause is a row in the store (the finding above),
+  so the tables stay globals: split so the big one is rarely read
+  (`'$ccl_gscope'`), and answered through small caches (`ccl_cached/4`).
+  The check and the lowering of 170 lines read the symbol table 4000
+  times before that, 0.3 s of copying.
+* **A DCG that tries its alternatives in clause order pays a token match
+  per alternative**: the expression grammar made 62,000 token matches for
+  2040 tokens (a cascade of ten levels, unary and primary rules of a
+  dozen clauses each); one `ccl_peek` and a clause chosen by the token's
+  value make it 17,000, and the parse three times faster. The instrument
+  is a copy of the library first on `COCOLOG_LIBRARY` whose rule heads
+  are renamed and wrapped with a counter (heads only: renaming the calls
+  too bypasses the wrapper).
 * **A summary's terms are parsed once per process** (`ccl_sum_terms/2`
   caches them in `'$ccl_sum:<File>'`, `ccl_sum_write/4` forgets its own):
   every consumer of an include asked for them again -- the validity check,

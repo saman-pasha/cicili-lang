@@ -65,7 +65,7 @@ ir_items([I|Is]) :- ir_item(I), ir_items(Is).
 %% ---- state -----------------------------------------------------------------------
 ir_reset :-
     ccl_ensure_globals, ( once(catch(os_env('CCL_IR_TRACE', Tr), _, fail)), Tr \== '' -> nb_setval('$ir_trace', yes) ; nb_setval('$ir_trace', no) ),
-    nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_fn', file), nb_setval('$ir_line', 0), nb_setval('$ir_ret', none), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no), nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
+    nb_setval('$ir_tcache', []), nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_fn', file), nb_setval('$ir_line', 0), nb_setval('$ir_ret', none), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no), nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
     nb_setval('$ir_externs', []), nb_setval('$ir_defined', []), nb_setval('$ir_gmap', []), nb_setval('$ir_ret_abi', scalar),
     nb_setval('$ir_maps', []), nb_setval('$ir_statics', 0),
     ir_arch_init.
@@ -126,7 +126,8 @@ ir_take(K, [F|Fs], [F|Gs]) :- K1 is K - 1, ir_take(K1, Fs, Gs).
 ir_depth(K) :- nb_getval('$ir_defers', D), length(D, K).
 
 %% ---- types -------------------------------------------------------------------------
-ir_type(T, LL) :- ccl_resolve_type(T, T1), ir_type_(T1, LL).
+ir_type(T, LL) :- ccl_cached('$ir_tcache', T, LL, ir_type_nocache(T, LL)).      % asked 2300 times for 170 lines: kept per type term
+ir_type_nocache(T, LL) :- ccl_resolve_type(T, T1), ir_type_(T1, LL).
 ir_type_(base(_, S), LL) :- !, ir_base(S, LL).
 ir_type_(ptr(_, _), ptr) :- !.
 ir_type_(block(_, _), ptr) :- !.

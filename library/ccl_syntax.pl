@@ -313,16 +313,25 @@ ccl_nth(I, [_|T], X) :- I > 1, I1 is I - 1, ccl_nth(I1, T, X).
 %% '$ccl_scope' is a list of frames, innermost first, each [Name-Type ...];
 %% '$ccl_typedefs' is [Name-Type ...]; '$ccl_tags' is [Tag-Members ...].
 %% Enumerators are declared as int. Filled here, read by library(ccl_infer).
-ccl_scope_init :- nb_setval('$ccl_scope', [[]]), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []), nb_setval('$ccl_enums', []).
+ccl_scope_init :- ccl_tables_changed, nb_setval('$ccl_scope', []), nb_setval('$ccl_gscope', []), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []), nb_setval('$ccl_enums', []).
 ccl_push_scope --> { ccl_scope_push }.
 ccl_pop_scope --> { ccl_scope_pop }.
 ccl_scope_push :- nb_getval('$ccl_scope', S), nb_setval('$ccl_scope', [[]|S]).
-ccl_scope_pop :- nb_getval('$ccl_scope', S), ( S = [_|S1], S1 \== [] -> nb_setval('$ccl_scope', S1) ; true ).
+ccl_scope_pop :- nb_getval('$ccl_scope', S), ( S = [_|S1] -> nb_setval('$ccl_scope', S1) ; true ).
 ccl_note_items([]).
 ccl_note_items([I|Is]) :- ccl_note_item(I), ccl_note_items(Is).
-ccl_declare(N, T) :- nb_getval('$ccl_scope', [F|S]), nb_setval('$ccl_scope', [[N-T|F]|S]).
-ccl_note_typedef(N, T) :- nb_getval('$ccl_typedefs', L), nb_setval('$ccl_typedefs', [N-T|L]).
-ccl_note_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), nb_setval('$ccl_tags', [Tag-Ms|L]).
+%% the file scope is a global of its own, '$ccl_gscope': nb_getval/2 copies what
+%% it answers, and the frame holds the headers' hundreds of names -- a local
+%% declared or looked up must not copy them (the check declared 250 locals
+%% and asked 600 names of the B-tree: 0.14 ms each)
+ccl_declare(N, T) :- nb_getval('$ccl_scope', S), ( S = [F|S1] -> nb_setval('$ccl_scope', [[N-T|F]|S1]) ; ccl_gdeclare([N-T]) ).
+ccl_gdeclare(Ds) :- nb_getval('$ccl_gscope', G), append(Ds, G, G1), nb_setval('$ccl_gscope', G1), nb_setval('$ccl_gcache', []).
+%% a list of declarations into the innermost frame -- the file scope's when no frame is open
+ccl_scope_add(Ds) :- nb_getval('$ccl_scope', S), ( S = [F|S1] -> append(Ds, F, F1), nb_setval('$ccl_scope', [F1|S1]) ; ccl_gdeclare(Ds) ).
+ccl_note_typedef(N, T) :- nb_getval('$ccl_typedefs', L), nb_setval('$ccl_typedefs', [N-T|L]), ccl_tables_changed.
+ccl_note_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), nb_setval('$ccl_tags', [Tag-Ms|L]), ccl_tables_changed.
+%% the answer caches of ccl_typedef_of/2, ccl_tag/2 and ccl_members_layout/4 (ccl_infer), emptied when a table is written
+ccl_tables_changed :- nb_setval('$ccl_tdcache', []), nb_setval('$ccl_rcache', []), nb_setval('$ccl_tagcache', []), nb_setval('$ccl_laycache', []), nb_setval('$ccl_gcache', []), nb_setval('$ir_tcache', []).
 %% ---- the bulk noter: a whole unit tree into the tables, each set once ------------
 %% ccl_note_item/1 above is the parser's, one item at a time. Rebuilding the
 %% table from units -- the checker, the lowering, an included unit's scope --
@@ -330,9 +339,9 @@ ccl_note_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), nb_setval('$ccl_tags', [Tag-
 %% every time; so the bulk noter collects first and sets each table once.
 ccl_items_note(Is) :-
     ccl_collect_items(Is, D, [], T, [], G, [], E, []),
-    nb_getval('$ccl_scope', [F|S]), append(D, F, F1), nb_setval('$ccl_scope', [F1|S]),
+    ccl_scope_add(D),
     nb_getval('$ccl_typedefs', T0), append(T, T0, T1), nb_setval('$ccl_typedefs', T1),
-    nb_getval('$ccl_tags', G0), append(G, G0, G1), nb_setval('$ccl_tags', G1),
+    nb_getval('$ccl_tags', G0), append(G, G0, G1), nb_setval('$ccl_tags', G1), ccl_tables_changed,
     nb_getval('$ccl_enums', E0), append(E, E0, E1), nb_setval('$ccl_enums', E1).
 %% accumulators as difference lists: declarations, typedefs, tags, enumerators
 ccl_collect_items([], D, D, T, T, G, G, E, E).
@@ -952,107 +961,104 @@ ccl_opt_expr(none) --> [].
 %% ---- expressions, by precedence ----------------------------------------------
 ccl_expr(E) --> ccl_assign_expr(A), ( ccl_p(','), !, ccl_expr(B), { E = comma(A, B) } ; { E = A } ).
 
-ccl_assign_expr(assign(Op, L, R)) --> ccl_unary(L), ccl_assign_op(Op), !, ccl_assign_expr(R).
-ccl_assign_expr(E) --> ccl_cond_expr(E).
+%% the left of an assignment is read once, as a conditional expression, and
+%% the operator looked for after it (the C grammar's unary-expression there
+%% had every non-assignment expression's first operand parsed twice)
+ccl_assign_expr(E) --> ccl_cond_expr(A), ccl_assign_rest(A, E).
+ccl_assign_rest(A, assign(Op, A, R)) --> ccl_assign_op(Op), !, ccl_assign_expr(R).
+ccl_assign_rest(E, E) --> [].
 ccl_assign_op(Op) --> ccl_p(Op), { memberchk(Op, ['=', '*=', '/=', '%=', '+=', '-=', '<<=', '>>=', '&=', '^=', '|=']) }.
 
 ccl_cond_expr(E) --> ccl_lor(C), ( ccl_p('?'), !, ccl_expr(A), ccl_p(':'), ccl_cond_expr(B), { E = cond(C, A, B) } ; { E = C } ).
 
-ccl_lor(E)   --> ccl_land(A), ccl_lor_(A, E).
-ccl_lor_(A, E)   --> ccl_p('||'), !, ccl_land(B), ccl_lor_(bin('||', A, B), E).
-ccl_lor_(E, E)   --> [].
-ccl_land(E)  --> ccl_bor(A), ccl_land_(A, E).
-ccl_land_(A, E)  --> ccl_p('&&'), !, ccl_bor(B), ccl_land_(bin('&&', A, B), E).
-ccl_land_(E, E)  --> [].
-ccl_bor(E)   --> ccl_bxor(A), ccl_bor_(A, E).
-ccl_bor_(A, E)   --> ccl_p('|'), !, ccl_bxor(B), ccl_bor_(bin('|', A, B), E).
-ccl_bor_(E, E)   --> [].
-ccl_bxor(E)  --> ccl_band(A), ccl_bxor_(A, E).
-ccl_bxor_(A, E)  --> ccl_p('^'), !, ccl_band(B), ccl_bxor_(bin('^', A, B), E).
-ccl_bxor_(E, E)  --> [].
-ccl_band(E)  --> ccl_equality(A), ccl_band_(A, E).
-ccl_band_(A, E)  --> ccl_p('&'), !, ccl_equality(B), ccl_band_(bin('&', A, B), E).
-ccl_band_(E, E)  --> [].
-ccl_equality(E) --> ccl_relational(A), ccl_equality_(A, E).
-ccl_equality_(A, E) --> ccl_p(Op), { Op == '==' ; Op == '!=' }, !, ccl_relational(B), ccl_equality_(bin(Op, A, B), E).
-ccl_equality_(E, E) --> [].
-ccl_relational(E) --> ccl_shift(A), ccl_relational_(A, E).
-ccl_relational_(A, E) --> ccl_p(Op), { memberchk(Op, ['<', '>', '<=', '>=']) }, !, ccl_shift(B), ccl_relational_(bin(Op, A, B), E).
-ccl_relational_(E, E) --> [].
-ccl_shift(E) --> ccl_additive(A), ccl_shift_(A, E).
-ccl_shift_(A, E) --> ccl_p(Op), { Op == '<<' ; Op == '>>' }, !, ccl_additive(B), ccl_shift_(bin(Op, A, B), E).
-ccl_shift_(E, E) --> [].
-ccl_additive(E) --> ccl_multiplicative(A), ccl_additive_(A, E).
-ccl_additive_(A, E) --> ccl_p(Op), { Op == '+' ; Op == '-' }, !, ccl_multiplicative(B), ccl_additive_(bin(Op, A, B), E).
-ccl_additive_(E, E) --> [].
-ccl_multiplicative(E) --> ccl_cast_expr(A), ccl_multiplicative_(A, E).
-ccl_multiplicative_(A, E) --> ccl_p(Op), { memberchk(Op, ['*', '/', '%']) }, !, ccl_cast_expr(B), ccl_multiplicative_(bin(Op, A, B), E).
-ccl_multiplicative_(E, E) --> [].
+%% the binary operators, one rule for the ten levels of precedence: an
+%% operand, then every operator that binds at least as tightly as Min, its
+%% right side read with the tighter operators only (precedence climbing), so
+%% `a - b - c' is bin(-, bin(-, a, b), c) and `a + b * c' is bin(+, a, bin(*, b, c))
+%% as the level-per-class cascade gave them -- at one look per token where
+%% the cascade descended ten levels for every operand
+ccl_lor(E) --> ccl_binary(1, E).
+ccl_shift(E) --> ccl_binary(8, E).                                                % a template argument: shift and above, so its `>' closes
+ccl_binary(Min, E) --> ccl_cast_expr(A), ccl_binary_rest(Min, A, E).
+ccl_binary_rest(Min, A, E) --> ccl_peek(p, Op), ccl_line(L), { ccl_far(L), ccl_binop(Op, P), P >= Min }, !, ccl_p(Op), { P1 is P + 1 }, ccl_binary(P1, B), ccl_binary_rest(Min, bin(Op, A, B), E).
+ccl_binary_rest(_, E, E) --> [].
+ccl_binop('||', 1). ccl_binop('&&', 2). ccl_binop('|', 3). ccl_binop('^', 4). ccl_binop('&', 5).
+ccl_binop('==', 6). ccl_binop('!=', 6). ccl_binop('<', 7). ccl_binop('>', 7). ccl_binop('<=', 7). ccl_binop('>=', 7).
+ccl_binop('<<', 8). ccl_binop('>>', 8). ccl_binop('+', 9). ccl_binop('-', 9). ccl_binop('*', 10). ccl_binop('/', 10). ccl_binop('%', 10).
 
 %% a cast needs a type after `(', which an expression in parentheses never
 %% is; the same shape followed by `{' is C99's compound literal, (T){ ... },
 %% which is a postfix expression and may be followed by `.x' and the rest
-ccl_cast_expr(E) --> ccl_p('('), ccl_type_name([], T), ccl_p(')'), ccl_peek(p, '{'), !, ccl_initializer(I), ccl_postfix_(compound_lit(T, I), E).
-ccl_cast_expr(cast(T, E)) --> ccl_p('('), ccl_type_name([], T), ccl_p(')'), !, ccl_cast_expr(E).
+ccl_cast_expr(E) --> ccl_peek(p, '('), ccl_p('('), ccl_type_name([], T), ccl_p(')'), !, ccl_cast_rest(T, E).   % the type name tried once, for both
 ccl_cast_expr(E) --> ccl_unary(E).
+ccl_cast_rest(T, E) --> ccl_peek(p, '{'), !, ccl_initializer(I), ccl_postfix_(compound_lit(T, I), E).
+ccl_cast_rest(T, cast(T, E)) --> ccl_cast_expr(E).
 
+%% a unary expression is chosen by its first token (the value first, so the
+%% clause is found by indexing, one try where each alternative was one)
 %% C++: new T, new T(args), new T{args}, new T[n]; delete p, delete[] p; throw e
-ccl_unary(E) --> ccl_cpp, ccl_kw(new), !, ccl_new_expr(E).
-ccl_unary(delete_array(E)) --> ccl_cpp, ccl_kw(delete), ccl_p('['), !, ccl_p(']'), ccl_cast_expr(E).
-ccl_unary(delete(E)) --> ccl_cpp, ccl_kw(delete), !, ccl_cast_expr(E).
-ccl_unary(throw(E)) --> ccl_cpp, ccl_kw(throw), !, ( ccl_assign_expr(E), ! ; { E = none } ).
+ccl_unary(E) --> ccl_peek(K, V), ccl_unary_(V, K, E).
+ccl_unary_(new, kw, E) --> ccl_cpp, !, ccl_kw(new), ccl_new_expr(E).
+ccl_unary_(delete, kw, E) --> ccl_cpp, !, ccl_kw(delete), ( ccl_p('['), !, ccl_p(']'), ccl_cast_expr(X), { E = delete_array(X) } ; ccl_cast_expr(X), { E = delete(X) } ).
+ccl_unary_(throw, kw, throw(E)) --> ccl_cpp, !, ccl_kw(throw), ( ccl_assign_expr(E), ! ; { E = none } ).
 ccl_new_expr(E) --> { nb_getval('$ccl_env', Env) }, ( ccl_p('('), ccl_args(_), ccl_p(')'), ! ; [] ), ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) },
     ( ccl_p('['), !, ccl_expr(N), ccl_p(']'), { E = new_array(T, N) }
     ; ccl_p('('), !, ccl_args(As), ccl_p(')'), { E = new(T, As) }
     ; ccl_p('{'), !, ccl_args(As), ccl_p('}'), { E = new(T, As) }
     ; { E = new(T, []) } ).
-ccl_unary(preinc(E)) --> ccl_p('++'), !, ccl_unary(E).
-ccl_unary(predec(E)) --> ccl_p('--'), !, ccl_unary(E).
-ccl_unary(addr(E))   --> ccl_p('&'), !, ccl_cast_expr(E).
-ccl_unary(deref(E))  --> ccl_p('*'), !, ccl_cast_expr(E).
-ccl_unary(pos(E))    --> ccl_p('+'), !, ccl_cast_expr(E).
-ccl_unary(neg(E))    --> ccl_p('-'), !, ccl_cast_expr(E).
-ccl_unary(bitnot(E)) --> ccl_p('~'), !, ccl_cast_expr(E).
-ccl_unary(not(E))    --> ccl_p('!'), !, ccl_cast_expr(E).
-ccl_unary(E)         --> ccl_kw(sizeof), !, ( ccl_p('('), ccl_type_name([], T), ccl_p(')'), !, { E = sizeof_type(T) } ; ccl_unary(X), { E = sizeof(X) } ).
-ccl_unary(E)         --> ccl_postfix(E).
+ccl_unary_('++', p, preinc(E)) --> !, ccl_p('++'), ccl_unary(E).
+ccl_unary_('--', p, predec(E)) --> !, ccl_p('--'), ccl_unary(E).
+ccl_unary_('&', p, addr(E))    --> !, ccl_p('&'), ccl_cast_expr(E).
+ccl_unary_('*', p, deref(E))   --> !, ccl_p('*'), ccl_cast_expr(E).
+ccl_unary_('+', p, pos(E))     --> !, ccl_p('+'), ccl_cast_expr(E).
+ccl_unary_('-', p, neg(E))     --> !, ccl_p('-'), ccl_cast_expr(E).
+ccl_unary_('~', p, bitnot(E))  --> !, ccl_p('~'), ccl_cast_expr(E).
+ccl_unary_('!', p, not(E))     --> !, ccl_p('!'), ccl_cast_expr(E).
+ccl_unary_(sizeof, kw, E)      --> !, ccl_kw(sizeof), ( ccl_p('('), ccl_type_name([], T), ccl_p(')'), !, { E = sizeof_type(T) } ; ccl_unary(X), { E = sizeof(X) } ).
+ccl_unary_(_, _, E)            --> ccl_postfix(E).
 
 ccl_postfix(E) --> ccl_primary(P), ccl_postfix_(P, E).
-ccl_postfix_(id(T), E) --> ccl_cpp, ccl_peek(p, '{'), { nb_getval('$ccl_env', G), ccl_known_typedef(G, T) }, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(id(T), Vs), E).   % T{args}, a temporary
-ccl_postfix_(A, E) --> ccl_p('['), !, ccl_expr(I), ccl_p(']'), ccl_postfix_(index(A, I), E).
-ccl_postfix_(A, E) --> ccl_p('('), !, ccl_args(As), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
-ccl_postfix_(A, E) --> ccl_p('.'), !, ccl_member_name(N), ccl_postfix_(member(A, N), E).
-ccl_postfix_(A, E) --> ccl_p('->'), !, ccl_member_name(N), ccl_postfix_(arrow(A, N), E).
+%% the postfix operators, chosen by the punctuator that follows
+ccl_postfix_(A, E) --> ccl_peek(p, V), !, ccl_postfix_p(V, A, E).
+ccl_postfix_(E, E) --> [].
+ccl_postfix_p('{', id(T), E) --> ccl_cpp, { nb_getval('$ccl_env', G), ccl_known_typedef(G, T) }, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(id(T), Vs), E).   % T{args}, a temporary
+ccl_postfix_p('[', A, E) --> !, ccl_p('['), ccl_expr(I), ccl_p(']'), ccl_postfix_(index(A, I), E).
+ccl_postfix_p('(', A, E) --> !, ccl_p('('), ccl_args(As), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
+ccl_postfix_p('.', A, E) --> !, ccl_p('.'), ccl_member_name(N), ccl_postfix_(member(A, N), E).
+ccl_postfix_p('->', A, E) --> !, ccl_p('->'), ccl_member_name(N), ccl_postfix_(arrow(A, N), E).
+ccl_postfix_p('++', A, E) --> !, ccl_p('++'), ccl_postfix_(postinc(A), E).
+ccl_postfix_p('--', A, E) --> !, ccl_p('--'), ccl_postfix_(postdec(A), E).
+ccl_postfix_p(_, E, E) --> [].
 %% C++: x.item<float>(), a member template with its arguments -- the member's
 %% name is tmpl(N, Args) when the arguments read as such, ending before what a
 %% call or a closing paren starts (`x.n < y' scans to its `;' and is not one)
 ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_id(N), ccl_targs_ahead, { nb_getval('$ccl_env', Env) }, ccl_targs(Env, As), !.
 ccl_member_name(N) --> ccl_id(N).
-ccl_postfix_(A, E) --> ccl_p('++'), !, ccl_postfix_(postinc(A), E).
-ccl_postfix_(A, E) --> ccl_p('--'), !, ccl_postfix_(postdec(A), E).
-ccl_postfix_(E, E) --> [].
 ccl_args([A|As]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).   % C++: f({1, 2}), a braced list as an argument
 ccl_args([A|As]) --> ccl_assign_expr(A), !, ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).
 ccl_item_values([], []).
 ccl_item_values([item(_, V)|Is], [V|Vs]) :- ccl_item_values(Is, Vs).
 ccl_args([]) --> [].
 
-ccl_primary(int(N))   --> [tok(int, N, _)], !.
-ccl_primary(float(F)) --> [tok(float, F, _)], !.
-ccl_primary(str(S))   --> [tok(str, S0, _)], !, ccl_strings(S0, S).          % "a" "b" is one string
-ccl_primary(chr(C))   --> [tok(chr, C, _)], !.
+%% a primary is chosen by its token's kind and value: one look, one clause
+ccl_primary(E) --> ccl_peek(K, V), ccl_primary_(K, V, E).
+ccl_primary_(int, N, int(N))     --> !, [_].
+ccl_primary_(float, F, float(F)) --> !, [_].
+ccl_primary_(str, S0, str(S))    --> !, [_], ccl_strings(S0, S).          % "a" "b" is one string
+ccl_primary_(chr, C, chr(C))     --> !, [_].
 %% C++ primaries: this, true, false, nullptr, the casts, a functional cast of
 %% a basic type, a lambda, and a qualified or template name
-ccl_primary(this) --> ccl_cpp, ccl_kw(this), !.
-ccl_primary(bool(true)) --> ccl_cpp, ccl_kw(true), !.
-ccl_primary(bool(false)) --> ccl_cpp, ccl_kw(false), !.
-ccl_primary(nullptr) --> ccl_cpp, ccl_kw(nullptr), !.
-ccl_primary(ccast(K, T, E)) --> ccl_cpp, ccl_kw(KW), { ccl_cast_kw(KW, K) }, !, ccl_p('<'), { nb_getval('$ccl_env', Env) }, ccl_type_name(Env, T), ccl_tclose, ccl_p('('), ccl_expr(E), ccl_p(')').
-ccl_primary(ccast(functional, base([], [K]), E)) --> ccl_cpp, ccl_kw(K), { ccl_basic_type(K) }, !, ccl_p('('), ccl_expr(E), ccl_p(')').
-ccl_primary(lambda(Caps, Ps, Ret, Body)) --> ccl_cpp, ccl_p('['), !, ccl_lambda_caps(Caps), ccl_p(']'), { nb_getval('$ccl_env', Env) },
+ccl_primary_(kw, this, this) --> ccl_cpp, !, ccl_kw(this).
+ccl_primary_(kw, true, bool(true)) --> ccl_cpp, !, ccl_kw(true).
+ccl_primary_(kw, false, bool(false)) --> ccl_cpp, !, ccl_kw(false).
+ccl_primary_(kw, nullptr, nullptr) --> ccl_cpp, !, ccl_kw(nullptr).
+ccl_primary_(kw, KW, ccast(K, T, E)) --> ccl_cpp, { ccl_cast_kw(KW, K) }, !, ccl_kw(KW), ccl_p('<'), { nb_getval('$ccl_env', Env) }, ccl_type_name(Env, T), ccl_tclose, ccl_p('('), ccl_expr(E), ccl_p(')').
+ccl_primary_(kw, K, ccast(functional, base([], [K]), E)) --> ccl_cpp, { ccl_basic_type(K) }, !, ccl_kw(K), ccl_p('('), ccl_expr(E), ccl_p(')').
+ccl_primary_(p, '[', lambda(Caps, Ps, Ret, Body)) --> ccl_cpp, !, ccl_p('['), ccl_lambda_caps(Caps), ccl_p(']'), { nb_getval('$ccl_env', Env) },
     ( ccl_p('('), !, ccl_params(Env, Ps, _), ccl_p(')') ; { Ps = [] } ), ( ccl_kw(mutable), ! ; [] ), ( ccl_p('->'), !, ccl_type_name(Env, Ret) ; { Ret = none } ),
     ccl_push_scope, { ccl_declare_params(Ps) }, ccl_compound(Env, Body), ccl_pop_scope.
-ccl_primary(E) --> ccl_cpp, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
+ccl_primary_(id, _, E) --> ccl_cpp, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
+ccl_primary_(p, '::', E) --> ccl_cpp, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
 ccl_cast_kw(static_cast, static). ccl_cast_kw(dynamic_cast, dynamic). ccl_cast_kw(reinterpret_cast, reinterpret). ccl_cast_kw(const_cast, const).
 ccl_lambda_caps([]) --> ccl_peek(p, ']'), !.
 ccl_lambda_caps([C|Cs]) --> ccl_lambda_cap(C), ( ccl_p(','), !, ccl_lambda_caps(Cs) ; { Cs = [] } ).
@@ -1060,8 +1066,8 @@ ccl_lambda_cap(cap(default, '=')) --> ccl_p('='), !.
 ccl_lambda_cap(C) --> ccl_p('&'), !, ( ccl_id(N), !, { C = cap(ref, N) } ; { C = cap(default, '&') } ).
 ccl_lambda_cap(cap(this)) --> ccl_kw(this), !.
 ccl_lambda_cap(cap(val, N)) --> ccl_id(N).
-ccl_primary(id(N))    --> ccl_id(N), !.
-ccl_primary(stmt_expr(B)) --> ccl_p('('), ccl_peek(p, '{'), !, { nb_getval('$ccl_env', Env) }, ccl_compound(Env, B), ccl_p(')').   % GNU ({ ... })
-ccl_primary(E)        --> ccl_p('('), ccl_expr(E), ccl_p(')').
+ccl_primary_(id, N, id(N))   --> !, ccl_id(N).
+ccl_primary_(p, '(', stmt_expr(B)) --> ccl_p('('), ccl_peek(p, '{'), !, { nb_getval('$ccl_env', Env) }, ccl_compound(Env, B), ccl_p(')').   % GNU ({ ... })
+ccl_primary_(p, '(', E)      --> ccl_p('('), ccl_expr(E), ccl_p(')').
 ccl_strings(S0, S) --> [tok(str, S1, _)], !, { append(S0, S1, S2) }, ccl_strings(S2, S).
 ccl_strings(S, S) --> [].

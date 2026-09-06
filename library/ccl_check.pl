@@ -407,11 +407,11 @@ ck_rebind(St0, N, none, St) :- !, ( ck_state(St0, N, S), ( S = borrow(_) ; S = d
 ck_rebind(St0, N, S, St) :- ( ck_state(St0, N, _) -> ck_set(St0, N, S, St) ; ck_declare_at(St0, N, S, St) -> true ; ck_declare(St0, N, S, St) ).
 %% a local: declared in a frame of the function's, not the file's, and not
 %% static (a static local's storage never ends: a global's); its type from there
-ck_is_local(N) :- \+ ck_is_static(N), ccl_scope(Fs), append(Locals, [_], Fs), member(F, Locals), memberchk(N-_, F), !.
+ck_is_local(N) :- \+ ck_is_static(N), ccl_locals(Ls), member(F, Ls), memberchk(N-_, F), !.
 ck_is_static(N) :- nb_getval('$ck_statics', Ss), memberchk(N, Ss).
 ck_note_statics([]).
 ck_note_statics([var(N, _, _)|Vs]) :- nb_getval('$ck_statics', Ss), nb_setval('$ck_statics', [N|Ss]), ck_note_statics(Vs).
-ck_local_type(N, T) :- ccl_scope(Fs), append(Locals, [_], Fs), member(F, Locals), memberchk(N-T, F), !.
+ck_local_type(N, T) :- ccl_locals(Ls), member(F, Ls), memberchk(N-T, F), !.
 ck_is_global(N) :- atom(N), \+ ck_is_local(N), ccl_declared(N, _).
 
 %% ---- ties ---------------------------------------------------------------------------------
