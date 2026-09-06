@@ -23,10 +23,12 @@ reads them and puts this checkout's `library/` at the FRONT of
 ## Where things are
 
 ```
-module/cicili.cicili     the module: the C side (registration, ccl_version/1, and
-                         ccl_cocolog_version/1 over the engine's coco_version_text) and the Prolog
-                         half -- cicili_ast/2,3 (the reader's door) and the objects layer
-library/ccl_syntax.pl    the lexer and the parser, two DCGs; COMMITTED (library/*.so is not)
+module/cicili.cicili     the module: the C side (registration, ccl_version/1,
+                         ccl_cocolog_version/1 over the engine's coco_version_text, and THE LEXER,
+                         ccl_lex_native/6 in Cicili) and the Prolog half -- cicili_ast/2,3 (the
+                         reader's door) and the objects layer
+library/ccl_syntax.pl    the lexer (the DCG: the specification and the fallback) and the parser;
+                         COMMITTED (library/*.so is not)
 library/ccl_include.pl   #include: the inclusion path (the SDK's and LLVM's conventional
                          places, no tool run), resolution, the nested read (raw, else
                          through ccl_pp), .pl macro files, the cycle guard, the KB cache
@@ -115,6 +117,21 @@ Internals are `'$ccl_…'`. The repository is `cicili-lang`, the library
 `cicili_ast/3` mirrors `phrase/3`, answering the tokens left. Two DCGs in
 `library(ccl_syntax)`: `ccl_lex//2` over character codes -> tokens
 `tok(Kind, Value, Line)`; `ccl_externals//2` over tokens -> the AST (its
+vocabulary is the file's header). **The lexer that RUNS is native:**
+`ccl_lex_native(+Text, +Line0, +Mode, +Lang, -Tokens, -Rest)` in
+`module/cicili.cicili`, C written in Cicili, the DCG token for token (the
+DCG ran at 0.15 ms a token, the floor of every read; the native one 600
+times faster, 4 ms for 10,000 tokens). `ccl_tokens/3` and `ccl_lex_atom/4`
+(an atom, from a line: the preprocessor's door) choose by `'$ccl_lexer'`,
+decided once in `ccl_ensure_globals` by probing the predicate, so
+`library(ccl_syntax)` alone still lexes through the DCG. The native one
+builds `tok/3` with the engine's `coco_make` (behind `coco_m_machine`:
+the SDK has no compound builder), keeps the keyword tables and the
+punctuators in C, and `test/reader.pl`'s `k84` compares the two on
+`test/c/lexer.c` (every token kind, number shape, escape, `#` line,
+`#cocolog` block, in both modes and languages), the real fixtures and the
+SDK's headers, `k85` that the native one is in use. A change to the
+lexer's rules is made in BOTH, and k84 says when they part. (Its
 vocabulary is the file's header; every statement carries its line as its
 first argument, `expr(L, E)`, `if(L, C, T, E)`, `return(L, E)` ...).
 Precedence is a level per operator
@@ -729,6 +746,23 @@ module (a segfault that looked like the error path's). The build mirrors `module
   600-line summary costs 0.15 s to parse, 0.26 s more when `ccl_split/3`
   cut the lines (now `atomic_list_concat/3`); the B-tree's read went from
   3.0 s to 2.0 s, its build from 5.2 s to 3.6 s (`bench/compile/run.sh`).
+* **A lexer in cocolog's DCG costs 0.15 ms a token, whatever is done to
+  its clauses** (per-code recursion, a clause try per token kind, an atom
+  per word); the way out is a cocolog module in Cicili -- the language
+  any native piece here is written in -- which the design allows where a
+  pass needs C speed. `coco_make/4` (lib/term.cicili, behind
+  `coco_m_machine`) builds a compound from an array of argument terms; the
+  module SDK has `coco_m_list`, `coco_m_cons` and the atoms and numbers,
+  no compound. cocolog's integers are 61-bit (`number_codes` of 2^61-1 is
+  -1, of 2^62 is 0): the native lexer computes a literal in u64 and hands
+  it to `coco_m_new_int`, which truncates alike. What it bought, measured
+  (`bench/compile/run.sh`, 2026-09-06): the B-tree's build 3.64 -> 3.45 s,
+  its read 1.99 -> 1.89 s -- the lexer was 0.3 s of it; the read is now
+  0.6 s of process floor (the library's clauses loaded: the engine alone
+  starts in 0.06 s), 0.2-0.5 s per header's summary (`term_to_atom/2` a
+  line, 622 lines for stdlib.h), 0.3 s of parser DCG for 2000 tokens.
+  Those three, then the check and the lowering (1.4 s), are the order to
+  take them in.
 * **`sub_atom/5` with a free position costs about 150 µs a call** (it
   enumerates), and a plain walk over a code list about a microsecond a
   code: the preprocessor tests a line with `atom_codes/2` + `memberchk/2`

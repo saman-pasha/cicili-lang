@@ -186,8 +186,8 @@ LLVM=/usr/local/opt/llvm sh module/build-llvm.sh     # -> library/ccl_llvm.so
 ?- cicili_ast('test/c/hello.c', AST).
 ```
 
-reads the whole file -- two DCGs, one over character codes into tokens
-that carry their line, one over tokens into terms -- and answers the AST,
+reads the whole file -- a lexer over character codes into tokens that
+carry their line, a DCG over tokens into terms -- and answers the AST,
 or throws a syntax error naming the line the unread item begins on and the
 line the grammar gave up at. `cicili_ast(+File, -AST, -Rest)` is the `phrase/3`
 form: the AST of what parsed and the tokens that remain.
@@ -628,22 +628,27 @@ same i9-9880H, the minimum of five, in seconds:
 
 | | hello `-O0` | hello `-O3` | B-tree `-O0` | B-tree `-O3` | B-tree `-c` | B-tree, read only |
 |---|---|---|---|---|---|---|
-| `cicili++`, the first run (init phase) | 5.1 | | 14.4 | | | |
-| `cicili++`, after it | 1.58 | 1.57 | 3.64 | 3.71 | 3.30 | 1.99 |
-| `clang++` | 1.19 | 1.20 | 1.12 | 1.23 | 0.40 | 0.38 |
-| `rustc` | 0.55 | 0.55 | 0.60 | 0.78 | 0.32 | |
+| `cicili++`, the first run (init phase) | 3.8 | | 10.1 | | | |
+| `cicili++`, after it | 1.41 | 1.41 | 3.45 | 3.60 | 3.18 | 1.89 |
+| `clang++` | 1.07 | 1.06 | 1.11 | 1.23 | 0.40 | 0.47 |
+| `rustc` | 0.50 | 0.47 | 0.59 | 0.77 | 0.35 | |
 
 `rustc` is the fastest on both programs and `clang++` next; `cicili++`
 after its init phase takes 1.3 times `clang++` on the hello and 3 times on
-the B-tree. Where its time goes: 0.65 s is the process floor (cocolog and
-the library loaded), a header's summary about 0.3 s (parsed once per
-process), the reader 0.15 ms a token, the check and the lowering of the
-170 lines about 1.4 s, the embedded LLVM and the link the rest -- `c++`
-links in 0.3 s, and `clang++`'s own link is 0.8 of its 1.2 s. The init
-phase is paid once per header, 5 s for `<stdio.h>`'s closure of 38 files
-and 14 s for the three headers the B-tree includes. A cocolog interpreter
-against two C++ compilers: the lexer's speed is the floor of every read,
-and the check and the lowering are the next places to look.
+the B-tree. Where its time goes, measured piece by piece: 0.6 s is the
+process floor (cocolog started and the library's clauses loaded; the
+engine alone starts in 0.06 s), a header's summary 0.2 to 0.5 s (622
+lines parsed by `term_to_atom/2`, once per process), the raw parse of the
+170 lines 0.3 s (the parser's DCG, about 0.15 ms a token; the lexer, since
+it went native, 20 ms for the file), the check and the lowering about
+1.4 s, the embedded LLVM and the link the rest -- `c++` links in 0.3 s,
+and `clang++`'s own link is 0.7 of its 1.1 s. The init phase is paid once
+per header, 4 s for `<stdio.h>`'s closure of 38 files and 10 s for the
+three headers the B-tree includes. The lexer was the first floor to go
+(the DCG ran at 0.15 ms a token, the native one 600 times faster, and the
+build moved a tenth: it was 0.3 s of the 3.6); the summaries' parse, the
+floor and the parser's DCG are the next places to look, then the check
+and the lowering.
 
 `test/c/run/btree.c` and `btree_del.c` are the ownership test case: a
 B-tree whose every node owns its children through an own array, fixed in
@@ -697,9 +702,10 @@ the compiler's authoring layer or is set aside is decided after the design.
 ## What lives here
 
 ```
-module/cicili.cicili     the module: registration, ccl_version/1, and the Prolog half
-                         (cicili_ast/2,3 and the objects layer)
-library/ccl_syntax.pl    the two grammars: the lexer and the parser, as DCGs; the symbol table
+module/cicili.cicili     the module: registration, ccl_version/1, the native lexer (C, in Cicili),
+                         and the Prolog half (cicili_ast/2,3 and the objects layer)
+library/ccl_syntax.pl    the two grammars: the lexer (the DCG, the specification the native one
+                         follows token for token) and the parser; the symbol table
 library/ccl_include.pl   #include: the inclusion path, headers read raw or preprocessed, .pl macro
                          files, the knowledge-base cache
 library/ccl_infer.pl     what a macro can ask: type inference over the symbol table, sizes, lookups

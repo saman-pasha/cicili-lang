@@ -124,8 +124,8 @@ pp_quoted([C|R], Q, R1, [C|S]) :- pp_quoted(R, Q, R1, S).
 pp_directive_line(A, Body) :- atom_codes(A, Cs), pp_ws(Cs, [35|Body]).
 %% a text line's tokens, at its line; a macro body or a directive's tail --
 %% all in the preprocessor's mode: `#' and `##' punctuators, a number as spelled
-pp_lex_line(N, A, Toks) :- atom_codes(A, Cs), ( phrase(ccl_lex(N, T), Cs, _) -> Toks = T ; Toks = [] ).
-pp_lex_body(Codes, Toks) :- ( phrase(ccl_lex(0, T), Codes, _) -> Toks = T ; Toks = [] ).
+pp_lex_line(N, A, Toks) :- ( ccl_lex_atom(A, N, T, _) -> Toks = T ; Toks = [] ).
+pp_lex_body(Codes, Toks) :- atom_codes(A, Codes), ( ccl_lex_atom(A, 0, T, _) -> Toks = T ; Toks = [] ).
 
 %% ---- the run: files, lines, tokens ----------------------------------------------
 %% a file whose whole text is one `#ifndef X ... #endif' with X defined by
@@ -267,7 +267,7 @@ pp_escape([C|Cs], [C|Es]) :- pp_escape(Cs, Es).
 %% the output: bare tokens, a number from a macro body read as the reader has it
 pp_finish([], []).
 pp_finish([X|Xs], [T|Ts]) :- pp_unwrap(X, T0, _), pp_norm(T0, T), pp_finish(Xs, Ts).
-pp_norm(tok(num, Cs, L), T) :- !, nb_getval('$ccl_hash', M), nb_setval('$ccl_hash', line), ( phrase(ccl_lex(0, [tok(K, V, _)]), Cs, []) -> T = tok(K, V, L) ; T = tok(int, 0, L) ), nb_setval('$ccl_hash', M).
+pp_norm(tok(num, Cs, L), T) :- !, nb_getval('$ccl_hash', M), nb_setval('$ccl_hash', line), atom_codes(A, Cs), ( ccl_lex_atom(A, 0, [tok(K, V, _)], []) -> T = tok(K, V, L) ; T = tok(int, 0, L) ), nb_setval('$ccl_hash', M).
 pp_norm(T, T).
 
 %% ---- directives -------------------------------------------------------------

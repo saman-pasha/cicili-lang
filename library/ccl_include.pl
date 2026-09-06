@@ -205,6 +205,7 @@ ccl_ensure_globals :-
       nb_setval('$ccl_templates', [vector, map, set, unordered_map, unordered_set, list, deque, array, pair, tuple, optional, variant,
                                    unique_ptr, shared_ptr, weak_ptr, function, basic_string, initializer_list, allocator, less, greater, hash,
                                    numeric_limits, is_same, enable_if, remove_reference, decay, queue, stack, priority_queue, span]),
+      ( catch(ccl_lex_native('', 1, line, c, _, _), _, fail) -> nb_setval('$ccl_lexer', native) ; nb_setval('$ccl_lexer', dcg) ),
       nb_setval('$ccl_inited', yes) ).
 
 %% ---- the directive's text -----------------------------------------------------

@@ -80,7 +80,8 @@ it is done (see below); the checker and the lowering take the AST from here.
   prints a line and exits 42. No LLVM install: Apple clang consumes textual
   IR and drives the backend. This proves the target end of the pipeline on
   this machine before any of the compiler exists.
-* **M1 — the reader. DONE.** `cicili_ast/2,3` over two DCGs: C11 plus the GNU
+* **M1 — the reader. DONE.** `cicili_ast/2,3` over two DCGs (the lexer
+  since native, a cocolog module in Cicili, the DCG its specification): C11 plus the GNU
   forms Cicili's emitted C carries (`__attribute__`, `typeof`, `({…})`,
   compound literals), every `#include` found and read, the knowledge base
   as the cache. `test/reader.sh`: 80 checks GREEN, one per construct,

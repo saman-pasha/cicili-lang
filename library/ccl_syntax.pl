@@ -78,7 +78,18 @@ ccl_reader_version(23).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
-ccl_tokens(Codes, Tokens, Rest) :- phrase(ccl_lex(1, Tokens), Codes, Rest).
+%% the lexer runs native when library(cicili)'s module is loaded
+%% (ccl_lex_native/6 in module/cicili.cicili, the DCG token for token, C
+%% speed); '$ccl_lexer' says which, decided once by ccl_ensure_globals
+ccl_tokens(Codes, Tokens, Rest) :-
+    (   ccl_native_lexer -> atom_codes(A, Codes), ccl_lex_atom_(A, 1, Tokens, Rest)
+    ;   phrase(ccl_lex(1, Tokens), Codes, Rest) ).
+%% the same over an atom, from a line: the preprocessor's door
+ccl_lex_atom(A, L0, Tokens, Rest) :-
+    (   ccl_native_lexer -> ccl_lex_atom_(A, L0, Tokens, Rest)
+    ;   atom_codes(A, Codes), phrase(ccl_lex(L0, Tokens), Codes, Rest) ).
+ccl_lex_atom_(A, L0, Tokens, Rest) :- nb_getval('$ccl_hash', M), nb_getval('$ccl_lang', Lg), ccl_lex_native(A, L0, M, Lg, Tokens, Rest).
+ccl_native_lexer :- ccl_global('$ccl_lexer', native, _).
 
 ccl_line_of(Codes, Rest, Line) :-
     append(Consumed, Rest, Codes), !,
