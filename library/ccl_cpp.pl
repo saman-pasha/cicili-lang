@@ -129,10 +129,10 @@ cpp_declare_members([method(_, Qs, Ret, M, Ps, V, _)|Ms], C) :- !,
     cpp_mangle(C, M, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, Qs, ThisT),
     ccl_declare(Name, fn(Ret, [param(ThisT, this)|Ps1], V)), cpp_note_defaults(Name, Ps), cpp_declare_members(Ms, C).
 cpp_declare_members([ctor(_, _, Ps, _, _)|Ms], C) :- !,
-    cpp_mangle(C, C, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, [], ThisT),
+    cpp_mangle(C, C, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, [], [fresh], ThisT),
     ccl_declare(Name, fn(base([], [void]), [param(ThisT, this)|Ps1], false)), cpp_note_defaults(Name, Ps), cpp_declare_members(Ms, C).
 cpp_declare_members([dtor(_, _, _)|Ms], C) :- !,
-    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], ThisT),
+    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], [dying], ThisT),
     ccl_declare(Name, fn(base([], [void]), [param(ThisT, this)], false)), cpp_declare_members(Ms, C).
 cpp_declare_members([_|Ms], C) :- cpp_declare_members(Ms, C).
 cpp_declare_statics([], _).
@@ -196,7 +196,9 @@ cpp_plain_params([], []).
 cpp_plain_params([param(T0, N, _)|Ps], [param(T, N)|Qs]) :- !, cpp_type(T0, T), cpp_plain_params(Ps, Qs).
 cpp_plain_params([param(T0, N)|Ps], [param(T, N)|Qs]) :- !, cpp_type(T0, T), cpp_plain_params(Ps, Qs).
 cpp_plain_params([P|Ps], [P|Qs]) :- cpp_plain_params(Ps, Qs).
-cpp_this_type(C, Quals, ptr([], base(Q, [typedef(C)]))) :- ( memberchk(const, Quals) -> Q = [const] ; Q = [] ).
+cpp_this_type(C, Quals, T) :- cpp_this_type(C, Quals, [], T).
+%% a constructor's this is marked fresh, a destructor's dying: the check reads the marks (ck_this_marker/2)
+cpp_this_type(C, Quals, Marks, ptr([], base(Q, [typedef(C)]))) :- ( memberchk(const, Quals) -> Q = [const|Marks] ; Q = Marks ).
 cpp_refuse(L, What) :- throw(error(not_lowered(What), where(file, line(L)))).
 
 %% ---- items ----------------------------------------------------------------------
@@ -215,8 +217,8 @@ cpp_item(declare(L, base(Q, [class(_, C, _, _)])), Items) :- !,
         Items = [VtDecl, declare(L, base(Q, [struct(C, Data1)]))|Fns1x], append(Fns, [Table], Fns1x) ).
 %% the table's struct: a function pointer per slot, over the owner's pointer; the table: the class's implementations
 cpp_vt_struct(L, C, Slots, declare(L, base([], [struct(VT, Ms)]))) :-
-    cpp_vt_tag(C, VT), cpp_vt_owner(C, Owner), cpp_this_type(Owner, [], ThisT),
-    findall(member(ptr([], fn(Ret, [param(ThisT, this)|Ps], V)), M, none), member(slot(M, _, Ret, Ps, V), Slots), Ms).
+    cpp_vt_tag(C, VT), cpp_vt_owner(C, Owner), cpp_this_type(Owner, [], ThisT), cpp_this_type(Owner, [], [dying], DyingT),
+    findall(member(ptr([], fn(Ret, [param(TT, this)|Ps], V)), M, none), ( member(slot(M, _, Ret, Ps, V), Slots), ( M == '$dtor' -> TT = DyingT ; TT = ThisT ) ), Ms).
 cpp_vtable(L, C, Slots, declaration(L, static, base([], [struct(VT, none)]), [var(Name, base([], [struct(VT, none)]), init(Items))])) :-
     cpp_vt_tag(C, VT), cpp_vtable_name(C, Name),
     findall(item([], E), ( member(slot(M, K, _, _, _), Slots), ( cpp_slot_impl(C, M, K, Impl) -> E = id(Impl) ; E = nullptr ) ), Items).
@@ -230,7 +232,7 @@ cpp_item(function(L, Sto, Ret, scoped([C], M), Ps, V, Body), [function(L, Sto, R
     cpp_mangle(C, M, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, [], ThisT),
     cpp_method_body(C, [param(ThisT, this)|Ps1], Body, Body1).
 cpp_item(dtor_def(L, C, _, Body), [function(L, none, base([], [void]), Name, [param(ThisT, this)], false, Body1)]) :- !,
-    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], ThisT), cpp_dtor_body(L, C, Body, Body0), cpp_method_body(C, [param(ThisT, this)], Body0, Body1).
+    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], [dying], ThisT), cpp_dtor_body(L, C, Body, Body0), cpp_method_body(C, [param(ThisT, this)], Body0, Body1).
 %% a destructor's body, then the base's destructor over the base sub-object
 cpp_dtor_body(L, C, block(Body), block(Body1)) :-
     cpp_class(C, cls(B, _, _, _, _, _)),
@@ -259,12 +261,12 @@ cpp_member_fns([method(L, Qs, Ret, M, Ps, V, Body)|Ms], C, B, Ds, [F|Fs]) :- !,
     ;   cpp_method_body(C, Params, Body, Body1), F = function(L, none, Ret, Name, Params, V, Body1) ),
     cpp_member_fns(Ms, C, B, Ds, Fs).
 cpp_member_fns([ctor(L, _, Ps, Inits, Body)|Ms], C, B, Ds, [F|Fs]) :- !,
-    cpp_mangle(C, C, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, [], ThisT), Params = [param(ThisT, this)|Ps1],
+    cpp_mangle(C, C, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, [], [fresh], ThisT), Params = [param(ThisT, this)|Ps1],
     cpp_ctor_body(L, C, B, Ds, Inits, Body, Body0), cpp_method_body(C, Params, Body0, Body1),
     F = function(L, none, base([], [void]), Name, Params, false, Body1),
     cpp_member_fns(Ms, C, B, Ds, Fs).
 cpp_member_fns([dtor(L, _, Body)|Ms], C, B, Ds, Fs) :- !,
-    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], ThisT), Params = [param(ThisT, this)],
+    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], [dying], ThisT), Params = [param(ThisT, this)],
     (   Body == none -> Fs = [declaration(L, none, base([], [void]), [var(Name, fn(base([], [void]), Params, false), none)])|Fs1]
     ;   cpp_dtor_body(L, C, Body, Body0), cpp_method_body(C, Params, Body0, Body1), Fs = [function(L, none, base([], [void]), Name, Params, false, Body1)|Fs1] ),
     cpp_member_fns(Ms, C, B, Ds, Fs1).
@@ -291,7 +293,7 @@ cpp_member_inits([member(_, N, _)|Ds], Inits, Defaults, L, Pre, Body) :-
     cpp_member_inits(Ds, Inits, Defaults, L, Pre1, Body).
 %% a class with no constructor of its own but defaults to set, or a base to construct: C.C.0
 cpp_implicit_ctor(L, C, B, Defaults, [function(L, none, base([], [void]), Name, Params, false, Body1)]) :-
-    cpp_mangle(C, C, [], Name), cpp_this_type(C, [], ThisT), Params = [param(ThisT, this)],
+    cpp_mangle(C, C, [], Name), cpp_this_type(C, [], [fresh], ThisT), Params = [param(ThisT, this)],
     ccl_declare(Name, fn(base([], [void]), Params, false)),
     cpp_ctor_body(L, C, B, Defaults, [], block([]), Body0), cpp_method_body(C, Params, Body0, Body1).
 %% a body under its parameters, the class's members in reach

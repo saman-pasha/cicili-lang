@@ -591,6 +591,33 @@ an initializer stores the address as any pointer; the check's
 instantiation, `mutable` (every capture is mutable), a lambda's
 destructor, `std::function`.
 
+**M6's sixth step (0.37): a real program under the safe part** --
+`test/cpp/run/btree.cpp`, the B-tree of `bench/btree` as a class over
+`own` pointers (`own node *root`, the nodes' `own node *C[nc]`), a
+constructor, a destructor, const methods, `own BTree *t = new BTree()`
+and `delete t`; it prints the C version's numbers. What it taught the
+check, THE OBJECT'S LIFECYCLE: the desugaring marks a constructor's
+`this` `ptr([], base([fresh], [typedef(C)]))` and a destructor's
+`[dying]` (`cpp_this_type/4`, in the function, its declaration and the
+table's `$dtor` slot alike), and the check reads the marks
+(`ck_this_marker/2`): under `fresh` the pointee's own fields start
+UNSET (`ck_param_owners`: garbage, not complete), so `root = new_leaf()`
+is no overwrite, and `ck_complete_owners` still demands them live or
+null at every return -- a constructor that forgets an own field is
+refused; under `dying` the fields are exempt from that demand
+(`'$ck_dying_fields'`), so `~BTree() { free(root); }` passes, and the
+CALLER of a destructor -- `delete p` as `comma(dtor(p), free(p))`, a
+local's defer over `&c` -- takes the object's own fields as moved
+(`ck_args_`: `ck_dying_param/2`, `ck_arg_base/2`, `ck_own_under`), so the
+free that follows finds nothing leaked. `new T` of a struct without a
+constructor is malloc's bytes to the check (`ck_alloc_mode`: `new(_,
+[])`, `new_array`, and through a `cast`), `new C(args)` a complete
+object (its constructor was made to be). `bench/btree/btree_cicili.c`
+built with `-O1` at 20000 keys gives the expectation. Not done: a
+constructor that delegates, `this` handed out of a constructor, a
+destructor's effect on a struct member of class type, arrays of
+objects, `static` methods (a `this` is passed and unused).
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

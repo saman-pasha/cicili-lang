@@ -157,6 +157,7 @@ ck_function(L, Ret, Name, Params0, Body) :-
         nb_setval('$ck_ret_tie', RT)
     ;   nb_setval('$ck_ret_tie', none) ),
     ck_borrowed_fields(Params, Borrowed), nb_setval('$ck_borrowed', Borrowed),
+    ck_dying_fields(Params, Dying), nb_setval('$ck_dying_fields', Dying),
     ck_param_owners(Params, Owners),
     ck_param_ties(Params, [], st([fr(Owners, [])]), St0),
     ck_stmt(Body, St0, St1),
@@ -173,8 +174,25 @@ ck_pointee_fields(N, T, Fs) :- ccl_resolve_type(T, ptr(_, PT)), ccl_members_of(P
 ck_is_borrowed_field(N) :- nb_getval('$ck_borrowed', Bs), memberchk(N, Bs).
 ck_complete_owners([], _).
 ck_complete_owners([N-S|Os], Form) :-
-    ( ck_is_borrowed_field(N), \+ memberchk(S, [live, null, array]) -> ck_fail(borrow_incomplete, N, Form) ; true ),
+    ( ck_is_borrowed_field(N), \+ ck_is_dying_field(N), \+ memberchk(S, [live, null, array]) -> ck_fail(borrow_incomplete, N, Form) ; true ),
     ck_complete_owners(Os, Form).
+%% C++ (M6): a constructor's `this' points at fresh storage -- its own fields
+%% start unset, and must be live or null when it returns -- and a destructor's
+%% at dying storage: its fields may be consumed and left, and the caller of a
+%% destructor (delete, a scope's end) takes the object's own fields as moved.
+%% The desugaring marks the pointee: ptr(_, base([fresh | dying], ...)).
+ck_this_marker(T, M) :- ccl_resolve_type(T, ptr(_, base(Q, _))), memberchk(M, Q), !.
+ck_dying_fields([], []).
+ck_dying_fields([param(T, N)|Ps], Fs) :-
+    ck_dying_fields(Ps, Fs0),
+    ( N \== anon, ck_this_marker(T, dying), ck_pointee_fields(N, T, Fs1) -> ck_field_names(Fs1, Ns), append(Ns, Fs0, Fs) ; Fs = Fs0 ).
+ck_field_names([], []).
+ck_field_names([K-_|Fs], [K|Ns]) :- !, ck_field_names(Fs, Ns).
+ck_field_names([K|Fs], [K|Ns]) :- ck_field_names(Fs, Ns).
+ck_is_dying_field(N) :- nb_getval('$ck_dying_fields', Ds), memberchk(N, Ds).
+ck_dying_param(Callee, I) :- ck_callee_params(Callee, Ps), ccl_nth(I, Ps, param(PT, _)), ck_this_marker(PT, dying).
+ck_arg_base(addr(id(K)), K).
+ck_arg_base(id(K), K).
 ck_body_static(declaration(_, static, _, Vs), N) :- member(var(N, _, _), Vs), !.
 ck_body_static(T, N) :- compound(T), T =.. [_|As], member(A, As), ck_body_static(A, N), !.
 ck_param_names([], []).
@@ -191,7 +209,7 @@ ck_param_owners([param(T, N)|Ps], Os) :-
     ;   ck_own_type(T)
     ->  ck_var_fields(N, T, Fs), ck_field_states(Fs, complete, FOs),
         ( ck_is_pointer_type(T) -> append([N-live|FOs], Os0, Os) ; append(FOs, Os0, Os) )
-    ;   ck_is_pointer_type(T) -> ( ck_pointee_fields(N, T, Fs) -> ck_field_states(Fs, complete, FOs) ; FOs = [] ), append([N-borrow(N)|FOs], Os0, Os)
+    ;   ck_is_pointer_type(T) -> ( ck_pointee_fields(N, T, Fs) -> ( ck_this_marker(T, fresh) -> Mode = garbage ; Mode = complete ), ck_field_states(Fs, Mode, FOs) ; FOs = [] ), append([N-borrow(N)|FOs], Os0, Os)
     ;   ccl_resolve_type(T, arr(_, _)) -> Os = [N-borrow(N)|Os0]
     ;   Os = Os0 ).
 %% the ties of the parameters, in order: the fields' (a struct's members tied
@@ -250,6 +268,9 @@ ck_field_states([K|Ks], Mode, [K-S|Ps]) :- ck_field_state(K, Mode, S), ck_field_
 ck_field_state(K, Mode, S) :- ( ck_is_array_key(K) -> S = array ; Mode == garbage -> S = unset ; Mode == zeroed -> S = null ; S = live ).
 ck_alloc_mode(call(id(F), _), garbage) :- memberchk(F, [malloc, realloc]), !.
 ck_alloc_mode(call(id(calloc), _), zeroed) :- !.
+ck_alloc_mode(cast(_, E), M) :- !, ck_alloc_mode(E, M).                              % C++'s new T is (T *) malloc(sizeof(T))
+ck_alloc_mode(new(_, []), garbage) :- !.                                            % new T of a struct without a constructor: malloc's bytes
+ck_alloc_mode(new_array(_, _), garbage) :- !.
 ck_alloc_mode(_, complete).
 ck_set_fields(St0, Key, Mode, Form, St) :-
     ck_under_states(St0, Key, Ps),
@@ -1115,7 +1136,10 @@ ck_args_([A|As], Callee, I, St0, St) :-
         ;   ck_kind(A, St0, borrow(P)) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)
         ;   ck_expr(A, St0, St1) )
     ;   ck_expr(A, St0, St1) ),
-    I1 is I + 1, ck_args_(As, Callee, I1, St1, St).
+    (   ck_dying_param(Callee, I), ck_arg_base(A, K), ck_own_under(St1, K, Fs), Fs \== []                % a destructor ran: the object's own fields are gone
+    ->  ck_set_all(St1, Fs, moved, St1m), ck_dangle_all(St1m, Fs, St1d)
+    ;   St1d = St1 ),
+    I1 is I + 1, ck_args_(As, Callee, I1, St1d, St).
 ck_consumes(id(free), 1) :- !.
 ck_consumes(id(fclose), 1) :- !.
 ck_consumes(id(realloc), 1) :- !.                                    % the old block goes; the result is the new owner

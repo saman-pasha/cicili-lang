@@ -69,9 +69,17 @@ what runs today.
   captures' values, `auto f = ...` taking its type, a call of it going
   to the operator; a default capture takes every enclosing local the
   body names, the result type is deduced from the first `return`.
-  `test/cpp.sh`: six programs built through `cicili++`, run and
-  checked, plus the reader's `classes.cpp` and `templates.cpp`; `try`
-  is refused by name. GREEN.
+  **The sixth step DONE: a real program under the safe part** -- the
+  B-tree of `bench/btree` written the C++ way, a class over Cicili's
+  `own` pointers with a constructor, a destructor and const methods,
+  the node helpers file-static, `new` and `delete` of the tree; the
+  ownership check reads a constructor's `this` as fresh storage (its
+  own fields unset, and live or null when it returns) and a
+  destructor's as dying (its fields may be consumed, and whoever ran
+  the destructor takes them as gone), so the class holds what C's
+  struct held. `test/cpp.sh`: seven programs built through `cicili++`,
+  run and checked, plus the reader's `classes.cpp` and
+  `templates.cpp`; `try` is refused by name. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

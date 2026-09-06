@@ -214,8 +214,8 @@ it is done (see below); the checker and the lowering take the AST from here.
   thousands of lines and are a one-time cost per project through the cache.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
-* **M6 — the check and the lowering of the C++ forms, IN STEPS: the
-  first five DONE.** The forms that are C with names: a namespace flattened
+* **M6 — the check and the lowering of the C++ forms, IN STEPS: six
+  DONE.** The forms that are C with names: a namespace flattened
   to its bare names, `extern "C"`, `using`, `bool`, `nullptr`, the casts,
   `enum class`, a range-for over an array as the `for` it stands for, a
   reference as a pointer bound once (a borrow to the check, an address
@@ -239,10 +239,14 @@ it is done (see below); the checker and the lowering take the AST from here.
   unit's items -- no template from a header's summary, whose body is
   gone. Then lambdas: a class of the captures with `operator()` its
   body, made and desugared like a class written out, a call of the
-  object going to the operator. `try` is refused by name; exceptions
-  come last, if at all, since the safe part has no unwinding to offer.
-  What the steps leave: the forms named in `CLAUDE.md` under each step,
-  and the STL, whose templates' bodies a summary drops.
+  object going to the operator. Then a real program: the B-tree the
+  C++ way, a class over `own` pointers, which taught the check the
+  object's lifecycle -- a constructor's `this` fresh, a destructor's
+  dying -- so a class holds what a struct held. `try` is refused by
+  name; exceptions come last, if at all, since the safe part has no
+  unwinding to offer. What the steps leave: the forms named in
+  `CLAUDE.md` under each step, and the STL, whose templates' bodies a
+  summary drops.
 * **Later — the objects layer's fate (below)**, and, on the LLVM module
   already here, ORC JIT: a macro running C at compile time.
 
