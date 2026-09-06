@@ -58,9 +58,15 @@ what runs today.
   set by every constructor; a call through a pointer or a reference
   goes by the object's own table, a call on a value straight, a virtual
   destructor runs the right one at `delete` and the base's after it.
-  `test/cpp.sh`: four programs built through `cicili++`, run and
-  checked, plus the reader's `classes.cpp`; templates, lambdas and try
-  are refused by name until their step. GREEN.
+  **The fourth step DONE: templates**, instantiated on use as a copy
+  of the item with the parameters substituted, named by its arguments
+  (`Buf.int.4`, `max2.double`): a class template at every template-id
+  the walk meets, a function template at a call with its arguments
+  explicit or deduced from the arguments' types, the instances joining
+  the unit's items. `test/cpp.sh`: five programs built through
+  `cicili++`, run and checked, plus the reader's `classes.cpp` and
+  `templates.cpp`; lambdas and try are refused by name until their
+  step. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -122,9 +128,9 @@ says nothing when it reads, and a C++ file that is C builds; the check and
 the lowering of the C++ forms are M6, in steps: the first, the forms that
 are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
 the casts, `enum class`, range-for, `new` and `delete`), the second,
-classes, and the third, `virtual`, build and run, and a file using a later
-step's form -- a template, a lambda, `try` -- is refused at that form by
-its name. What is read, each
+classes, the third, `virtual`, and the fourth, templates, build and run,
+and a file using a later step's form -- a lambda, `try` -- is refused at
+that form by its name. What is read, each
 with its AST node:
 
 | C++ | AST |

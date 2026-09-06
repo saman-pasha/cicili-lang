@@ -215,7 +215,7 @@ it is done (see below); the checker and the lowering take the AST from here.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
 * **M6 — the check and the lowering of the C++ forms, IN STEPS: the
-  first three DONE.** The forms that are C with names: a namespace flattened
+  first four DONE.** The forms that are C with names: a namespace flattened
   to its bare names, `extern "C"`, `using`, `bool`, `nullptr`, the casts,
   `enum class`, a range-for over an array as the `for` it stands for, a
   reference as a pointer bound once (a borrow to the check, an address
@@ -232,11 +232,15 @@ it is done (see below); the checker and the lowering take the AST from here.
   function pointers per class and a global table of them, the object's
   first member pointing at its class's table, set by every constructor;
   a call through a pointer or a reference dispatches through it, a
-  virtual destructor too. Every later form -- a template, a lambda,
-  `try` -- is refused by name. The steps to come, each with a program
-  that runs, as rewrites to C: templates instantiated on use (function
-  and class), lambdas as a struct of captures and a function; exceptions
-  last, if at all, since the safe part has no unwinding to offer.
+  virtual destructor too. Then templates: instantiated on use, a copy of
+  the item with the parameters substituted, named by its arguments, a
+  class template at every template-id met and a function template at a
+  call with its arguments explicit or deduced, the instances joining the
+  unit's items -- no template from a header's summary, whose body is
+  gone. Every later form -- a lambda, `try` -- is refused by name. The
+  steps to come, each with a program that runs, as rewrites to C:
+  lambdas as a struct of captures and a function; exceptions last, if at
+  all, since the safe part has no unwinding to offer.
 * **Later — the objects layer's fate (below)**, and, on the LLVM module
   already here, ORC JIT: a macro running C at compile time.
 

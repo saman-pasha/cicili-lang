@@ -104,8 +104,8 @@ ccl_resolve_type(base(Q, [S|Ss]), base(Q, [S|Ss])) :- atom(S), !.               
 ccl_resolve_type(base(Q, S), T) :- !, ccl_resolve_base(S, Q, T).
 ccl_resolve_type(T, T).
 ccl_resolve_base([S|Ss], Q, base(Q, [S|Ss])) :- atom(S), !.                      % a plain specifier list, the common case: one try
-ccl_resolve_base([typedef(N)], Q, T) :- ccl_cached_named('$ccl_r:', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
-ccl_resolve_base([typedef(N)], Q, T) :- ccl_lang(cpp), ccl_tag(N, Ms), !, ccl_tag_type(N, Ms, Q, T).   % C++: a tag's name is a type name
+ccl_resolve_base([typedef(N)], Q, T) :- atom(N), ccl_cached_named('$ccl_r:', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
+ccl_resolve_base([typedef(N)], Q, T) :- atom(N), ccl_lang(cpp), ccl_tag(N, Ms), !, ccl_tag_type(N, Ms, Q, T).   % C++: a tag's name is a type name; a template-id (a compound) stays as it is
 ccl_resolve_base([struct(Tag, none)], Q, base(Q, [struct(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base([union(Tag, none)], Q, base(Q, [union(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base(S, Q, base(Q, S)).

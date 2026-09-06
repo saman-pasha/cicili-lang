@@ -29,19 +29,37 @@
 %% destroys through the slot. Single inheritance puts the base at offset 0,
 %% so `this' is never adjusted.
 %%
+%% Templates, the fourth step: instantiated on use, a copy of the item with
+%% the parameters substituted (cpp_subst/3), named `N.key.key' by its
+%% arguments (`Buf.int.4', `max2.double'); a class template at every
+%% template-id type met by the walk (cpp_type/2, the hook every type goes
+%% through), registered and desugared like a class written out; a function
+%% template at a call, its type arguments explicit or deduced from the
+%% arguments' types (cpp_match/5), declared and walked like a function
+%% written out; the instances join the unit's items at its end, the
+%% template item itself is nothing. A template from a header's summary has
+%% no body to copy and is refused.
+%%
 %% Not this step (refused by name): more than one base, a member of class
 %% type with a constructor, an array of a class, a global of a class with a
 %% constructor, a temporary's destructor, operator= and copy constructors
-%% (a struct copies), a pure virtual method.
+%% (a struct copies), a pure virtual method, partial and explicit
+%% specializations, a template's non-type argument deduced.
 
 ccl_cpp_units(Units0, Units) :- cpp_register_units(Units0), cpp_units(Units0, Units).
 cpp_units([], []).
-cpp_units([unit(Is0)|Us0], [unit(Is)|Us]) :- cpp_items(Is0, Is), cpp_units(Us0, Us).
+cpp_units([unit(Is0)|Us0], [unit(Is)|Us]) :- cpp_items(Is0, Is1), cpp_flush_instances(Is1, Is), cpp_units(Us0, Us).
+%% the instances made while the unit was walked join its items; walking them may make more
+cpp_flush_instances(Is0, Is) :-
+    nb_getval('$cpp_instance_items', New),
+    ( New == [] -> Is = Is0 ; nb_setval('$cpp_instance_items', []), reverse(New, Ordered), append(Is0, Ordered, Is1), cpp_flush_instances(Is1, Is) ).
 
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
     nb_setval('$cpp_classes', []), nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []),
+    nb_setval('$cpp_templates', []), nb_setval('$cpp_instances', []), nb_setval('$cpp_instance_items', []),
     forall(member(unit(Is), Units), cpp_register_(Is)).
+cpp_register_([template(_, TPs, Item)|Is]) :- !, ( cpp_template_name(Item, N) -> nb_getval('$cpp_templates', Ts), nb_setval('$cpp_templates', [N-tmpl(TPs, Item)|Ts]) ; true ), cpp_register_(Is).
 cpp_register_([]).
 cpp_register_([declare(L, base(_, [class(_, C, Bases, Ms)]))|Is]) :- !, cpp_register_class(L, C, Bases, Ms), cpp_register_(Is).
 cpp_register_([function(_, _, Ret, operator(Op), Ps, V, _)|Is]) :- !,
@@ -90,7 +108,7 @@ cpp_slot_impl(C, '$dtor', _, Name) :- !, cpp_dtor(C, Name).
 cpp_slot_impl(C, M, K, Name) :- cpp_class(C, cls(B, _, Ms, _, _, _)), ( member(method(_, _, _, M, Ps, _, _), Ms), length(Ps, K) -> cpp_mangle(C, M, Ps, Name) ; B \== none, cpp_slot_impl(B, M, K, Name) ).
 cpp_split_members([], [], [], []).
 cpp_split_members([member(base(Q, S), N, _)|Ms], Data, [N-base(Q1, S)|Ss], Ds) :- memberchk(static, Q), !, ccl_delete_one(Q, static, Q1), cpp_split_members(Ms, Data, Ss, Ds).
-cpp_split_members([member(T, N, _)|Ms], [member(T, N, none)|Data], Ss, Ds) :- !, cpp_split_members(Ms, Data, Ss, Ds).
+cpp_split_members([member(T0, N, _)|Ms], [member(T, N, none)|Data], Ss, Ds) :- !, cpp_type(T0, T), cpp_split_members(Ms, Data, Ss, Ds).
 cpp_split_members([default_init(N, E)|Ms], Data, Ss, [N-E|Ds]) :- !, cpp_split_members(Ms, Data, Ss, Ds).
 cpp_split_members([_|Ms], Data, Ss, Ds) :- cpp_split_members(Ms, Data, Ss, Ds).
 %% the functions a class makes are declared in the symbol table at once, so
@@ -114,6 +132,7 @@ cpp_class_of_type(T, C) :- ccl_resolve_type(T, T1), cpp_class_of_type_(T1, C).
 cpp_class_of_type_(base(_, [class(_, C, _, _)]), C) :- cpp_class(C, _), !.
 cpp_class_of_type_(base(_, [struct(C, _)]), C) :- cpp_class(C, _), !.
 cpp_class_of_type_(base(_, [typedef(C)]), C) :- cpp_class(C, _), !.
+cpp_class_of_type_(base(_, [typedef(X)]), C) :- cpp_template_id(X, N, Args), !, cpp_types(Args, Args1), cpp_instantiate_class(N, Args1, C).   % a template-id the table still holds raw
 cpp_pointee_class(T, C) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, E) ; T1 = arr(_, E) ), cpp_class_of_type(E, C).
 cpp_class_of_type_of(X, C) :- ccl_type_of(X, T), T \== unknown, cpp_class_of_type(T, C).
 cpp_pointee_class_of(X, C) :- ccl_type_of(X, T), T \== unknown, cpp_pointee_class(T, C).
@@ -163,7 +182,8 @@ cpp_take_defaults([], []).
 cpp_take_defaults([none|_], []) :- !.
 cpp_take_defaults([D|Ds], [D|Es]) :- cpp_take_defaults(Ds, Es).
 cpp_plain_params([], []).
-cpp_plain_params([param(T, N, _)|Ps], [param(T, N)|Qs]) :- !, cpp_plain_params(Ps, Qs).
+cpp_plain_params([param(T0, N, _)|Ps], [param(T, N)|Qs]) :- !, cpp_type(T0, T), cpp_plain_params(Ps, Qs).
+cpp_plain_params([param(T0, N)|Ps], [param(T, N)|Qs]) :- !, cpp_type(T0, T), cpp_plain_params(Ps, Qs).
 cpp_plain_params([P|Ps], [P|Qs]) :- cpp_plain_params(Ps, Qs).
 cpp_this_type(C, Quals, ptr([], base(Q, [typedef(C)]))) :- ( memberchk(const, Quals) -> Q = [const] ; Q = [] ).
 cpp_refuse(L, What) :- throw(error(not_lowered(What), where(file, line(L)))).
@@ -206,15 +226,17 @@ cpp_dtor_body(L, C, block(Body), block(Body1)) :-
     ( B \== none, cpp_dtor(B, BName) -> append(Body, [expr(L, call(id(BName), [addr(arrow(this, '$base'))]))], Body1) ; Body1 = Body ).
 cpp_item(function(L, Sto, Ret, operator(Op), Ps, V, Body), [function(L, Sto, Ret, Name, Ps1, V, Body1)]) :- !,
     cpp_free_operator(Op, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_method_body(none, Ps1, Body, Body1).
-cpp_item(function(L, Sto, Ret, N, Ps, V, Body), [function(L, Sto, Ret, N, Ps1, V, Body1)]) :- !,
-    cpp_plain_params(Ps, Ps1), cpp_method_body(none, Ps1, Body, Body1).
+cpp_item(function(L, Sto, Ret0, N, Ps, V, Body), [function(L, Sto, Ret, N, Ps1, V, Body1)]) :- !,
+    cpp_type(Ret0, Ret), cpp_plain_params(Ps, Ps1), cpp_method_body(none, Ps1, Body, Body1).
 cpp_item(declaration(L, Sto, B, Vs), [declaration(L, Sto, B, Vs1)]) :- !, cpp_vars(none, Vs, Vs1).
+cpp_item(typedef(L, Vs), [typedef(L, Vs1)]) :- !, cpp_vars(none, Vs, Vs1), ccl_note_typedefs(Vs1).   % the table learns the instance's name at once
+cpp_item(template(_, _, _), []) :- !.
 cpp_item(namespace(L, N, Is), [namespace(L, N, Js)]) :- !, cpp_items(Is, Js).
 cpp_item(extern_c(L, Is), [extern_c(L, Js)]) :- !, cpp_items(Is, Js).
 cpp_item(I, [I]).
 cpp_vars(_, [], []).
-cpp_vars(Ctx, [var(N, fn(R, Ps, V), I)|Vs], [var(N, fn(R, Ps1, V), I)|Ws]) :- !, cpp_plain_params(Ps, Ps1), cpp_vars(Ctx, Vs, Ws).
-cpp_vars(Ctx, [var(N, T, I)|Vs], [var(N, T, I1)|Ws]) :- cpp_expr(Ctx, I, I1), cpp_vars(Ctx, Vs, Ws).
+cpp_vars(Ctx, [var(N, fn(R0, Ps, V), I)|Vs], [var(N, fn(R, Ps1, V), I)|Ws]) :- !, cpp_type(R0, R), cpp_plain_params(Ps, Ps1), cpp_vars(Ctx, Vs, Ws).
+cpp_vars(Ctx, [var(N, T0, I)|Vs], [var(N, T, I1)|Ws]) :- cpp_type(T0, T), cpp_expr(Ctx, I, I1), cpp_vars(Ctx, Vs, Ws).
 %% the static members: declared with the class, defined out of it (Counter::made, above)
 cpp_static_decls(_, _, [], []).
 cpp_static_decls(L, C, [N-T|Ss], [declaration(L, extern, T, [var(Name, T, none)])|Ds]) :- atomic_list_concat([C, '.', N], Name), cpp_static_decls(L, C, Ss, Ds).
@@ -277,8 +299,8 @@ cpp_stmt(Ctx, for(L, Init, C, Step, S), for(L, Init1, C1, Step1, S1)) :- !,
     ccl_scope_push,
     ( Init = decl(B, Vs) -> cpp_vars(Ctx, Vs, Vs1), ccl_declare_vars(Vs1), Init1 = decl(B, Vs1) ; cpp_opt_expr(Ctx, Init, Init1) ),
     cpp_opt_expr(Ctx, C, C1), cpp_opt_expr(Ctx, Step, Step1), cpp_stmt(Ctx, S, S1), ccl_scope_pop.
-cpp_stmt(Ctx, for_each(L, var(N, T, I), R, S), for_each(L, var(N, T, I), R1, S1)) :- !,
-    cpp_expr(Ctx, R, R1), ccl_scope_push, ccl_declare(N, T), cpp_stmt(Ctx, S, S1), ccl_scope_pop.
+cpp_stmt(Ctx, for_each(L, var(N, T0, I), R, S), for_each(L, var(N, T, I), R1, S1)) :- !,
+    cpp_type(T0, T), cpp_expr(Ctx, R, R1), ccl_scope_push, ccl_declare(N, T), cpp_stmt(Ctx, S, S1), ccl_scope_pop.
 cpp_stmt(Ctx, return(L, E), return(L, E1)) :- !, cpp_expr(Ctx, E, E1).
 cpp_stmt(Ctx, label(L, N, S), label(L, N, S1)) :- !, cpp_stmt(Ctx, S, S1).
 cpp_stmt(Ctx, switch(L, E, S), switch(L, E1, S1)) :- !, cpp_expr(Ctx, E, E1), cpp_stmt(Ctx, S, S1).
@@ -297,7 +319,8 @@ cpp_decl_stmt(Ctx, L, Sto, B, Vs, S) :-
     cpp_decl_pieces(Ctx, L, Sto, B, Vs, Pieces),
     ( Pieces = [One] -> S = One ; S = '$splice'(Pieces) ).
 cpp_decl_pieces(_, _, _, _, [], []).
-cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T, I)|Vs], Pieces) :-
+cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T0, I)|Vs], Pieces) :-
+    cpp_type(T0, T),
     (   Sto \== static, Sto \== extern, cpp_class_of_type(T, C), cpp_has_ctors(C), cpp_ctor_args(Ctx, I, C, Args)
     ->  length(Args, NA),
         ( cpp_ctor(C, NA, CName) -> true ; cpp_refuse(L, no_constructor(C, NA)) ),
@@ -330,9 +353,14 @@ cpp_expr(Ctx, arrow(X, N), E) :- !, cpp_expr(Ctx, X, X1), ( cpp_pointee_class_of
 cpp_expr(Ctx, bin(Op, A, B), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1), cpp_operator(Op, A1, [B1], bin(Op, A1, B1), E).
 cpp_expr(Ctx, assign(Op, A, B), E) :- Op \== '=', !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1), cpp_operator(Op, A1, [B1], assign(Op, A1, B1), E).
 cpp_expr(Ctx, index(A, I), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, I, I1), cpp_operator('[]', A1, [I1], index(A1, I1), E).
-cpp_expr(Ctx, new(T, As), E) :- !, cpp_exprs(Ctx, As, As1), cpp_new(T, As1, E).
+cpp_expr(Ctx, new(T0, As), E) :- !, cpp_type(T0, T), cpp_exprs(Ctx, As, As1), cpp_new(T, As1, E).
+cpp_expr(Ctx, new_array(T0, N), new_array(T, N1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, N, N1).
+cpp_expr(Ctx, cast(T0, X), cast(T, X1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1).
+cpp_expr(_, sizeof_type(T0), sizeof_type(T)) :- !, cpp_type(T0, T).
+cpp_expr(Ctx, compound_lit(T0, I), compound_lit(T, I1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, I, I1).
 cpp_expr(Ctx, delete(X), E) :- !, cpp_expr(Ctx, X, X1), cpp_delete(X1, E).
 cpp_expr(Ctx, ccast(functional, base(Q, [typedef(C)]), X), E) :- cpp_class(C, _), !, cpp_expr(Ctx, X, X1), cpp_temporary(base(Q, [typedef(C)]), C, [X1], E).
+cpp_expr(Ctx, ccast(K, T0, X), ccast(K, T, X1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1).
 cpp_expr(Ctx, stmt_expr(block(Is)), stmt_expr(block(Js))) :- !, ccl_scope_push, cpp_stmts(Ctx, Is, Js), ccl_scope_pop.
 cpp_expr(_, lambda(A, B, C, D), lambda(A, B, C, D)) :- !.
 cpp_expr(_, str(S), str(S)) :- !.
@@ -367,6 +395,8 @@ cpp_dispatch(P, C, Slot, As, call(arrow(Vptr, Slot), [P|As])) :- cpp_data_member
 %% a value whose dynamic type is its static one: a named object, or a member of one; not a reference
 cpp_static_object(id(N)) :- ccl_declared(N, T), \+ T = ref(_, _), \+ T = rref(_, _).
 cpp_static_object(member(X, _)) :- cpp_static_object(X).
+cpp_call(_, tmpl(F, TArgs), As, call(id(Name), As)) :- cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_types(TArgs, TArgs1), cpp_instantiate_function(F, TArgs1, As, Name).
+cpp_call(_, id(F), As, call(id(Name), As)) :- \+ cpp_local(F), cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_instantiate_function(F, [], As, Name).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
 cpp_call(_, id(F), As, call(id(F), As1)) :- !, cpp_fill_defaults(F, As, As1).
 cpp_call(Ctx, F, As, call(F1, As)) :- cpp_expr(Ctx, F, F1).
@@ -391,3 +421,103 @@ cpp_delete(X, E) :- cpp_pointee_class_of(X, C), cpp_dtor(C, DName), !,
 cpp_destroy(P, C, _, E) :- cpp_slot(C, '$dtor', 0, Slot), !, cpp_dispatch(P, C, Slot, [], E).
 cpp_destroy(P, _, DName, call(id(DName), [P])).
 cpp_delete(X, delete(X)).
+
+%% ---- templates, instantiated on use --------------------------------------------------
+%% '$cpp_templates' = [Name-tmpl(TParams, Item) ...]; '$cpp_instances' = [InstanceName-Template ...];
+%% '$cpp_instance_items' the items the instances made, newest first
+cpp_template_name(function(_, _, _, N, _, _, _), N) :- atom(N).
+cpp_template_name(declare(_, base(_, [class(_, N, _, _)])), N).
+cpp_template_name(declare(_, base(_, [struct(N, _)])), N).
+cpp_template(N, TPs, Item) :- nb_getval('$cpp_templates', Ts), memberchk(N-tmpl(TPs, Item), Ts).
+%% every type the walk meets goes through here: a template-id becomes its instance's name
+cpp_type(T0, T) :- \+ compound(T0), !, T = T0.
+cpp_type(base(Q, [typedef(X)]), base(Q, [typedef(Name)])) :- cpp_template_id(X, N, Args), !, cpp_types(Args, Args1), cpp_instantiate_class(N, Args1, Name).
+cpp_type(base(Q, S), base(Q, S)) :- !.
+cpp_type(ptr(Q, T0), ptr(Q, T)) :- !, cpp_type(T0, T).
+cpp_type(ref(Q, T0), ref(Q, T)) :- !, cpp_type(T0, T).
+cpp_type(rref(Q, T0), rref(Q, T)) :- !, cpp_type(T0, T).
+cpp_type(arr(N, T0), arr(N, T)) :- !, cpp_type(T0, T).
+cpp_type(fn(R0, Ps0, V), fn(R, Ps, V)) :- !, cpp_type(R0, R), cpp_plain_params(Ps0, Ps).
+cpp_type(T, T).
+cpp_types([], []).
+cpp_types([T0|Ts], [T|Us]) :- cpp_type(T0, T), cpp_types(Ts, Us).
+cpp_template_id(tmpl(N, Args), N, Args).
+cpp_template_id(scoped(_, tmpl(N, Args)), N, Args).                      % a namespace flattens here too
+%% the walk of an instance sees no local of the function that met it: the scopes are set aside
+cpp_isolated(Goal) :- nb_getval('$ccl_scope', S), nb_setval('$ccl_scope', []), ( call(Goal) -> nb_setval('$ccl_scope', S) ; nb_setval('$ccl_scope', S), fail ).
+cpp_add_instance_items(Items) :- nb_getval('$cpp_instance_items', Old), reverse(Items, R), append(R, Old, New), nb_setval('$cpp_instance_items', New).
+%% a class template at its arguments: registered and desugared like a class written out, once
+cpp_instantiate_class(N, Args, Name) :-
+    ( cpp_template(N, TPs, Item) -> true ; cpp_refuse(0, template_without_body(N)) ),
+    cpp_bind_targs(TPs, Args, B), cpp_instance_name(N, TPs, B, Name),
+    nb_getval('$cpp_instances', Done),
+    (   memberchk(Name-_, Done) -> true
+    ;   nb_setval('$cpp_instances', [Name-N|Done]),
+        cpp_subst(Item, B, Item1), cpp_instance_class(Item1, L, K, Bases, Ms),
+        cpp_isolated(( cpp_register_class(L, Name, Bases, Ms), cpp_item(declare(L, base([], [class(K, Name, Bases, Ms)])), Items) )),
+        cpp_add_instance_items(Items) ).
+cpp_instance_class(declare(L, base(_, [class(K, _, Bases, Ms)])), L, K, Bases, Ms).
+cpp_instance_class(declare(L, base(_, [struct(_, Ms)])), L, struct, [], Ms).
+%% a function template at a call: its type arguments explicit, then deduced from the arguments' types, then defaulted
+cpp_instantiate_function(F, Explicit, As, Name) :-
+    cpp_template(F, TPs, function(L, Sto, Ret, _, Ps, V, Body)),
+    cpp_bind_explicit(TPs, Explicit, B0), cpp_deduce_args(Ps, As, TPs, B0, B1), cpp_bind_defaults(TPs, B1, B),
+    cpp_instance_name(F, TPs, B, Name),
+    nb_getval('$cpp_instances', Done),
+    (   memberchk(Name-_, Done) -> true
+    ;   nb_setval('$cpp_instances', [Name-F|Done]),
+        cpp_subst(fn(Ret, Ps, Body), B, fn(Ret1, Ps1, Body1)),
+        cpp_isolated(( cpp_type(Ret1, Ret2), cpp_plain_params(Ps1, Ps2), ccl_declare(Name, fn(Ret2, Ps2, V)), cpp_note_defaults(Name, Ps1),
+                       cpp_item(function(L, Sto, Ret1, Name, Ps1, V, Body1), Items) )),
+        cpp_add_instance_items(Items) ).
+cpp_bind_targs([], _, []).
+cpp_bind_targs([tparam(_, P, D)|TPs], Args, [P-A|B]) :-
+    ( Args = [A0|Rest] -> A = A0 ; D \== none -> A = D, Rest = [] ; cpp_refuse(0, template_argument_missing(P)) ),
+    cpp_bind_targs(TPs, Rest, B).
+cpp_bind_explicit([], _, []) :- !.
+cpp_bind_explicit(_, [], []) :- !.
+cpp_bind_explicit([tparam(_, P, _)|TPs], [A|As], [P-A|B]) :- cpp_bind_explicit(TPs, As, B).
+cpp_bind_defaults([], B, B).
+cpp_bind_defaults([tparam(_, P, D)|TPs], B0, B) :- ( memberchk(P-_, B0) -> B1 = B0 ; D \== none -> B1 = [P-D|B0] ; cpp_refuse(0, cannot_deduce(P)) ), cpp_bind_defaults(TPs, B1, B).
+cpp_deduce_args([], _, _, B, B) :- !.
+cpp_deduce_args(_, [], _, B, B) :- !.
+cpp_deduce_args([P|Ps], [A|As], TPs, B0, B) :- ( P = param(PT, _) ; P = param(PT, _, _) ), !, cpp_deduce_one(PT, A, TPs, B0, B1), cpp_deduce_args(Ps, As, TPs, B1, B).
+cpp_deduce_args([_|Ps], [_|As], TPs, B0, B) :- cpp_deduce_args(Ps, As, TPs, B0, B).
+cpp_deduce_one(PT, A, TPs, B0, B) :- ( ccl_type_of(A, AT), AT \== unknown -> cpp_match(PT, AT, TPs, B0, B) ; B = B0 ).
+cpp_match(base(_, [typedef(P)]), AT, TPs, B0, B) :- memberchk(tparam(type, P, _), TPs), !, ( memberchk(P-_, B0) -> B = B0 ; cpp_decayed(AT, AT1), B = [P-AT1|B0] ).
+cpp_match(ptr(_, X), AT, TPs, B0, B) :- ccl_resolve_type(AT, AT1), ( AT1 = ptr(_, Y) ; AT1 = arr(_, Y) ), !, cpp_match(X, Y, TPs, B0, B).
+cpp_match(ref(_, X), AT, TPs, B0, B) :- !, cpp_match(X, AT, TPs, B0, B).
+cpp_match(rref(_, X), AT, TPs, B0, B) :- !, cpp_match(X, AT, TPs, B0, B).
+cpp_match(_, _, _, B, B).
+cpp_decayed(T, T1) :- ( ccl_resolve_type(T, arr(_, E)) -> T1 = ptr([], E) ; T = base(_, S) -> T1 = base([], S) ; T1 = T ).
+%% the instance's name: the template's, then a key per argument
+cpp_instance_name(N, TPs, B, Name) :- findall(K, ( member(tparam(_, P, _), TPs), memberchk(P-A, B), cpp_type_key(A, K) ), Ks), atomic_list_concat([N|Ks], '.', Name).
+cpp_type_key(base(_, S), K) :- !, findall(W, ( member(X, S), cpp_spec_key(X, W) ), Ws), atomic_list_concat(Ws, '_', K).
+cpp_type_key(ptr(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_p', K).
+cpp_type_key(ref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_r', K).
+cpp_type_key(rref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_rr', K).
+cpp_type_key(arr(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_a', K).
+cpp_type_key(int(N), N) :- !.
+cpp_type_key(neg(int(N)), K) :- !, atom_concat(m, N, K).
+cpp_type_key(chr(C), K) :- !, atom_concat(c, C, K).
+cpp_type_key(bool(B), B) :- !.
+cpp_type_key(id(X), X) :- !.
+cpp_type_key(X, K) :- term_to_atom(X, A), atom_codes(A, Cs), findall(C, ( member(C, Cs), ( C >= 0'a, C =< 0'z ; C >= 0'A, C =< 0'Z ; C >= 0'0, C =< 0'9 ) ), Ds), atom_codes(K, Ds).
+cpp_spec_key(typedef(X), X) :- atom(X), !.
+cpp_spec_key(struct(T, _), T) :- !.
+cpp_spec_key(class(_, T, _, _), T) :- !.
+cpp_spec_key(enum(T, _), T) :- !.
+cpp_spec_key(enum_class(T, _), T) :- !.
+cpp_spec_key(X, X) :- atom(X), !.
+cpp_spec_key(X, K) :- cpp_type_key(X, K).
+%% the parameters substituted through the item: a type parameter's typedef becomes the
+%% argument (its qualifiers kept), a non-type parameter's name the value
+cpp_subst(T, _, T) :- \+ compound(T), !.
+cpp_subst(base(Q, [typedef(P)]), B, T) :- memberchk(P-A, B), !, cpp_merge_quals(Q, A, T).
+cpp_subst(id(P), B, V) :- memberchk(P-V, B), !.
+cpp_subst(str(S), _, str(S)) :- !.
+cpp_subst(T0, B, T) :- T0 =.. [F|As], cpp_subst_list(As, B, Bs), T =.. [F|Bs].
+cpp_subst_list([], _, []).
+cpp_subst_list([X|Xs], B, [Y|Ys]) :- cpp_subst(X, B, Y), cpp_subst_list(Xs, B, Ys).
+cpp_merge_quals(Q, base(Q2, S), base(Q3, S)) :- !, append(Q, Q2, Q3).
+cpp_merge_quals(_, A, A).

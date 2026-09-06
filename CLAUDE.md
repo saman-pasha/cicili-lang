@@ -518,6 +518,48 @@ a global of a class with a constructor, a temporary's destructor,
 `static` methods, `friend`, access control (ignored), a method called
 before the class is complete, `dynamic_cast`, RTTI.
 
+**M6's fourth step (0.35): templates, instantiated on use.** The
+registry keeps `'$cpp_templates'` (`Name-tmpl(TParams, Item)`, from the
+`template(L, TParams, Item)` items, a function or a class), the
+instances made `'$cpp_instances'` (`Name-Template`) and their items
+`'$cpp_instance_items'`, which `cpp_flush_instances/2` appends to the
+unit's items at its end (walking an instance may make more). EVERY TYPE
+the walk meets goes through `cpp_type/2` -- a declaration's, a
+parameter's, a member's, a cast's, `sizeof`'s, `new`'s, a typedef's --
+and a template-id there, `typedef(tmpl(N, Args))` or the scoped form,
+becomes its instance's name: `cpp_instantiate_class/3` binds the
+parameters (`cpp_bind_targs`, defaults filled), names the instance
+`N.key.key` (`cpp_instance_name`, `cpp_type_key/2`: `Buf.int.4`,
+`max2.double`, a pointer `int_p`), and, once, substitutes the bindings
+through the item (`cpp_subst/3`: a type parameter's `typedef` becomes
+the argument with the qualifiers kept, a non-type parameter's `id` the
+value), registers the class (`cpp_register_class`, so its members'
+types go through the hook too: nested instantiation) and desugars it
+like a class written out -- under `cpp_isolated/1`, the symbol table's
+open scopes set aside so the instance's walk sees no local of the
+function that met it and its declarations go to the file scope. A call
+`max2<int>(1, 2)` (the reader's `call(tmpl(F, TArgs), As)`) or `max2(3,
+4)` of a function template goes to `cpp_instantiate_function/4`: the
+type arguments explicit, then DEDUCED from the arguments' types
+(`cpp_match/5`: a type parameter's `typedef` takes the argument's type
+decayed, through `ptr`, `ref`, `rref`), then defaulted, else
+`cannot_deduce(P)`; the instance is declared in the table and walked
+like a function. The table built before the walk holds a template-id
+RAW (`Ints` = `typedef(tmpl(Buf, ...))`): `ccl_resolve_base` leaves a
+compound typedef name as it is (an `atom(N)` guard before the cached
+lookup, which would have `atom_concat`ed it), `cpp_class_of_type_`
+instantiates such a one on sight, and a rewritten `typedef` item is
+noted at once (`ccl_note_typedefs`). The template item itself is
+nothing in the output; a template from a header's summary has no body
+and is refused, `template_without_body(N)`. Gated by
+`test/cpp/run/templ.cpp` (a class template with an array member, a
+constructor and methods, instantiated twice and through an alias, a
+function template deduced and explicit) and the reader's
+`templates.cpp` built and run (exit 10; its `std::vector` is its own
+namespace's). Not done: partial and explicit specializations, a
+non-type argument deduced, `template` inside a class, a template
+template parameter, `typename T::x`, SFINAE.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
