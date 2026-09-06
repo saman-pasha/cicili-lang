@@ -628,14 +628,14 @@ same i9-9880H, the minimum of five, in seconds:
 
 | | hello `-O0` | hello `-O3` | B-tree `-O0` | B-tree `-O3` | B-tree `-c` | B-tree, read only |
 |---|---|---|---|---|---|---|
-| `cicili++`, the first run (init phase) | 2.9 | | 8.1 | | | |
-| `cicili++`, after it | 0.84 | 0.80 | 1.35 | 1.49 | 1.04 | 0.69 |
-| `clang++` | 1.09 | 1.06 | 1.10 | 1.19 | 0.40 | 0.39 |
-| `rustc` | 0.50 | 0.51 | 0.61 | 0.79 | 0.31 | |
+| `cicili++`, the first run (init phase) | 3.0 | | 8.2 | | | |
+| `cicili++`, after it | 0.82 | 0.83 | 1.38 | 1.49 | 1.07 | 0.68 |
+| `clang++` | 1.08 | 1.09 | 1.12 | 1.25 | 0.39 | 0.39 |
+| `rustc` | 0.52 | 0.54 | 0.61 | 0.79 | 0.32 | |
 
 `rustc` is the fastest on both programs; `cicili++` after its init phase
 builds the hello faster than `clang++` and takes 1.23 times `clang++` on
-the B-tree. For scale, a compiler written in another interpreted
+the B-tree (the run of 2026-09-06 evening, `cicili-lang` 0.29). For scale, a compiler written in another interpreted
 language: the script also runs the Python ones this Mac can, when `PY`
 names a python3 with them installed. `pycparser`, the C parser in Python
 (a parser only, `clang -E` over its fake headers inside), reads the hello
