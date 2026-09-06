@@ -782,12 +782,15 @@ name. Not done: modules (`import`/`export`), `consteval` evaluated at
 compile time (it runs at run time like `constexpr`), coroutines,
 `std::strong_ordering` and defaulted `operator<=>`, generic lambdas,
 constrained `auto` (`Number auto x`), `requires` clauses on a
-non-template function, C++23's and C++26's forms beyond their macros;
-and, found by this step, an integer literal's SUFFIX is not read (`1L`
-is `int(1)`, `1u` too: both lexers drop it), so a template deduces
-`int` from `1L` and `%ld` of a suffixed literal reads garbage -- the
-fixture casts; a `long(N)`/`uint(N)` token in both lexers, the parser
-and the passes is the fix.
+non-template function, C++23's and C++26's forms beyond their macros.
+**An integer literal's suffix is read** (found by this step: `1L` was
+`int(1)`, so a template deduced `int` from it and `%ld` of it read
+garbage): both lexers give `tok(uint|long|ulong, N, L)` for `u`, `l`,
+`ul` in either case and order (`ccl_int_suffix//1` in the DCG,
+`ccl_lx_int_suffix` and `x->sfx` in the native one), the parser the
+nodes `uint(N)`, `long(N)`, `ulong(N)`, typed, folded, lowered and
+keyed (`cpp_type_key`: `Nu`, `Nl`, `Nul`) beside `int(N)`; reader
+version 33; `k59` and `k65` read `0xFFul` and `1u << 4`.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

@@ -23,6 +23,6 @@ int main() {
     for (int k = 2; int x : xs) t += x * k;
     if constexpr (sizeof(int) == 4) t += 1; else t -= 1;
     [[likely]] if (t > 0) t += square(2);
-    printf("%d %d %d %.1f %d %d %d %d %d %ld\n", t, twice(21), add(1, 2), add(1.5, 2.0), sum3(1, 2, 3), (int) (sum3(1.0, 2.0, 3.0) == 6.0), order(1, 2), order(5, 5), (int) m + p.x + p.y + limit, (long) __cplusplus);
+    printf("%d %d %d %.1f %d %d %d %d %d %ld\n", t, twice(21), add(1, 2), add(1.5, 2.0), sum3(1, 2, 3), (int) (sum3(1.0, 2.0, 3.0) == 6.0), order(1, 2), order(5, 5), (int) m + p.x + p.y + limit, __cplusplus);
     return 0;
 }

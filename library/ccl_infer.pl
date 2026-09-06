@@ -58,6 +58,9 @@ ccl_tag(Tag, Ms) :- ccl_cached_named('$ccl_tag:', Tag, Ms, ( nb_getval('$ccl_tag
 ccl_enum_value(N, V) :- nb_getval('$ccl_enums', L), memberchk(N-V, L).
 %% an integer constant expression, as C folds it
 ccl_const_eval(int(N), N) :- !.
+ccl_const_eval(uint(N), N) :- !.
+ccl_const_eval(long(N), N) :- !.
+ccl_const_eval(ulong(N), N) :- !.
 ccl_const_eval(bool(true), 1) :- !.                                            % C++
 ccl_const_eval(bool(false), 0) :- !.
 ccl_const_eval(chr(C), C) :- !.
@@ -158,6 +161,9 @@ ccl_size_type(T) :- ( ccl_typedef_of(size_t, _) -> T = base([], [typedef(size_t)
 
 %% ---- the type of an expression ----------------------------------------------------
 ccl_type_of(int(_), base([], [int])) :- !.
+ccl_type_of(uint(_), base([], [unsigned])) :- !.
+ccl_type_of(long(_), base([], [long])) :- !.
+ccl_type_of(ulong(_), base([], [unsigned, long])) :- !.
 ccl_type_of(bool(_), base([], [bool])) :- !.                          % C++
 ccl_type_of(nullptr, ptr([], base([], [void]))) :- !.
 ccl_type_of(float(_), base([], [double])) :- !.

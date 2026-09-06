@@ -228,6 +228,63 @@ Cicili's own test suite -- `objects.cpp`, `emit_report.cpp` with
 read whole, `hello.cpp` built and run, and built again from the
 summaries: 30 seconds served, two minutes the first time.
 
+## C++17 and C++20
+
+`cicili++` compiles C++ against libc++ as the system ships it, never
+against a standard library of its own: the compiler's own headers are the
+C freestanding ones (`stddef.h` and kin), and nothing of `std` is written
+here. **C++17 is the baseline** -- what a program gets without a flag --
+and `-std=c++20` (and `-std=c++23`, `-std=c++26`) selects the level:
+the preprocessor answers that level's predefined macros first,
+`__cplusplus` and the `__cpp_*` feature tests, taken once from the
+reference compiler at each level, and these are what libc++'s headers key
+on, so `<vector>` flattens as clang would flatten it for the level asked;
+a header's summary is one level's. Older standards are refused as
+unsupported.
+
+What is read and what compiles, by level. **C++17**: the forms of the
+M5 table and the M6 steps above -- classes with `virtual`, templates
+instantiated on use, lambdas, `if constexpr`, `auto`, range-for,
+`nullptr`, references, `enum class`, `new` and `delete` (the constructor
+after the allocation, the destructor before the free) under the
+ownership check. **C++20**: `concept` and `requires`
+read, a concept checked where a template is instantiated (its
+requirements type-check under its parameters, or the instantiation is
+refused by the concept's name); `<=>` (an int on scalars); abbreviated
+function templates (`auto` parameters as invented template parameters);
+`consteval` and `constinit` (read; `consteval` runs at run time like
+`constexpr`); `char8_t`; `using enum`; a range-for with an initializer;
+designated initializers; `[[likely]]`; template lambdas and coroutines
+read and refused by name; modules not read. **C++23 and C++26**: their
+macros, so libc++ takes their paths, their forms still to come. libc++'s
+containers themselves await the forms their bodies use -- allocators,
+`enable_if` and partial specializations, `constexpr` and `noexcept`
+everywhere, rvalue-reference overloads by value category, exceptions --
+which is the road the C++ side is on.
+
+**Where cocolog's macros go past C++'s templates.** A template computes
+with types by substitution and nothing else; a macro file
+(`#include "m.pl"`, `#cocolog … #end`, below) is a Prolog program that
+runs at parse time over the program's syntax tree. **A macro sees and
+rewrites the AST itself** -- any expression, statement or declaration,
+not a type -- where a template sees only the types and constants it is
+given. **A
+macro reads the symbol table as it stands**: `ccl_type_of/2`, the
+typedefs, the tags, `ccl_size_of/2`, the LP64 layout of a struct, at the
+point of the call. **A macro produces statements and declarations**, a
+whole block spliced in place, a function at file scope, where a template
+produces one entity of one kind. **A macro is variadic by grammar** (a
+DCG rule takes the list it parses) with no parameter packs to fold. **A
+macro fails with a message naming both places**, the call and the macro,
+where a template's failure is a page of instantiation context. **A macro
+is ordinary code in a logic language** -- pattern matching on any
+construct, backtracking search over the program, the same language the
+compiler is written in -- where template metaprogramming is a functional
+language by accident, without loops, mutable state or strings. **And a
+macro runs before the check**, so what it generates is checked by the
+same ownership rules as what the programmer wrote. `format`, `print`,
+`println` and `clone` are such macros, in the library.
+
 ## The compiler, in four predicates
 
 ```prolog
@@ -381,8 +438,9 @@ a file stopped.
 ## Macros: `#include "m.pl"`
 
 A Prolog file is included the way a header is, and **every predicate it
-defines is a macro function over ASTs**: a call `name(a, b)` in the C
-source, with `name/3` among them, runs at parse time as
+defines is a macro function over ASTs** (what that gives beyond C++'s
+templates is set out under C++17 and C++20, above): a call `name(a, b)`
+in the C source, with `name/3` among them, runs at parse time as
 `name(ASTa, ASTb, Result)` and `Result` takes the call's place. In an
 expression the result is an expression; as a statement it may be a
 statement (`swap(a, b);` below becomes a block); at file scope it may be a

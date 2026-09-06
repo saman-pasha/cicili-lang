@@ -398,6 +398,9 @@ ck_null(cast(ptr(_, base(_, [void])), int(0))).                                 
 ck_null(int(0)).
 ck_null(cast(_, E)) :- ck_null(E).
 ck_null(nullptr).                                                                % C++
+ck_null(long(0)).
+ck_null(uint(0)).
+ck_null(ulong(0)).
 ck_null(ccast(_, _, E)) :- ck_null(E).
 %% C++ (M6): the check sees a reference as the pointer it is -- a parameter a
 %% borrow, a local bound to an lvalue a borrow of its address (an anchor, an
@@ -1029,6 +1032,9 @@ ck_expr(_, dead, dead) :- !.
 ck_expr(E, St, St) :- \+ compound(E), !.                                          % an operator, a number, a name as a field
 ck_expr(id(N), St, St) :- !, ( ck_state(St, N, S) -> ck_read(N, S) ; true ).
 ck_expr(int(_), St, St) :- !.
+ck_expr(uint(_), St, St) :- !.
+ck_expr(long(_), St, St) :- !.
+ck_expr(ulong(_), St, St) :- !.
 ck_expr(float(_), St, St) :- !.
 ck_expr(chr(_), St, St) :- !.
 ck_expr(str(_), St, St) :- !.

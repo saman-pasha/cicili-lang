@@ -683,6 +683,9 @@ cpp_type_key(ref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_r', K).
 cpp_type_key(rref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_rr', K).
 cpp_type_key(arr(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_a', K).
 cpp_type_key(int(N), N) :- !.
+cpp_type_key(uint(N), K) :- !, atom_concat(N, u, K).
+cpp_type_key(long(N), K) :- !, atom_concat(N, l, K).
+cpp_type_key(ulong(N), K) :- !, atom_concat(N, ul, K).
 cpp_type_key(neg(int(N)), K) :- !, atom_concat(m, N, K).
 cpp_type_key(chr(C), K) :- !, atom_concat(c, C, K).
 cpp_type_key(bool(B), B) :- !.

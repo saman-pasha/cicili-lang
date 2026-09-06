@@ -249,7 +249,7 @@
   ;; ccl_version(-Atom): THE VERSION. Every commit raises it (owner's rule),
   ;; one number per change; `cicili --version' prints it with LLVM's.
   (func ccl_p_version ((coco_engine * e) (size_t g)) (out int)
-        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.41")))
+        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.42")))
 
   ;; ccl_cocolog_version(-Atom): the engine's own version text, from the
   ;; running binary (coco_version_text is cocolog's, resolved at load like
@@ -281,6 +281,7 @@
     (member size_t * toks) (member size_t ntoks) (member size_t cap)
     (member char * buf) (member size_t bn) (member size_t bcap)
     (member size_t k_id) (member size_t k_kw) (member size_t k_int) (member size_t k_float) (member size_t k_str)
+    (member size_t k_uint) (member size_t k_long) (member size_t k_ulong) (member int sfx)
     (member size_t k_chr) (member size_t k_p) (member size_t k_pp) (member size_t k_cocolog) (member size_t k_num))
 
   ;; the code at i, -1 past the end
@@ -409,11 +410,15 @@
   ;; over octal digits an octal; else decimal. The suffixes [uUlL]* and [fFlL].
   ;; An `e' that no digit follows FAILS the float (the DCG's cut), and the
   ;; number reads as an int up to the dot.
+  ;; the suffix names the kind, kept in x->sfx: 0 int, 1 uint (u), 2 long (l, ll), 3 ulong (both) -- as the DCG's ccl_int_suffix//1
   (static) (func ccl_lx_int_suffix ((ccl_lx * x) (size_t j)) (out size_t)
-        (let ((int c . 0))
+        (let ((int c . 0) (int u . 0) (int l . 0))
           (while 1
             (set c (ccl_lx_at x j))
-            (if (or (== c 117) (or (== c 85) (or (== c 108) (== c 76)))) (set j (+ j 1)) break))
+            (cond ((or (== c 117) (== c 85)) (block (set u 1) (set j (+ j 1))))
+                  ((or (== c 108) (== c 76)) (block (set l 2) (set j (+ j 1))))
+                  (#t break)))
+          (set (-> x sfx) (+ u l))
           (return j)))
   (static) (func ccl_lx_float_suffix ((ccl_lx * x) (size_t j)) (out size_t)
         (let ((int c . 0))
@@ -434,8 +439,10 @@
           (while (ccl_lx_digit (ccl_lx_at x k)) (ccl_lx_putc x (ccl_lx_at x k)) (set k (+ k 1)))
           (return k)))
   (static) (func ccl_lx_emit_int ((ccl_lx * x) (u64 v) (size_t j) (i64 line))
-        (ccl_lx_tok x (-> x k_int) (coco_m_new_int (-> x e) (cast i64 v)) line)
-        (set (-> x i) j))
+        (let ((size_t k . 0))
+          (set k (? (== (-> x sfx) 3) (-> x k_ulong) (? (== (-> x sfx) 2) (-> x k_long) (? (== (-> x sfx) 1) (-> x k_uint) (-> x k_int)))))
+          (ccl_lx_tok x k (coco_m_new_int (-> x e) (cast i64 v)) line)
+          (set (-> x i) j)))
   (static) (func ccl_lx_emit_float ((ccl_lx * x) (size_t j) (i64 line))
         (let ((char * endp . nil))
           (ccl_lx_tok x (-> x k_float) (coco_m_new_float (-> x e) (strtod (-> x buf) (aof endp))) line)
@@ -668,6 +675,10 @@
           (set (-> x k_id) (coco_m_new_atom e "id"))
           (set (-> x k_kw) (coco_m_new_atom e "kw"))
           (set (-> x k_int) (coco_m_new_atom e "int"))
+          (set (-> x k_uint) (coco_m_new_atom e "uint"))
+          (set (-> x k_long) (coco_m_new_atom e "long"))
+          (set (-> x k_ulong) (coco_m_new_atom e "ulong"))
+          (set (-> x sfx) 0)
           (set (-> x k_float) (coco_m_new_atom e "float"))
           (set (-> x k_str) (coco_m_new_atom e "str"))
           (set (-> x k_chr) (coco_m_new_atom e "chr"))

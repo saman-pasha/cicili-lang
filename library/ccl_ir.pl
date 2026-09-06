@@ -437,6 +437,9 @@ ir_hexn(N, K, A) :- D is N mod 16, N1 is N // 16, K1 is K - 1, ir_hexn(N1, K1, A
 %% the lowering's 50,000 calls were the type machinery asked twice.
 ir_expr(E, V, T) :- ir_expr(E, V, T, _).
 ir_expr(int(N), N, T, LL) :- !, ( ( N > 2147483647 ; N < -2147483648 ) -> ir_long(T), LL = i64 ; ir_int(T), LL = i32 ).
+ir_expr(uint(N), N, base([], [unsigned]), i32) :- !.                       % the suffixes: what the literal is
+ir_expr(long(N), N, base([], [long]), i64) :- !.
+ir_expr(ulong(N), N, base([], [unsigned, long]), i64) :- !.
 ir_expr(float(F), A, base([], [double]), double) :- !, ir_double(F, A).
 ir_expr(chr(C), C, T, i32) :- !, ir_int(T).
 ir_expr(str(S), Ref, ptr([], base([], [char])), ptr) :- !, ir_string(S, Ref).
@@ -872,6 +875,9 @@ ir_switch_cases([_|Is], Cs, D) :- ir_switch_cases(Is, Cs, D).
 ir_case_lines([], []).
 ir_case_lines([case(E, L)|Cs], [Line|Ls]) :- ir_const_int(E, N), atomic_list_concat(['i32 ', N, ', label %', L], Line), ir_case_lines(Cs, Ls).
 ir_const_int(int(N), N) :- !.
+ir_const_int(uint(N), N) :- !.
+ir_const_int(long(N), N) :- !.
+ir_const_int(ulong(N), N) :- !.
 ir_const_int(chr(C), C) :- !.
 ir_const_int(neg(int(N)), M) :- !, M is -N.
 ir_const_int(E, V) :- ccl_const_eval(E, V), !.
@@ -970,6 +976,10 @@ ir_sized_type(_, arr(none, E), str(S), arr(int(K), E)) :- !, length(S, K0), K is
 ir_sized_type(T, _, _, T).
 ir_gconst(none, T, Z) :- !, ir_type(T, LL), ir_zero(LL, Z).
 ir_gconst(int(N), _, N) :- !.
+ir_gconst(uint(N), _, N) :- !.
+ir_gconst(long(N), _, N) :- !.
+ir_gconst(ulong(N), _, N) :- !.
+ir_gconst(neg(long(N)), _, M) :- !, M is -N.
 ir_gconst(bool(true), _, 1) :- !.                                         % C++
 ir_gconst(bool(false), _, 0) :- !.
 ir_gconst(nullptr, _, null) :- !.

@@ -272,7 +272,7 @@ k58 :- check('designators by field',
     ( unit('rich.c', unit(Is)), member(declaration(_, _, _, [var(origin, _, init([item([field(x)], int(0))|_]))]), Is) )).
 
 k59 :- check('a float with an exponent, a hex integer, a char escape',
-    ( unit('rich.c', unit(Is)), member(declaration(_, _, _, [var(ratio, _, float(1500.0))]), Is), member(declaration(_, _, _, [var(big, _, int(255))]), Is), member(declaration(_, _, _, [var(sep, _, chr(10))]), Is) )).
+    ( unit('rich.c', unit(Is)), member(declaration(_, _, _, [var(ratio, _, float(1500.0))]), Is), member(declaration(_, _, _, [var(big, _, ulong(255))]), Is), member(declaration(_, _, _, [var(sep, _, chr(10))]), Is) )).
 
 k60 :- check('the typedef name is a type from then on',
     ( fn_body('rich.c', main, B), member(declaration(_, none, base([], [typedef(point_t)]), _), B) )).
@@ -290,7 +290,7 @@ k64 :- check('the conditional, casts, sizeof of a type and of an expression',
     ( fn_body('rich.c', main, B), member(expr(_, assign('=', id(total), cond(bin('>', id(argc), int(1)), cast(base([], [int]), id(ratio)), bin('+', cast(_, sizeof_type(base([], [typedef(point_t)]))), sizeof(member(id(p), x)))))), B) )).
 
 k65 :- check('the operator levels: shift, or, and, unary not, xor',
-    ( fn_body('rich.c', main, B), member(expr(_, assign('=', id(mask), bin('^', bin('&', bin('|', bin('<<', id(mask), int(2)), int(3)), bitnot(bin('<<', int(1), int(4)))), int(15)))), B) )).
+    ( fn_body('rich.c', main, B), member(expr(_, assign('=', id(mask), bin('^', bin('&', bin('|', bin('<<', id(mask), int(2)), int(3)), bitnot(bin('<<', uint(1), int(4)))), int(15)))), B) )).
 
 k66 :- check('member, address-of, arrow',
     ( fn_body('rich.c', main, B), member(expr(_, assign('=', arrow(member(id(n), next), flags), int(5))), B), member(expr(_, assign('=', member(id(n), next), addr(id(n)))), B) )).

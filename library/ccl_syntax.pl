@@ -20,7 +20,7 @@
 %%
 %% THE TOKENS:   tok(Kind, Value, Line)
 %%   kw    a keyword, as an atom          id    an identifier, as an atom
-%%   int   an integer (suffixes dropped)  float a float (suffix dropped)
+%%   int   an integer; uint, long, ulong by its suffix (u, l, ul, ll ...)  float a float (suffix dropped)
 %%   str   a string, as a code list       chr   a character constant, as a code
 %%   p     a punctuator, as an atom       pp    a preprocessor line, as an atom
 %%
@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(32).
+ccl_reader_version(33).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -158,14 +158,14 @@ ccl_escape(12) --> [0'f], !.     ccl_escape(11) --> [0'v], !.     ccl_escape(27)
 ccl_escape(C)  --> [0'x], !, ccl_hex_digits(Ds), { Ds \== [], ccl_hex_value(Ds, 0, C) }.
 ccl_escape(C)  --> [C].
 
-ccl_number(L, T) --> [0'0, X], { X =:= 0'x ; X =:= 0'X }, !, ccl_hex_digits(Ds), { Ds \== [], ccl_hex_value(Ds, 0, N) }, ccl_int_suffix, { T = tok(int, N, L) }.
+ccl_number(L, T) --> [0'0, X], { X =:= 0'x ; X =:= 0'X }, !, ccl_hex_digits(Ds), { Ds \== [], ccl_hex_value(Ds, 0, N) }, ccl_int_suffix(K), { T = tok(K, N, L) }.
 ccl_number(L, T) --> ccl_digits(Is), { Is \== [] }, ccl_number_rest(Is, L, T).
 ccl_number_rest(Is, L, tok(float, F, L)) --> [0'.], ccl_digits(Fs), ccl_exponent(Es), !, ccl_float_suffix,
     { ( Fs == [] -> Fs1 = [0'0] ; Fs1 = Fs ), append(Is, [0'.|Fs1], A), append(A, Es, B), number_codes(F, B) }.
 ccl_number_rest(Is, L, tok(float, F, L)) --> ccl_exponent(Es), { Es \== [] }, !, ccl_float_suffix,
     { append(Is, [0'., 0'0|Es], B), number_codes(F, B) }.
-ccl_number_rest([0'0|Os], L, tok(int, N, L)) --> { Os \== [], ccl_octal_digits(Os) }, !, ccl_int_suffix, { ccl_octal_value(Os, 0, N) }.
-ccl_number_rest(Is, L, tok(int, N, L)) --> ccl_int_suffix, { number_codes(N, Is) }.
+ccl_number_rest([0'0|Os], L, tok(K, N, L)) --> { Os \== [], ccl_octal_digits(Os) }, !, ccl_int_suffix(K), { ccl_octal_value(Os, 0, N) }.
+ccl_number_rest(Is, L, tok(K, N, L)) --> ccl_int_suffix(K), { number_codes(N, Is) }.
 ccl_digits([D|Ds]) --> [D], { ccl_digit(D) }, !, ccl_digits(Ds).
 ccl_digits([]) --> [].
 ccl_hex_digits([D|Ds]) --> [D], { ccl_hexdigit(D) }, !, ccl_hex_digits(Ds).
@@ -175,8 +175,15 @@ ccl_exponent([]) --> [].
 ccl_sign([0'-]) --> [0'-], !.
 ccl_sign([0'+]) --> [0'+], !.
 ccl_sign([]) --> [].
-ccl_int_suffix --> [C], { C =:= 0'u ; C =:= 0'U ; C =:= 0'l ; C =:= 0'L }, !, ccl_int_suffix.
-ccl_int_suffix --> [].
+%% the suffix names the kind: u -> uint, l or ll -> long, both -> ulong, none -> int (the native lexer agrees)
+ccl_int_suffix(K) --> ccl_int_suffix_(no, no, U, Lg), { ccl_int_kind(U, Lg, K) }.
+ccl_int_suffix_(U0, L0, U, Lg) --> [C], { C =:= 0'u ; C =:= 0'U }, !, ccl_int_suffix_(yes, L0, U, Lg).
+ccl_int_suffix_(U0, _, U, Lg) --> [C], { C =:= 0'l ; C =:= 0'L }, !, ccl_int_suffix_(U0, yes, U, Lg).
+ccl_int_suffix_(U, L, U, L) --> [].
+ccl_int_kind(no, no, int).
+ccl_int_kind(yes, no, uint).
+ccl_int_kind(no, yes, long).
+ccl_int_kind(yes, yes, ulong).
 ccl_float_suffix --> [C], { C =:= 0'f ; C =:= 0'F ; C =:= 0'l ; C =:= 0'L }, !.
 ccl_float_suffix --> [].
 ccl_digit(D) :- D >= 0'0, D =< 0'9.
@@ -1074,6 +1081,9 @@ ccl_args([]) --> [].
 %% a primary is chosen by its token's kind and value: one look, one clause
 ccl_primary(E) --> ccl_peek(K, V), ccl_primary_(K, V, E).
 ccl_primary_(int, N, int(N))     --> !, [_].
+ccl_primary_(uint, N, uint(N))   --> !, [_].                              % 9u
+ccl_primary_(long, N, long(N))   --> !, [_].                              % 9L, 9LL
+ccl_primary_(ulong, N, ulong(N)) --> !, [_].                              % 9ul
 ccl_primary_(float, F, float(F)) --> !, [_].
 ccl_primary_(str, S0, str(S))    --> !, [_], ccl_strings(S0, S).          % "a" "b" is one string
 ccl_primary_(chr, C, chr(C))     --> !, [_].
