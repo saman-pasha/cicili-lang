@@ -44,7 +44,7 @@ ccl_cached_named(Prefix, Name, Value, Goal) :-
     atom_concat(Prefix, names, IK), nb_getval(IK, Names),
     (   memberchk(Name, Names) -> atom_concat(Prefix, Name, K), nb_getval(K, Value)
     ;   call(Goal), atom_concat(Prefix, Name, K), nb_setval(K, Value), nb_setval(IK, [Name|Names]) ).
-ccl_named_caches(['$ccl_td:', '$ccl_tag:', '$ccl_r:', '$ccl_g:', '$ck_oa:']).
+ccl_named_caches(['$ccl_td:', '$ccl_tag:', '$ccl_r:', '$ccl_g:', '$ck_oa:', '$ccl_ts:']).
 ccl_in_frames([F|Fs], N, T) :- ( memberchk(N-T0, F) -> T = T0 ; ccl_in_frames(Fs, N, T) ).
 %% nb_getval/2 COPIES the term it answers, 0.05 ms for the typedef table and
 %% 0.15 ms for the tags, and the lowering of 170 lines asks 2000 typedefs
@@ -112,8 +112,10 @@ ccl_resolve_base(S, Q, base(Q, S)).
 %% what a C++ tag's name stands for, told by its members' shape: enumerators,
 %% plain members (a struct), or a class's (a constructor, a method, a label)
 ccl_tag_type(N, [enumerator(_, _)|_], Q, base(Q, [enum(N, Ms)])) :- !, ccl_tag(N, Ms).
+ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms2)])) :- member(M, Ms), M \= member(_, _, _), ccl_tag_struct(N, Ms2), !.   % the class desugared: its struct, noted beside the raw class
 ccl_tag_type(N, Ms, Q, base(Q, [class(class, N, [], Ms)])) :- member(M, Ms), M \= member(_, _, _), !.
 ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms)])).
+ccl_tag_struct(N, Ms) :- ccl_cached_named('$ccl_ts:', N, Ms, ( nb_getval('$ccl_tags', L), member(N-Ms, L), \+ ( member(M, Ms), M \= member(_, _, _) ) )).
 ccl_resolve_typedef(N, T) :- ccl_typedef_of(N, T0), ccl_resolve_type(T0, T).
 ccl_add_quals([], T, T) :- !.
 ccl_add_quals(Q, base(Q0, S), base(Q1, S)) :- !, append(Q, Q0, Q1).
@@ -122,7 +124,7 @@ ccl_add_quals(_, T, T).
 ccl_members_of(base(_, [struct(_, Ms)]), Ms) :- Ms \== none, !.                 % resolved already: no resolution
 ccl_members_of(base(_, [union(_, Ms)]), Ms) :- Ms \== none, !.
 ccl_members_of(T, Ms) :- ccl_resolve_type(T, T1), ( T1 = base(_, [struct(_, Ms)]) ; T1 = base(_, [union(_, Ms)]) ), Ms \== none, !.
-ccl_members_of(T, Ms) :- ccl_resolve_type(T, base(_, [class(_, _, _, Ms0)])), !, findall(member(MT, N, I), ( member(member(MT, N, I), Ms0), MT = base(Q, _), \+ memberchk(static, Q) ), Ms).   % C++: a class's data members
+ccl_members_of(T, Ms) :- ccl_resolve_type(T, base(_, [class(_, _, _, Ms0)])), !, findall(member(MT, N, I), ( member(member(MT, N, I), Ms0), \+ ( MT = base(Q, _), memberchk(static, Q) ) ), Ms).   % C++: a class's data members, the statics apart
 ccl_member_type(T, N, MT) :- ccl_members_of(T, Ms), memberchk(member(MT, N, _), Ms).
 
 %% ---- classes ----------------------------------------------------------------------

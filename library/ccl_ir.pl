@@ -910,7 +910,7 @@ ir_function(Sto, Ret, Name, Params, Var, Body, Text) :-
     ; Name == main -> ir_end(['ret i32 0'])
     ; ir_zero(RL, Z), ir_end(['ret ', RL, ' ', Z]) ),
     ccl_scope_pop,
-    ( Sto == static -> Link = 'define internal ' ; Link = 'define ' ),
+    ( Sto == static -> Link = 'define internal ' ; Sto == linkonce -> Link = 'define linkonce_odr ' ; Link = 'define ' ),   % linkonce: a header's class or a template's instance, the same in every unit
     nb_getval('$ir_allocas', As0), reverse(As0, As), nb_getval('$ir_body', B0), reverse(B0, B),
     atomic_list_concat([Link, RL, ' @', Name, '(', Sig, ') {'], Head),
     append([Head, 'entry:'|As], B, Lines0), append(Lines0, ['}', ''], Lines),

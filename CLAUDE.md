@@ -39,7 +39,7 @@ library/ccl_pp.pl        the preprocessor, in cocolog (owner's rule: no clang, n
                          ccl_pp_top/3, the user's file through it, its directives kept
 library/include/         the compiler's own freestanding headers: stddef.h, stdarg.h,
                          stdbool.h, float.h, iso646.h, stdalign.h, stdnoreturn.h
-library/include/cxx/     the compiler's own C++ headers, ahead of libc++'s in C++: vector
+library/include/cxx/     the compiler's own C++ headers, ahead of libc++'s in C++: vector, string
 library/ccl_infer.pl     the macro facilities: ccl_type_of/2 and lookups over the symbol table
 library/ccl_format.pl    format, print, println: the global macros, Rust's holes
 library/ccl_ir.pl        cicili_ir/2: the lowering to LLVM IR text, one clause per construct
@@ -651,8 +651,56 @@ unreferenced; the range must be an lvalue form. The reader's version
 went to 29 for the summary's new lines. Gated by
 `test/cpp/run/vec.cpp` (ints and structs, `v[0] = 100`, `v.back() =
 1`, a range-for, a vector by pointer). Not done: the rest of `<vector>`,
-`<string>`, `<array>`, `<map>`; a vector of objects with destructors; a
+`<array>`, `<map>`; a vector of objects with destructors; a
 `std` template of libc++'s (its summary has no body: refused).
+
+**M6's eighth step (0.39): `std::string`, and what it forced.**
+`library/include/cxx/string`: an own buffer always terminated, grown by
+doubling, `string()`, `string(const char *)`, `~string`, `size`,
+`length`, `empty`, `c_str`, `char &operator[]`, `clear`, `operator+=`
+of a `char`, a `const char *` and a `const string &`, `operator==` of
+both, `operator!=`; it declares `realloc`, `free`, `strlen`, `memcpy`,
+`strcmp` itself. A header's CLASSES are kept whole in its summary
+beside its templates (`ccl_items_template_items`: `declare(_,
+base(_, [class(...)]))` too), and the desugaring's registry
+(`cpp_register_header/1`, from the summary's `titem` lines or a first
+read's unit) registers each class once and EMITS its struct and
+functions into the unit as it emits an instance -- with `linkonce`
+storage (`cpp_linkonce/2` in `cpp_add_instance_items`; the lowering
+spells it `define linkonce_odr`), so two units including the header
+link. OVERLOADS BY TYPE: a name carries its parameters' type keys
+(`cpp_params_key/2`: `string.op.plus_assign.char`,
+`string.op.plus_assign.char_p`, `string.op.plus_assign.string_r`,
+`Counter.add.int`, a nullary `C.m.0`), and `cpp_method/5` and
+`cpp_ctor/3` take the ARGUMENTS, keep the overloads whose arity fits
+and pick the one whose parameter types fit the arguments' best
+(`cpp_pick/3`, `cpp_arg_fit/3`: the same class 3, both pointers 2, both
+arithmetic 2, an unknown type 1). A scoped type name flattens in the
+type hook (`typedef(scoped([std], string))` is `typedef(string)`).
+THE RULE A DESTRUCTOR BRINGS: a class with one is never copied, since
+two owners of one buffer free it twice and the check cannot see the
+destructor's free -- refused as `copy_of_a_class_with_destructor(C)`
+(a local initialized from an lvalue of the class),
+`assignment_to_a_class_with_destructor(C)` (`s = t`, and `s = f()`,
+whose old value no destructor would free), `class_with_destructor_by_value(C)`
+(an lvalue handed to a by-value parameter, `cpp_no_copies/1` after
+every call), `return_of_a_class_with_destructor(C)` (an lvalue returned
+by value; `'$cpp_ret'` holds the function's result type through
+`cpp_method_body/5`; a temporary, a call's result, is fine and moves).
+`ccl_members_of` of a raw `class(...)` spec keeps pointer-typed
+members (a filter had dropped `own char *d`, and the check then saw no
+own field under `this`). A tag noted TWICE -- the header's raw class
+from the include node, the desugared struct from the emitted items --
+resolves to the struct (`ccl_tag_type` through `ccl_tag_struct/2`, the
+first entry of plain members, cached under `'$ccl_ts:'`). And a
+parameter's own field RETURNED AS A PLAIN POINTER (`c_str`: `return
+this->d` under `const char *`) is a borrow out, the caller's still, not
+a move (`ck_consume_or_use`, first clause: a borrowed field, the
+function's result not own), where the check had demanded the field
+whole at the return. Reader version 30. Gated by
+`test/cpp/run/str.cpp`. Not done: `operator+` making a new string,
+`substr`, `find`, comparison operators `<`, `std::to_string`,
+iteration, `std::move` (a move would let a copy be written).
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

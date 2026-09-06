@@ -970,6 +970,8 @@ ck_merge_all([A, B|T], S) :- ck_merge(A, B, C), ck_merge_all([C|T], S).
 
 %% ---- expressions --------------------------------------------------------------------------------
 %% a value that is consumed if it is an owner or a struct with own fields (a return), else used
+ck_consume_or_use(E, St0, St) :- ck_owner_path(St0, E, K), ck_is_borrowed_field(K), nb_getval('$ck_ret', Ret), \+ ck_own_type(Ret), !,   % a parameter's own field returned as a plain pointer: a borrow out, the caller's still (c_str)
+    ck_base_use(E, St0, St).
 ck_consume_or_use(E, St0, St) :- ck_owner_path(St0, E, K), !, ck_base_use(E, St0, St1), ck_consume(K, move, E, St1, St, _).
 ck_consume_or_use(move(E), St0, St) :- !, ck_expr(move(E), St0, St).
 ck_consume_or_use(E, St0, St) :- ck_path(E, K), ck_by_value(E), ck_has_array_under(St0, K), !, ck_fail(own_array_by_value, K, E).

@@ -438,6 +438,7 @@ ccl_tag_names([Tag-_|Gs], Ns) :- ccl_tag_names(Gs, Ns1), ( atom(Tag), Tag \== an
 %% the template items themselves, through the namespaces (which flatten): titem(Item) lines
 ccl_items_template_items([], []).
 ccl_items_template_items([template(L, Ps, I)|Is], [template(L, Ps, I)|Ts]) :- !, ccl_items_template_items(Is, Ts).
+ccl_items_template_items([declare(L, base(Q, [class(K, N, Bs, Ms)]))|Is], [declare(L, base(Q, [class(K, N, Bs, Ms)]))|Ts]) :- !, ccl_items_template_items(Is, Ts).   % a class with its bodies
 ccl_items_template_items([namespace(_, _, Js)|Is], Ts) :- !, ccl_items_template_items(Js, T1), ccl_items_template_items(Is, T2), append(T1, T2, Ts).
 ccl_items_template_items([extern_c(_, Js)|Is], Ts) :- !, ccl_items_template_items(Js, T1), ccl_items_template_items(Is, T2), append(T1, T2, Ts).
 ccl_items_template_items([_|Is], Ts) :- ccl_items_template_items(Is, Ts).

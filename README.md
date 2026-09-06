@@ -82,8 +82,16 @@ what runs today.
   own block grown by doubling and freed by the destructor, indexed by
   reference, walked by a range-for through `size()` and `[]`; its
   template is kept whole in the header's summary, so it instantiates
-  like one the program wrote, under the same ownership check.
-  `test/cpp.sh`: eight programs built through `cicili++`, run and
+  like one the program wrote, under the same ownership check. **The
+  eighth step DONE: `std::string`**, the same way, an own buffer always
+  terminated, built from a literal, appended a char, a C string or a
+  string, indexed by reference, compared; and with it methods
+  overloaded by type (a name carries its parameters' types, a call
+  picks the overload the arguments fit) and the rule a destructor
+  brings: a class that has one is never copied -- by initialization,
+  assignment, a parameter or a return by value -- since two owners of
+  one buffer would free it twice; hand it by reference or by pointer.
+  `test/cpp.sh`: nine programs built through `cicili++`, run and
   checked, plus the reader's `classes.cpp` and `templates.cpp`; `try`
   is refused by name. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
@@ -148,8 +156,9 @@ the lowering of the C++ forms are M6, in steps: the first, the forms that
 are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
 the casts, `enum class`, range-for, `new` and `delete`), the second,
 classes, the third, `virtual`, the fourth, templates, the fifth,
-lambdas, and, over the compiler's own `<vector>`, `std::vector`, build
-and run; `try` is refused by its name. What is read, each
+lambdas, and, over the compiler's own `<vector>` and `<string>`,
+`std::vector` and `std::string`, build and run; `try` is refused by its
+name. What is read, each
 with its AST node:
 
 | C++ | AST |
