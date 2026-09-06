@@ -215,7 +215,7 @@ it is done (see below); the checker and the lowering take the AST from here.
   `:=` and the patterns extend to classes as they are; `ccl_type_of/2`
   learns `this`, bases and overloads.
 * **M6 — the check and the lowering of the C++ forms, IN STEPS: the
-  first two DONE.** The forms that are C with names: a namespace flattened
+  first three DONE.** The forms that are C with names: a namespace flattened
   to its bare names, `extern "C"`, `using`, `bool`, `nullptr`, the casts,
   `enum class`, a range-for over an array as the `for` it stands for, a
   reference as a pointer bound once (a borrow to the check, an address
@@ -228,10 +228,13 @@ it is done (see below); the checker and the lowering take the AST from here.
   the declaration and a destructor a defer of the scope, a static member
   a global, `new` and `delete` constructing and destroying, operators and
   default arguments by name and arity -- so the check and the lowering
-  see only the C they have. Every later form -- `virtual`, a template, a
-  lambda, `try` -- is refused by name. The steps to come, each with a
-  program that runs, the same way, as rewrites to C: `virtual` through a
-  table of function pointers, templates instantiated on use (function
+  see only the C they have. Then `virtual`, the same way: a struct of
+  function pointers per class and a global table of them, the object's
+  first member pointing at its class's table, set by every constructor;
+  a call through a pointer or a reference dispatches through it, a
+  virtual destructor too. Every later form -- a template, a lambda,
+  `try` -- is refused by name. The steps to come, each with a program
+  that runs, as rewrites to C: templates instantiated on use (function
   and class), lambdas as a struct of captures and a function; exceptions
   last, if at all, since the safe part has no unwinding to offer.
 * **Later — the objects layer's fate (below)**, and, on the LLVM module

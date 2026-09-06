@@ -17,10 +17,22 @@
 %% does, so ccl_type_of/2 tells a class-typed operand; the functions it makes
 %% are declared as it goes, so their calls have types too.
 %%
-%% Not this step (refused by name): virtual, more than one base, a member of
-%% class type with a constructor, an array of a class, a global of a class
-%% with a constructor, a temporary's destructor, operator= and copy
-%% constructors (a struct copies).
+%% virtual, the third step: a polymorphic class carries `$vptr' (the first
+%% member of the class that introduces it, after `$base' when it has one), a
+%% pointer to a struct `C.vt' of function pointers, one per virtual method
+%% in the order they were introduced (the base's first, an override in its
+%% base's slot, `$dtor' for a virtual destructor); every class has its own
+%% table, the global `C.vtable', filled with the most derived
+%% implementations, and every constructor stores its address after the
+%% base's constructor ran; a call through a pointer or a reference goes
+%% `p->$vptr->m(p)', a call on a value straight to the function; `delete p'
+%% destroys through the slot. Single inheritance puts the base at offset 0,
+%% so `this' is never adjusted.
+%%
+%% Not this step (refused by name): more than one base, a member of class
+%% type with a constructor, an array of a class, a global of a class with a
+%% constructor, a temporary's destructor, operator= and copy constructors
+%% (a struct copies), a pure virtual method.
 
 ccl_cpp_units(Units0, Units) :- cpp_register_units(Units0), cpp_units(Units0, Units).
 cpp_units([], []).
@@ -44,11 +56,38 @@ cpp_register_class(L, C, Bases, Ms) :-
     (   Bases = [] -> Base = none
     ;   Bases = [base(_, B)] -> Base = B
     ;   cpp_refuse(L, multiple_inheritance(C)) ),
-    ( member(method(ML, Qs, _, _, _, _, _), Ms), memberchk(virtual, Qs) -> cpp_refuse(ML, virtual(C)) ; true ),
-    ( member(dtor(DL, Qs2, _), Ms), memberchk(virtual, Qs2) -> cpp_refuse(DL, virtual(C)) ; true ),
-    cpp_split_members(Ms, Data, Statics, Defaults),
-    nb_getval('$cpp_classes', Cs), nb_setval('$cpp_classes', [C-cls(Base, Data, Ms, Statics, Defaults)|Cs]),
+    ( member(method(ML, _, _, _, _, _, none), Ms), member(method(ML, Qs, _, _, _, _, _), Ms), memberchk(pure, Qs) -> cpp_refuse(ML, pure_virtual(C)) ; true ),
+    cpp_split_members(Ms, Data0, Statics, Defaults),
+    cpp_slots(Base, Ms, C, Slots),
+    (   Slots \== [], \+ cpp_polymorphic(Base)                          % the class introduces the table: its pointer is a member of its own
+    ->  cpp_vt_tag(C, VT), Data = [member(ptr([], base([], [struct(VT, none)])), '$vptr', none)|Data0]
+    ;   Data = Data0 ),
+    nb_getval('$cpp_classes', Cs), nb_setval('$cpp_classes', [C-cls(Base, Data, Ms, Statics, Defaults, Slots)|Cs]),
     cpp_declare_members(Ms, C), cpp_declare_statics(Statics, C).
+%% the virtual slots of a class: the base's, an own virtual method (or one
+%% that overrides a slot) appended when new, `$dtor' for a virtual destructor
+cpp_slots(Base, Ms, C, Slots) :-
+    ( Base == none -> S0 = [] ; cpp_class(Base, cls(_, _, _, _, _, S0)) ),
+    cpp_own_slots(Ms, C, S0, Slots).
+cpp_own_slots([], _, S, S).
+cpp_own_slots([method(_, Qs, Ret, M, Ps, V, _)|Ms], C, S0, S) :-
+    length(Ps, K),
+    (   ( memberchk(virtual, Qs) ; memberchk(slot(M, K, _, _, _), S0) )
+    ->  ( memberchk(slot(M, K, _, _, _), S0) -> S1 = S0 ; cpp_plain_params(Ps, Ps1), append(S0, [slot(M, K, Ret, Ps1, V)], S1) )
+    ;   S1 = S0 ),
+    cpp_own_slots(Ms, C, S1, S).
+cpp_own_slots([dtor(_, Qs, _)|Ms], C, S0, S) :- memberchk(virtual, Qs), \+ memberchk(slot('$dtor', 0, _, _, _), S0), !,
+    append(S0, [slot('$dtor', 0, base([], [void]), [], false)], S1), cpp_own_slots(Ms, C, S1, S).
+cpp_own_slots([_|Ms], C, S0, S) :- cpp_own_slots(Ms, C, S0, S).
+cpp_polymorphic(C) :- C \== none, cpp_class(C, cls(_, _, _, _, _, Slots)), Slots \== [].
+cpp_slot(C, M, K, M) :- cpp_class(C, cls(_, _, _, _, _, Slots)), memberchk(slot(M, K, _, _, _), Slots), !.
+%% the class whose table a pointer to C dispatches through: the first polymorphic one up the chain
+cpp_vt_owner(C, Owner) :- cpp_class(C, cls(B, _, _, _, _, _)), ( cpp_polymorphic(B) -> cpp_vt_owner(B, Owner) ; Owner = C ).
+cpp_vt_tag(C, VT) :- atomic_list_concat([C, '.vt'], VT).
+cpp_vtable_name(C, N) :- atomic_list_concat([C, '.vtable'], N).
+%% the implementation a class's table holds for a slot: its own, else the base's
+cpp_slot_impl(C, '$dtor', _, Name) :- !, cpp_dtor(C, Name).
+cpp_slot_impl(C, M, K, Name) :- cpp_class(C, cls(B, _, Ms, _, _, _)), ( member(method(_, _, _, M, Ps, _, _), Ms), length(Ps, K) -> cpp_mangle(C, M, Ps, Name) ; B \== none, cpp_slot_impl(B, M, K, Name) ).
 cpp_split_members([], [], [], []).
 cpp_split_members([member(base(Q, S), N, _)|Ms], Data, [N-base(Q1, S)|Ss], Ds) :- memberchk(static, Q), !, ccl_delete_one(Q, static, Q1), cpp_split_members(Ms, Data, Ss, Ds).
 cpp_split_members([member(T, N, _)|Ms], [member(T, N, none)|Data], Ss, Ds) :- !, cpp_split_members(Ms, Data, Ss, Ds).
@@ -79,19 +118,21 @@ cpp_pointee_class(T, C) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, E) ; T1 = arr(
 cpp_class_of_type_of(X, C) :- ccl_type_of(X, T), T \== unknown, cpp_class_of_type(T, C).
 cpp_pointee_class_of(X, C) :- ccl_type_of(X, T), T \== unknown, cpp_pointee_class(T, C).
 %% the members: data (own and inherited, with the hops through '$base'), the statics, methods, constructors, the destructor
-cpp_data_member(C, N, []) :- cpp_class(C, cls(_, Data, _, _, _)), memberchk(member(_, N, _), Data), !.
-cpp_data_member(C, N, ['$base'|Hops]) :- cpp_class(C, cls(B, _, _, _, _)), B \== none, cpp_data_member(B, N, Hops).
-cpp_static_member(C, N, Name) :- cpp_class(C, cls(B, _, _, Ss, _)), ( memberchk(N-_, Ss) -> atomic_list_concat([C, '.', N], Name) ; B \== none, cpp_static_member(B, N, Name) ).
+cpp_data_member(C, N, []) :- cpp_class(C, cls(_, Data, _, _, _, _)), memberchk(member(_, N, _), Data), !.
+cpp_data_member(C, N, ['$base'|Hops]) :- cpp_class(C, cls(B, _, _, _, _, _)), B \== none, cpp_data_member(B, N, Hops).
+cpp_static_member(C, N, Name) :- cpp_class(C, cls(B, _, _, Ss, _, _)), ( memberchk(N-_, Ss) -> atomic_list_concat([C, '.', N], Name) ; B \== none, cpp_static_member(B, N, Name) ).
 cpp_method(C, M, NArgs, Name, Hops) :-
-    cpp_class(C, cls(B, _, Ms, _, _)),
+    cpp_class(C, cls(B, _, Ms, _, _, _)),
     (   member(method(_, _, _, M, Ps, _, _), Ms), cpp_arity_fits(Ps, NArgs) -> cpp_mangle(C, M, Ps, Name), Hops = []
     ;   B \== none, cpp_method(B, M, NArgs, Name, Hops1), Hops = ['$base'|Hops1] ).
-cpp_ctor(C, NArgs, Name) :- cpp_class(C, cls(_, _, Ms, _, _)), member(ctor(_, _, Ps, _, _), Ms), cpp_arity_fits(Ps, NArgs), !, cpp_mangle(C, C, Ps, Name).
+cpp_ctor(C, NArgs, Name) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(ctor(_, _, Ps, _, _), Ms), cpp_arity_fits(Ps, NArgs), !, cpp_mangle(C, C, Ps, Name).
 cpp_ctor(C, 0, Name) :- cpp_implicit_ctor_needed(C), cpp_mangle(C, C, [], Name).
-cpp_has_ctors(C) :- cpp_class(C, cls(_, _, Ms, _, _)), memberchk(ctor(_, _, _, _, _), Ms), !.
+cpp_has_ctors(C) :- cpp_class(C, cls(_, _, Ms, _, _, _)), memberchk(ctor(_, _, _, _, _), Ms), !.
 cpp_has_ctors(C) :- cpp_implicit_ctor_needed(C).
-cpp_implicit_ctor_needed(C) :- cpp_class(C, cls(B, _, Ms, _, Defaults)), \+ memberchk(ctor(_, _, _, _, _), Ms), ( Defaults \== [] ; B \== none, cpp_has_ctors(B) ), !.
-cpp_dtor(C, Name) :- cpp_class(C, cls(_, _, Ms, _, _)), ( memberchk(dtor(_, _, _), Ms) ; nb_getval('$cpp_dtor_defs', Ds), memberchk(C, Ds) ), !, atomic_list_concat([C, '.dtor.0'], Name).
+cpp_implicit_ctor_needed(C) :- cpp_class(C, cls(B, _, Ms, _, Defaults, _)), \+ memberchk(ctor(_, _, _, _, _), Ms), ( Defaults \== [] ; B \== none, cpp_has_ctors(B) ; cpp_polymorphic(C) ), !.
+cpp_dtor(C, Name) :- cpp_own_dtor(C, Name), !.
+cpp_dtor(C, Name) :- cpp_class(C, cls(B, _, _, _, _, _)), B \== none, cpp_dtor(B, Name).      % none of its own: the base's runs on it (the base at offset 0)
+cpp_own_dtor(C, Name) :- cpp_class(C, cls(_, _, Ms, _, _, _)), ( memberchk(dtor(_, _, _), Ms) ; nb_getval('$cpp_dtor_defs', Ds), memberchk(C, Ds) ), !, atomic_list_concat([C, '.dtor.0'], Name).
 cpp_arity_fits(Ps, N) :- length(Ps, Max), Max >= N, cpp_required(Ps, Min), Min =< N.
 cpp_required([], 0).
 cpp_required([param(_, _, _)|_], 0) :- !.
@@ -131,20 +172,38 @@ cpp_refuse(L, What) :- throw(error(not_lowered(What), where(file, line(L)))).
 cpp_items([], []).
 cpp_items([I|Is], Out) :- cpp_item(I, Js), append(Js, Out1, Out), cpp_items(Is, Out1).
 %% a class: the struct, the statics, then its members as functions
-cpp_item(declare(L, base(Q, [class(_, C, _, _)])), [declare(L, base(Q, [struct(C, Data1)]))|Fns]) :- !,
-    cpp_class(C, cls(Base, Data, Ms, Statics, Defaults)),
+cpp_item(declare(L, base(Q, [class(_, C, _, _)])), Items) :- !,
+    cpp_class(C, cls(Base, Data, Ms, Statics, Defaults, Slots)),
     ( Base == none -> Data1 = Data ; Data1 = [member(base([], [typedef(Base)]), '$base', none)|Data] ),
     cpp_static_decls(L, C, Statics, Fns0),
     cpp_member_fns(Ms, C, Base, Defaults, Fns1),
     ( cpp_implicit_ctor_needed(C) -> cpp_implicit_ctor(L, C, Base, Defaults, Fns2) ; Fns2 = [] ),
-    append(Fns0, Fns1, Fns01), append(Fns01, Fns2, Fns).
+    append(Fns0, Fns1, Fns01), append(Fns01, Fns2, Fns),
+    (   Slots == [] -> Items = [declare(L, base(Q, [struct(C, Data1)]))|Fns]
+    ;   cpp_vt_struct(L, C, Slots, VtDecl), cpp_vtable(L, C, Slots, Table),
+        Items = [VtDecl, declare(L, base(Q, [struct(C, Data1)]))|Fns1x], append(Fns, [Table], Fns1x) ).
+%% the table's struct: a function pointer per slot, over the owner's pointer; the table: the class's implementations
+cpp_vt_struct(L, C, Slots, declare(L, base([], [struct(VT, Ms)]))) :-
+    cpp_vt_tag(C, VT), cpp_vt_owner(C, Owner), cpp_this_type(Owner, [], ThisT),
+    findall(member(ptr([], fn(Ret, [param(ThisT, this)|Ps], V)), M, none), member(slot(M, _, Ret, Ps, V), Slots), Ms).
+cpp_vtable(L, C, Slots, declaration(L, static, base([], [struct(VT, none)]), [var(Name, base([], [struct(VT, none)]), init(Items))])) :-
+    cpp_vt_tag(C, VT), cpp_vtable_name(C, Name),
+    findall(item([], E), ( member(slot(M, K, _, _, _), Slots), ( cpp_slot_impl(C, M, K, Impl) -> E = id(Impl) ; E = nullptr ) ), Items).
+%% the store of the table's address, first thing after the base was constructed
+cpp_vptr_store(L, C, [expr(L, assign('=', arrow(this, '$vptr'), cast(ptr([], base([], [struct(VT, none)])), addr(id(Table)))))]) :-
+    cpp_polymorphic(C), !, cpp_vt_owner(C, Owner), cpp_vt_tag(Owner, VT), cpp_vtable_name(C, Table).
+cpp_vptr_store(_, _, []).
 cpp_item(declaration(L, Sto, B, [var(scoped([C], N), T, Init)]), [declaration(L, Sto, B, [var(Name, T, Init1)])]) :- cpp_class(C, _), !,
     atomic_list_concat([C, '.', N], Name), cpp_expr(none, Init, Init1).
 cpp_item(function(L, Sto, Ret, scoped([C], M), Ps, V, Body), [function(L, Sto, Ret, Name, [param(ThisT, this)|Ps1], V, Body1)]) :- cpp_class(C, _), !,
     cpp_mangle(C, M, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_this_type(C, [], ThisT),
     cpp_method_body(C, [param(ThisT, this)|Ps1], Body, Body1).
 cpp_item(dtor_def(L, C, _, Body), [function(L, none, base([], [void]), Name, [param(ThisT, this)], false, Body1)]) :- !,
-    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], ThisT), cpp_method_body(C, [param(ThisT, this)], Body, Body1).
+    atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], ThisT), cpp_dtor_body(L, C, Body, Body0), cpp_method_body(C, [param(ThisT, this)], Body0, Body1).
+%% a destructor's body, then the base's destructor over the base sub-object
+cpp_dtor_body(L, C, block(Body), block(Body1)) :-
+    cpp_class(C, cls(B, _, _, _, _, _)),
+    ( B \== none, cpp_dtor(B, BName) -> append(Body, [expr(L, call(id(BName), [addr(arrow(this, '$base'))]))], Body1) ; Body1 = Body ).
 cpp_item(function(L, Sto, Ret, operator(Op), Ps, V, Body), [function(L, Sto, Ret, Name, Ps1, V, Body1)]) :- !,
     cpp_free_operator(Op, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_method_body(none, Ps1, Body, Body1).
 cpp_item(function(L, Sto, Ret, N, Ps, V, Body), [function(L, Sto, Ret, N, Ps1, V, Body1)]) :- !,
@@ -174,7 +233,7 @@ cpp_member_fns([ctor(L, _, Ps, Inits, Body)|Ms], C, B, Ds, [F|Fs]) :- !,
 cpp_member_fns([dtor(L, _, Body)|Ms], C, B, Ds, Fs) :- !,
     atomic_list_concat([C, '.dtor.0'], Name), cpp_this_type(C, [], ThisT), Params = [param(ThisT, this)],
     (   Body == none -> Fs = [declaration(L, none, base([], [void]), [var(Name, fn(base([], [void]), Params, false), none)])|Fs1]
-    ;   cpp_method_body(C, Params, Body, Body1), Fs = [function(L, none, base([], [void]), Name, Params, false, Body1)|Fs1] ),
+    ;   cpp_dtor_body(L, C, Body, Body0), cpp_method_body(C, Params, Body0, Body1), Fs = [function(L, none, base([], [void]), Name, Params, false, Body1)|Fs1] ),
     cpp_member_fns(Ms, C, B, Ds, Fs1).
 cpp_member_fns([_|Ms], C, B, Ds, Fs) :- cpp_member_fns(Ms, C, B, Ds, Fs).
 %% a constructor's body: the base's constructor, then every member from its
@@ -187,9 +246,11 @@ cpp_ctor_body(L, C, B, Defaults, Inits, block(Body), block(Pre)) :-
         ; BArgs == [] -> Pre = Pre1
         ; cpp_refuse(L, base_constructor(B)) )
     ;   Pre = Pre1 ),
-    cpp_class(C, cls(_, Data, _, _, _)),
-    cpp_member_inits(Data, Inits, Defaults, L, Pre1, Body).
+    cpp_vptr_store(L, C, Store), append(Store, Pre2, Pre1),
+    cpp_class(C, cls(_, Data, _, _, _, _)),
+    cpp_member_inits(Data, Inits, Defaults, L, Pre2, Body).
 cpp_member_inits([], _, _, _, Body, Body).
+cpp_member_inits([member(_, '$vptr', _)|Ds], Inits, Defaults, L, Pre, Body) :- !, cpp_member_inits(Ds, Inits, Defaults, L, Pre, Body).
 cpp_member_inits([member(_, N, _)|Ds], Inits, Defaults, L, Pre, Body) :-
     (   memberchk(init(N, [E]), Inits) -> Pre = [expr(L, assign('=', arrow(this, N), E))|Pre1]
     ;   memberchk(N-E, Defaults) -> Pre = [expr(L, assign('=', arrow(this, N), E))|Pre1]
@@ -286,15 +347,26 @@ cpp_access(P, N, Hops, member(B, N)) :- cpp_hops(deref(P), Hops, B).
 cpp_call(Ctx, member(X0, M), As, E) :- !,
     cpp_expr(Ctx, X0, X),
     (   cpp_class_of_type_of(X, C), length(As, N), cpp_method(C, M, N, Name, Hops)
-    ->  cpp_hops(X, Hops, B), cpp_fill_defaults(Name, As, As1), E = call(id(Name), [addr(B)|As1])
+    ->  cpp_fill_defaults(Name, As, As1),
+        (   cpp_slot(C, M, N, Slot), \+ cpp_static_object(X) -> cpp_dispatch(addr(X), C, Slot, As1, E)   % a reference, *p: the dynamic type's
+        ;   cpp_hops(X, Hops, B), E = call(id(Name), [addr(B)|As1]) )
     ;   E = call(member(X, M), As) ).
 cpp_call(Ctx, arrow(X0, M), As, E) :- !,
     cpp_expr(Ctx, X0, X),
     (   cpp_pointee_class_of(X, C), length(As, N), cpp_method(C, M, N, Name, Hops)
-    ->  ( Hops == [] -> P = X ; cpp_hops(deref(X), Hops, B), P = addr(B) ), cpp_fill_defaults(Name, As, As1), E = call(id(Name), [P|As1])
+    ->  cpp_fill_defaults(Name, As, As1),
+        (   cpp_slot(C, M, N, Slot) -> cpp_dispatch(X, C, Slot, As1, E)
+        ;   ( Hops == [] -> P = X ; cpp_hops(deref(X), Hops, B), P = addr(B) ), E = call(id(Name), [P|As1]) )
     ;   E = call(arrow(X, M), As) ).
-cpp_call(Ctx, id(M), As, call(id(Name), [P|As1])) :- Ctx \== none, \+ cpp_local(M), length(As, N), cpp_method(Ctx, M, N, Name, Hops), !,
-    ( Hops == [] -> P = id(this) ; cpp_hops(deref(id(this)), Hops, B), P = addr(B) ), cpp_fill_defaults(Name, As, As1).
+cpp_call(Ctx, id(M), As, E) :- Ctx \== none, \+ cpp_local(M), length(As, N), cpp_method(Ctx, M, N, Name, Hops), !,
+    cpp_fill_defaults(Name, As, As1),
+    (   cpp_slot(Ctx, M, N, Slot) -> cpp_dispatch(id(this), Ctx, Slot, As1, E)
+    ;   ( Hops == [] -> P = id(this) ; cpp_hops(deref(id(this)), Hops, B), P = addr(B) ), E = call(id(Name), [P|As1]) ).
+%% p->$vptr->slot(p, args), the pointer to the table found through the base sub-objects
+cpp_dispatch(P, C, Slot, As, call(arrow(Vptr, Slot), [P|As])) :- cpp_data_member(C, '$vptr', Hops), cpp_access(P, '$vptr', Hops, Vptr).
+%% a value whose dynamic type is its static one: a named object, or a member of one; not a reference
+cpp_static_object(id(N)) :- ccl_declared(N, T), \+ T = ref(_, _), \+ T = rref(_, _).
+cpp_static_object(member(X, _)) :- cpp_static_object(X).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
 cpp_call(_, id(F), As, call(id(F), As1)) :- !, cpp_fill_defaults(F, As, As1).
 cpp_call(Ctx, F, As, call(F1, As)) :- cpp_expr(Ctx, F, F1).
@@ -314,6 +386,8 @@ cpp_new(T, As, stmt_expr(block([declaration(0, none, T, [var(P, PT, new(T, []))]
     length(As, N), ( cpp_ctor(C, N, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As1), ccl_gensym('$new', P), PT = ptr([], T).
 cpp_new(T, As, new(T, As)).
 cpp_delete(X, E) :- cpp_pointee_class_of(X, C), cpp_dtor(C, DName), !,
-    (   X = id(_) -> E = comma(call(id(DName), [X]), delete(X))
-    ;   ccl_type_of(X, PT), ccl_gensym('$del', P), E = stmt_expr(block([declaration(0, none, PT, [var(P, PT, X)]), expr(0, comma(call(id(DName), [id(P)]), delete(id(P))))])) ).
+    (   X = id(_) -> cpp_destroy(X, C, DName, D), E = comma(D, delete(X))
+    ;   ccl_type_of(X, PT), ccl_gensym('$del', P), cpp_destroy(id(P), C, DName, D), E = stmt_expr(block([declaration(0, none, PT, [var(P, PT, X)]), expr(0, comma(D, delete(id(P))))])) ).
+cpp_destroy(P, C, _, E) :- cpp_slot(C, '$dtor', 0, Slot), !, cpp_dispatch(P, C, Slot, [], E).
+cpp_destroy(P, _, DName, call(id(DName), [P])).
 cpp_delete(X, delete(X)).

@@ -962,6 +962,8 @@ ir_gconst(bool(true), _, 1) :- !.                                         % C++
 ir_gconst(bool(false), _, 0) :- !.
 ir_gconst(nullptr, _, null) :- !.
 ir_gconst(neg(int(N)), _, M) :- !, M is -N.
+ir_gconst(id(N), _, Ref) :- ccl_declared(N, T), ccl_resolve_type(T, fn(_, _, _)), !, atom_concat('@', N, Ref), ir_note_extern(N, T).   % a function's address (a C++ table)
+ir_gconst(addr(id(N)), _, Ref) :- ccl_declared(N, _), !, atom_concat('@', N, Ref).
 ir_gconst(chr(C), _, C) :- !.
 ir_gconst(float(F), T, A) :- !, ( ccl_resolve_type(T, base(_, S)), memberchk(float, S) -> ir_fail(float_global) ; ir_double(F, A) ).
 ir_gconst(str(S), T, C) :- !,

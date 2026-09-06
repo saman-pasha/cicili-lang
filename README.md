@@ -53,8 +53,13 @@ what runs today.
   declaration, a destructor a defer of the scope (the exits run it,
   last declared first), a static member a global, `new` and `delete`
   construct and destroy, operators and default arguments resolve by
-  name and arity. `test/cpp.sh`: three programs built through
-  `cicili++`, run and checked; `virtual`, templates, lambdas and try
+  name and arity. **The third step DONE: `virtual`**, a table of
+  function pointers per class, its pointer the object's first member,
+  set by every constructor; a call through a pointer or a reference
+  goes by the object's own table, a call on a value straight, a virtual
+  destructor runs the right one at `delete` and the base's after it.
+  `test/cpp.sh`: four programs built through `cicili++`, run and
+  checked, plus the reader's `classes.cpp`; templates, lambdas and try
   are refused by name until their step. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
@@ -116,10 +121,10 @@ reader: a C++ file is read whole, `-ast-dump` shows it, `-fsyntax-only`
 says nothing when it reads, and a C++ file that is C builds; the check and
 the lowering of the C++ forms are M6, in steps: the first, the forms that
 are C with names (namespaces, `extern "C"`, references, `bool`, `nullptr`,
-the casts, `enum class`, range-for, `new` and `delete`), and the second,
-classes without `virtual`, build and run, and a file using a later step's
-form -- `virtual`, a template, a lambda, `try` -- is refused at that form
-by its name. What is read, each
+the casts, `enum class`, range-for, `new` and `delete`), the second,
+classes, and the third, `virtual`, build and run, and a file using a later
+step's form -- a template, a lambda, `try` -- is refused at that form by
+its name. What is read, each
 with its AST node:
 
 | C++ | AST |

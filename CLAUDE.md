@@ -479,12 +479,44 @@ statics excluded) so member types resolve during the walk. Gated by
 `test/cpp/run/counter.cpp`: two classes with a base, initializers,
 defaults, a static, `operator+=`, `operator[]`, a free `operator+`, a
 temporary returned by value, `new`/`delete`, destructors counted -- the
-numbers agree with clang++'s. Not done: `virtual` (a table of function
-pointers next), a member of class type with a constructor, an array or a
-global of a class with a constructor, a temporary's destructor,
+numbers agree with clang++'s.
+
+**M6's third step (0.34): `virtual`, the same way.** The registry's
+`cls/6` carries the class's SLOTS (`cpp_slots/4`: the base's, then each
+own virtual method -- or one overriding a base slot, `override` being
+implicit -- appended by name and arity, `'$dtor'` for a virtual
+destructor). The class that introduces slots over a non-polymorphic base
+(or none) gets `'$vptr'` as its first data member (after `'$base'`), a
+pointer to `struct 'C.vt'`, which `cpp_vt_struct` declares before the
+class's struct: a function-pointer member per slot over the OWNER's
+`this` type (`cpp_vt_owner/2`: the first polymorphic class up the
+chain). After the functions comes the table, `static struct 'C.vt'
+'C.vtable' = { the most derived implementation per slot }`
+(`cpp_vtable`, `cpp_slot_impl/4`: the class's own method, else the
+base's; the destructor slot `cpp_dtor/2`, which answers the base's when
+the class has none, since the base sits at offset 0). Every constructor,
+an implicit one included (`cpp_implicit_ctor_needed` counts a polymorphic
+class), stores `this->$vptr = (struct Owner.vt *) &C.vtable` right after
+the base's constructor (`cpp_vptr_store/3`; the walk finds the hops to
+the member). A destructor's body ends with the base's destructor over
+`&this->$base` (`cpp_dtor_body`). A call `p->m(a)` whose method has a
+slot is `p->$vptr->m(p, a)` (`cpp_dispatch/5`); `o.m(a)` dispatches only
+when `o` is a reference or `*p` (`cpp_static_object/1`: a named value
+or a member of one has its static type); an unqualified `m(a)` inside a
+method dispatches through `this`; `delete p` with a virtual destructor
+destroys through the slot (`cpp_destroy`). Single inheritance keeps the
+base at offset 0, so `this` is never adjusted. The lowering's constants
+take a function's address and a global's (`ir_gconst(id(F))`,
+`ir_gconst(addr(id(G)))`), and the check counts `&global` as static, so
+the store in the constructor is no fresh value. Gated by
+`test/cpp/run/shapes.cpp` (two overrides, one inherited slot, a virtual
+destructor chained, a static counted) and the reader's `classes.cpp`
+built and run (exit 34). Not done: a pure virtual method (refused,
+`pure_virtual`), a member of class type with a constructor, an array or
+a global of a class with a constructor, a temporary's destructor,
 `operator=` and copy constructors (a struct copies), nested classes,
 `static` methods, `friend`, access control (ignored), a method called
-before the class is complete.
+before the class is complete, `dynamic_cast`, RTTI.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
