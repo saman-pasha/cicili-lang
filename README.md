@@ -679,7 +679,9 @@ plain type resolved in one clause: a third of its calls, and the clock
 within its noise) and the check's walk (its rebuild of the symbol table
 added a summary's names one at a time, each a copy of the environment:
 17 ms to 5; the anchor walk asks the scope only of the names declared
-as arrays; 86 ms to 70, the rest the expression walk itself) -- and the
+as arrays; the walk's clauses ordered by what a node most often is, a
+name, an operator, a member, an index, a wrapper, none of them through a
+univ; 86 ms to 65, the rest twenty thousand small calls) -- and the
 B-tree's build went from 3.64 to 1.35 s, `test/compile.sh`'s eighteen
 programs and forty refusals from 37 to 25 s. What is left is the two
 walks, the check's and the lowering's, at cocolog's 5 µs a call.

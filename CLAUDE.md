@@ -826,7 +826,22 @@ module (a segfault that looked like the error path's). The build mirrors `module
   per tag), the field ties, the escape and the leak checks nothing
   measurable; what is left, 60 ms, is the expression walk itself,
   `ck_expr` over 1000 nodes with a state lookup each, at the interpreter's
-  5 µs a call.
+  5 µs a call. **A stub must be seen to succeed**: `ck_scope_end(St, St)
+  :- !.` read as "the scope end is the whole check" (ten checks in 0.36 s,
+  the read alone) until the harness printed its marker -- the stub left
+  the frame unpopped, the function's end did not match, and the check
+  failed fast. The walk restructured by shape (2026-09-06): `ck_expr`'s
+  clauses ordered by what a node most often is, counted on the B-tree --
+  a name, an operator or number (taken by one clause, `\+ compound`,
+  where every head was tried before the last clause took it), a literal,
+  a member or arrow that is no owner's key (its child walked directly:
+  before, its path was built and looked up and the generic clause walked
+  its field name as a child), an index, a binary operator, a unary wrapper
+  (`ck_unary_shape/2`) -- and `ck_anchor_addrs` walking those shapes
+  without a univ: 70 -> 65 ms. The 65 are 20,000 calls at 3 µs; a real
+  cut needs the state no longer threaded as a frame list through every
+  node (a table per function, or the lookups in C), a redesign, not a
+  round.
 * **A cache in a global copies its whole content at every read**, so a
   cache of pairs is for SMALL values only; a value that may be large (a
   struct's members) goes in a global of its own keyed by name, with an

@@ -481,6 +481,12 @@ ck_note_arrlocal(N, T) :- ( ccl_resolve_type(T, arr(_, _)) -> nb_getval('$ck_arr
 ck_note_arrparams([]).
 ck_note_arrparams([P|Ps]) :- ( ( P = param(T, N) ; P = param(T, N, _) ), N \== anon -> ck_note_arrlocal(N, T) ; true ), ck_note_arrparams(Ps).
 ck_arrlocal(N) :- nb_getval('$ck_arrlocals', As), memberchk(N, As).
+ck_anchor_addrs(bin(_, A, B), St0, St) :- !, ck_anchor_addrs(A, St0, St1), ck_anchor_addrs(B, St1, St).      % the common shapes, without a univ
+ck_anchor_addrs(index(A, I), St0, St) :- !, ck_anchor_addrs(A, St0, St1), ck_anchor_addrs(I, St1, St).
+ck_anchor_addrs(arrow(E, _), St0, St) :- !, ck_anchor_addrs(E, St0, St).
+ck_anchor_addrs(member(E, _), St0, St) :- !, ck_anchor_addrs(E, St0, St).
+ck_anchor_addrs(assign(_, L, R), St0, St) :- !, ck_anchor_addrs(L, St0, St1), ck_anchor_addrs(R, St1, St).
+ck_anchor_addrs(call(F, As), St0, St) :- !, ck_anchor_addrs(F, St0, St1), ck_anchor_addrs_list(As, St1, St).
 ck_anchor_addrs(E, St0, St) :- E =.. [_|As], ck_anchor_addrs_list(As, St0, St).
 ck_anchor_addrs_list([], St, St).
 ck_anchor_addrs_list([A|As], St0, St) :- ck_anchor_addrs(A, St0, St1), ck_anchor_addrs_list(As, St1, St).
@@ -940,10 +946,29 @@ ck_dangle_owners([X|T], P, [X|T1]) :- ck_dangle_owners(T, P, T1).
 %% a read of an owner, a field, a borrow, an anchor
 ck_read(K, S) :- ( memberchk(S, [live, null, none, anchor, loose, array]) -> true ; S = borrow(_) -> true ; S = dangling(P) -> ck_fail(borrow_after_move, K, borrowed_from(P)) ; S == unset -> ck_fail(owner_unset, K, id(K)) ; ck_fail(use_after_move, K, id(K)) ).
 
+%% the walk's clauses are ordered by what a node is most often (counted on
+%% the B-tree: a third are names, then members, operators, literals), and a
+%% node no clause below cares for is walked without a univ: an operator or a
+%% number was tried against every head before the last clause took it, a
+%% `x->f' that is no owner's key computed its path, looked it up, then went
+%% the generic way with its field name as a child
 ck_expr(_, dead, dead) :- !.
+ck_expr(E, St, St) :- \+ compound(E), !.                                          % an operator, a number, a name as a field
 ck_expr(id(N), St, St) :- !, ( ck_state(St, N, S) -> ck_read(N, S) ; true ).
+ck_expr(int(_), St, St) :- !.
+ck_expr(float(_), St, St) :- !.
+ck_expr(chr(_), St, St) :- !.
+ck_expr(str(_), St, St) :- !.
 ck_expr(member(E, F), St0, St) :- ck_path(member(E, F), K), ck_state(St0, K, S), !, ck_expr(E, St0, St), ck_read(K, S).
+ck_expr(member(E, _), St0, St) :- !, ck_expr(E, St0, St).
 ck_expr(arrow(E, F), St0, St) :- ck_path(arrow(E, F), K), ck_state(St0, K, S), !, ck_expr(E, St0, St), ck_read(K, S).
+ck_expr(arrow(E, _), St0, St) :- !, ck_expr(E, St0, St).
+ck_expr(index(A, I), St0, St) :- !, ck_expr(A, St0, St1), ck_expr(I, St1, St).
+ck_expr(bin(Op, A, B), St0, St) :- Op \== '&&', Op \== '||', !, ck_expr(A, St0, St1), ck_expr(B, St1, St).
+ck_expr(E, St0, St) :- ck_unary_shape(E, A), !, ck_expr(A, St0, St).           % a wrapper around one expression: its child
+ck_unary_shape(neg(E), E). ck_unary_shape(not(E), E). ck_unary_shape(bitnot(E), E). ck_unary_shape(pos(E), E).
+ck_unary_shape(deref(E), E). ck_unary_shape(cast(_, E), E). ck_unary_shape(postinc(E), E). ck_unary_shape(postdec(E), E).
+ck_unary_shape(preinc(E), E). ck_unary_shape(predec(E), E).
 ck_expr(move(E), St0, St) :- ck_own_elem(E, K), !, ck_expr(E, St0, St1), ck_dangle(St1, K, St).   % an element out: the array's borrows dangle
 ck_expr(move(E), St0, St) :- !, ( ck_owner_path(St0, E, K) -> ck_base_use(E, St0, St1), ck_consume(K, move, move(E), St1, St, _) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
 ck_expr(call(id(F), Args), St0, St) :- !, ck_args(Args, id(F), St0, St).
@@ -983,10 +1008,6 @@ ck_expr(assign('=', L, R), St0, St) :- !,
         ;   ck_expr(R, St1, St) )
     ;   ck_expr(R, St1, St) ).
 ck_expr(assign(_, L, R), St0, St) :- !, ck_expr(R, St0, St1), ck_lval_use(L, St1, St).
-ck_expr(int(_), St, St) :- !.
-ck_expr(float(_), St, St) :- !.
-ck_expr(chr(_), St, St) :- !.
-ck_expr(str(_), St, St) :- !.
 ck_expr(sizeof(_), St, St) :- !.
 ck_expr(sizeof_type(_), St, St) :- !.
 ck_expr(cond(C, A, B), St0, St) :- !, ck_expr(C, St0, St1), ck_expr(A, St1, StA), ck_expr(B, St1, StB), ck_merge(StA, StB, St).
