@@ -88,11 +88,16 @@ ccl_macro_error(Msg) :- ccl_here(F, L), throw(error(macro_error(Msg, here(F, L))
 %% a typedef resolves to its end in one step: the chain (size_t -> __darwin_size_t
 %% -> unsigned long) is walked once per name and kept (the lowering of 170 lines
 %% asked 16,600 resolutions, most of them links of a chain)
-ccl_resolve_type(base(Q, [typedef(N)]), T) :- ccl_cached('$ccl_rcache', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
-ccl_resolve_typedef(N, T) :- ccl_typedef_of(N, T0), ccl_resolve_type(T0, T).
-ccl_resolve_type(base(Q, [struct(Tag, none)]), base(Q, [struct(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
-ccl_resolve_type(base(Q, [union(Tag, none)]), base(Q, [union(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
+%% (asked 12,000 times in the lowering of 170 lines, most for a pointer or a
+%% plain base type: the functor decides the clause, one try)
+ccl_resolve_type(base(Q, S), T) :- !, ccl_resolve_base(S, Q, T).
 ccl_resolve_type(T, T).
+ccl_resolve_base([S|Ss], Q, base(Q, [S|Ss])) :- atom(S), !.                      % a plain specifier list, the common case: one try
+ccl_resolve_base([typedef(N)], Q, T) :- ccl_cached('$ccl_rcache', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
+ccl_resolve_base([struct(Tag, none)], Q, base(Q, [struct(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
+ccl_resolve_base([union(Tag, none)], Q, base(Q, [union(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
+ccl_resolve_base(S, Q, base(Q, S)).
+ccl_resolve_typedef(N, T) :- ccl_typedef_of(N, T0), ccl_resolve_type(T0, T).
 ccl_add_quals([], T, T) :- !.
 ccl_add_quals(Q, base(Q0, S), base(Q1, S)) :- !, append(Q, Q0, Q1).
 ccl_add_quals(Q, ptr(Q0, T), ptr(Q1, T)) :- !, append(Q, Q0, Q1).

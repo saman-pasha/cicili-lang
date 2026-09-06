@@ -231,8 +231,19 @@ layout (`ccl_members_layout/4`), the file scope's names and `ir_type/2`;
 `ccl_tables_changed/0` empties every cache and is called wherever a table
 is written (the noters, the summaries, `ccl_with_file`'s restore).
 Measured on the B-tree: the check 0.28 -> 0.07 s, the lowering 0.7 ->
-0.4 s (what is left is 27,000 predicate calls of the type machinery and
-the emission, cocolog's interpretation itself).
+0.4 s -> 0.21 s. The second half of the lowering's gain was three
+things found by ranking every predicate's calls (an instrumented copy of
+the library, below): `ir_join/3`, the module's text from its lines,
+walked the codes of 1700 lines with `append/3` -- 0.1 s, a quarter of the
+lowering; it is `atomic_list_concat/3` now (the walk was for cocolog
+before 1.1.0, whose builtin died past 8 KB). `ccl_resolve_type/2`, asked
+12,000 times, is chosen by its functor -- `base` to `ccl_resolve_base/3`,
+whose first clause takes a plain specifier list in one try, anything else
+itself -- where it tried the typedef, struct and union heads first every
+time. `ir_abi/2` walked a struct's leaves and eightbytes at every call
+site; cached. What is left is 50,000 predicate calls at cocolog's 5 µs a
+call: fewer calls would take `ir_expr/3` carrying the LLVM type beside
+the C type, so the consumers stop re-deriving it.
 Never `memberchk` on the open accumulator: it binds the tail (the
 enumerators keep a closed list of their own). `library(ccl_infer)` reads them: `ccl_type_of/2` with the
 usual arithmetic conversions, `ccl_resolve_type/2`, `ccl_size_of/2` (LP64).
@@ -775,6 +786,14 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `"` inside a quoted atom did not read either; `ensure_loaded/1` then says
   only `its clauses would not consult`, no line. Bisect by splitting the
   file into clauses (`test/cpp.pl` needed that twice).
+* **Rank every predicate's calls before touching a pass**: an
+  instrumented copy of the library first on `COCOLOG_LIBRARY`, every rule
+  head renamed and wrapped with a counter (heads only), a query that
+  prints the counts sorted. The lowering of 170 lines was 46,000 calls:
+  12,000 `ccl_resolve_type`, 4,000 of `ir_join`'s code walk (0.1 s by
+  itself: a builtin does it in none), 2,300 `ir_type`. A `nb_setval` of a
+  200-line function body per emitted line costs nothing measurable; of one
+  2000-line body, 0.13 s -- the per-function reset keeps it small.
 * **`nb_getval/2` copies the term it answers** (0.63 ms for a list of
   5000 pairs, 2 µs for a small one; `b_getval/2` exists and copies too),
   and `nb_setval/2` copies alike; a `memberchk/2` step is 0.15 µs; an

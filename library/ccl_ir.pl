@@ -65,7 +65,7 @@ ir_items([I|Is]) :- ir_item(I), ir_items(Is).
 %% ---- state -----------------------------------------------------------------------
 ir_reset :-
     ccl_ensure_globals, ( once(catch(os_env('CCL_IR_TRACE', Tr), _, fail)), Tr \== '' -> nb_setval('$ir_trace', yes) ; nb_setval('$ir_trace', no) ),
-    nb_setval('$ir_tcache', []), nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_fn', file), nb_setval('$ir_line', 0), nb_setval('$ir_ret', none), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no), nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
+    nb_setval('$ir_tcache', []), nb_setval('$ir_abicache', []), nb_setval('$ir_reg', 0), nb_setval('$ir_anons', []), nb_setval('$ir_fn', file), nb_setval('$ir_line', 0), nb_setval('$ir_ret', none), nb_setval('$ir_body', []), nb_setval('$ir_allocas', []), nb_setval('$ir_term', no), nb_setval('$ir_env', [[]]), nb_setval('$ir_defers', [[]]), nb_setval('$ir_loops', []), nb_setval('$ir_strings', []), nb_setval('$ir_structs', []),
     nb_setval('$ir_externs', []), nb_setval('$ir_defined', []), nb_setval('$ir_gmap', []), nb_setval('$ir_ret_abi', scalar),
     nb_setval('$ir_maps', []), nb_setval('$ir_statics', 0),
     ir_arch_init.
@@ -262,7 +262,8 @@ ir_member_index_([_|Ms], N, I0, I, MT) :- I1 is I0 + 1, ir_member_index_(Ms, N, 
 
 %% ---- the ABI of a struct by value --------------------------------------------------
 %% ir_abi(+T, -Abi): scalar | direct([piece(LL, ByteOffset) ...]) | memory(LL, Align) | indirect(LL, Align)
-ir_abi(T, Abi) :-
+ir_abi(T, Abi) :- ccl_cached('$ir_abicache', T, Abi, ir_abi_nocache(T, Abi)).      % once per type: a struct's leaves and eightbytes are walked at every call site
+ir_abi_nocache(T, Abi) :-
     ccl_resolve_type(T, T1),
     (   ir_is_aggregate(T1) -> ir_type(T1, LL), ccl_size_align(T1, N, A), ir_arch(Arch), ir_abi_(Arch, T1, LL, N, A, Abi)
     ;   Abi = scalar ).
@@ -936,8 +937,7 @@ ir_declares([N-T|Es], Ds, [D|Decls]) :-
     ir_declares(Es, Ds, Decls).
 %% joins go through codes: atomic_list_concat/2 dies silently past ~8 KB
 %% (a cocolog finding), atom_codes/2 takes hundreds of KB
-ir_join(Xs, Sep, A) :- atom_codes(Sep, SC), ir_join_codes(Xs, SC, Cs), atom_codes(A, Cs).
-ir_join_codes([], _, []).
-ir_join_codes([X], _, C) :- !, ir_codes(X, C).
-ir_join_codes([X|Xs], S, C) :- ir_codes(X, C0), ir_join_codes(Xs, S, C1), append(C0, S, C01), append(C01, C1, C).
-ir_codes(X, C) :- ( number(X) -> number_codes(X, C) ; atom_codes(X, C) ).
+%% the builtin joins 5000 lines in no time where a walk over their codes took
+%% 0.3 s (the walk was for cocolog before 1.1.0, whose atomic_list_concat died
+%% past 8 KB; it takes 16 MB since)
+ir_join(Xs, Sep, A) :- atomic_list_concat(Xs, Sep, A).
