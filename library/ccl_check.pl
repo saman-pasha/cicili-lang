@@ -139,7 +139,9 @@ ck_note_units([unit(Is)|Us]) :- ccl_items_note(Is), ck_note_units(Us).
 ck_units([]).
 ck_units([unit(Is)|Us]) :- ck_items(Is), ck_units(Us).
 ck_items([]).
-ck_items([function(L, _, Ret, Name, Params, _, Body)|Is]) :- !, ck_function(L, Ret, Name, Params, Body), ck_items(Is).
+ck_items([function(L, _, Ret, Name, Params, _, Body)|Is]) :- !,
+    ( ccl_lang(cpp), cpp_library_function(Name) -> true ; ck_function(L, Ret, Name, Params, Body) ),   % a library header's function: C++'s rules, not these (ccl_cpp)
+    ck_items(Is).
 ck_items([_|Is]) :- ck_items(Is).
 
 %% ---- state: frames of Key-State, innermost first; with each frame its defers ----------

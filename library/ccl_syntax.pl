@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(34).
+ccl_reader_version(35).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -652,6 +652,12 @@ ccl_tparams_leave(New) :- nb_getval('$ccl_tmpl_depth', D), D1 is D - 1, nb_setva
     ( New == [] -> true ; nb_getval('$ccl_env', G), findall(X, ( member(X, G), \+ memberchk(X, New) ), G1), nb_setval('$ccl_env', G1) ).
 %% inside a template's item its own name is a template already: `__tuple_less<_Ip - 1>()' in its own body
 ccl_note_if_template(N) :- ( atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0 -> ccl_note_template(N) ; true ).
+%% a FUNCTION template's name is a template (`move<int>(x)' reads as a template-id) but no type: `_Tp __t(std::move(__x))'
+%% declares no function taking a std::move -- the vexing parse C++ resolves by knowing what std::move is
+ccl_note_if_fn_template(N) :- ( atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0 -> ccl_note_fn_template(N) ; true ).
+ccl_note_fn_template(N) :- atom(N), N \== none, nb_getval('$ccl_fn_templates', Ts), ( memberchk(N, Ts) -> true ; nb_setval('$ccl_fn_templates', [N|Ts]) ).
+ccl_note_fn_template(_).
+ccl_fn_template(N) :- nb_getval('$ccl_fn_templates', Ts), memberchk(N, Ts).
 ccl_external(Env, Env, concept(L, N, E)) --> ccl_cpp, ccl_line(L), ccl_kw(concept), !, ccl_id(N), { ccl_note_template(N) }, ccl_p('='), ccl_cond_expr(E), ccl_p(';').   % C++20: concept N = constraint
 ccl_external(Env, Env, D) --> ccl_cpp, ccl_line(L), ccl_kw(auto), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, none, D) }.
 %% C++17: a deduction guide, `Guard(Args...) -> Guard<Ts...>;' (nothing to lower: the reader reads it, the desugaring passes it over)
@@ -678,8 +684,13 @@ ccl_tparam(Env0, tparam(template, N, D), [N|Env0]) --> ccl_kw(template), !, ccl_
     ( ccl_p('='), !, ccl_qname(Env0, type, D) ; { D = none } ).                                                          % template <class...> class F = is_x
 ccl_tparam(Env0, tparam(vpack(T), N, none), Env0) --> ccl_decl_specs(Env0, param, _, Base), ccl_pointers(Ptrs), ccl_p('...'), !, ( ccl_id(N), ! ; { N = anon } ), { ccl_apply_pointers(Ptrs, Base, T) }.   % `int... Ns', `int &...': a pack of values
 ccl_tparam(Env0, tparam(T, N, D), Env0) --> ccl_decl_specs(Env0, param, _, Base), ccl_abstract_or_declarator(Env0, Base, N, T), ( ccl_p('='), !, ccl_targ_expr(D) ; { D = none } ).
-ccl_skip_to_close --> ccl_p('>'), !.
-ccl_skip_to_close --> [_], ccl_skip_to_close.
+ccl_skip_to_close --> ccl_skip_to_close_(0).                    % the parameter list of a template template parameter, nested ones counted
+ccl_skip_to_close_(0) --> ccl_p('>'), !.
+ccl_skip_to_close_(D) --> ccl_p('<'), !, { D1 is D + 1 }, ccl_skip_to_close_(D1).
+ccl_skip_to_close_(D) --> ccl_p('>'), !, { D1 is D - 1 }, ccl_skip_to_close_(D1).
+ccl_skip_to_close_(1) --> ccl_p('>>'), !.
+ccl_skip_to_close_(D) --> ccl_p('>>'), !, { D1 is D - 2 }, ccl_skip_to_close_(D1).
+ccl_skip_to_close_(D) --> [_], ccl_skip_to_close_(D).
 ccl_template_name(concept(_, N, _), N) :- !.
 ccl_template_name(function(_, _, _, N, _, _, _), N) :- !.
 ccl_template_name(method(_, _, _, N, _, _, _), N) :- !.
@@ -697,7 +708,7 @@ ccl_auto_decl(L, N, E, R, D) :-
 
 ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto, Ret, Name, Params, Var, Body)) -->
     ccl_declarator(Env, Base, Name, Type0), { Type0 = fn(_, _, _) }, ccl_attrs, ccl_method_quals(_), ccl_tie(Type0, Type), { Type = fn(Ret, Params, Var) }, ccl_peek(p, '{'),   % C++'s const/override after the parameters; no cut here, a prototype falls through
-    { ccl_note_if_template(Name) },
+    { ccl_note_if_template(Name), ccl_note_if_fn_template(Name) },
     { ccl_note_tags(Ret), ccl_note_params(Params), ccl_declare(Name, Type) },
     ccl_push_scope, { ccl_declare_params(Params) }, ccl_compound(Env, Body), ccl_pop_scope, !.
 ccl_external_rest(Env0, Env, L, Sto, Base, Item) -->
@@ -747,14 +758,27 @@ ccl_builtin_args(_, []) --> [].
 ccl_builtin_arg(Env, type(T)) --> ccl_type_name(Env, T0), ccl_targ_pack(T0, T), ccl_builtin_arg_end, !.
 ccl_builtin_arg(_, E) --> ccl_assign_expr(E0), ccl_targ_pack(E0, E).
 ccl_builtin_arg_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, [',', ')']).
-ccl_builtin_trait(N) :- atom(N), ( sub_atom(N, 0, 5, _, '__is_') ; sub_atom(N, 0, 6, _, '__has_') ; sub_atom(N, 0, 12, _, '__reference_') ; sub_atom(N, 0, 8, _, '__array_') ; memberchk(N, ['__builtin_offsetof', '__builtin_bit_cast', '__builtin_convertvector']) ), !.
+%% the compiler's type traits, by name -- a FIXED list, since libc++ has functions of its own in the same spelling
+%% (`__is_overaligned_for_new(__align)', `__is_pointer_in_range(...)'), which read as the calls they are
+ccl_builtin_trait(N) :- atom(N), memberchk(N, ['__is_same', '__is_same_as', '__is_base_of', '__is_convertible', '__is_convertible_to', '__is_nothrow_convertible',
+    '__is_constructible', '__is_nothrow_constructible', '__is_trivially_constructible', '__is_assignable', '__is_nothrow_assignable', '__is_trivially_assignable',
+    '__is_destructible', '__is_nothrow_destructible', '__is_trivially_destructible', '__is_trivially_copyable', '__is_trivially_relocatable', '__is_trivial',
+    '__is_standard_layout', '__is_pod', '__is_literal', '__is_literal_type', '__is_empty', '__is_polymorphic', '__is_abstract', '__is_final', '__is_sealed',
+    '__is_aggregate', '__is_enum', '__is_scoped_enum', '__is_class', '__is_union', '__is_integral', '__is_floating_point', '__is_arithmetic', '__is_fundamental',
+    '__is_scalar', '__is_object', '__is_compound', '__is_pointer', '__is_member_pointer', '__is_member_function_pointer', '__is_member_object_pointer',
+    '__is_reference', '__is_lvalue_reference', '__is_rvalue_reference', '__is_referenceable', '__is_void', '__is_array', '__is_bounded_array', '__is_unbounded_array',
+    '__is_function', '__is_const', '__is_volatile', '__is_signed', '__is_unsigned', '__is_nullptr', '__is_null_pointer', '__is_layout_compatible',
+    '__is_pointer_interconvertible_base_of', '__is_implicit_lifetime', '__is_trivially_copy_constructible', '__is_trivially_move_constructible',
+    '__has_virtual_destructor', '__has_trivial_destructor', '__has_trivial_constructor', '__has_trivial_copy', '__has_trivial_assign', '__has_nothrow_constructor',
+    '__has_nothrow_copy', '__has_nothrow_assign', '__has_unique_object_representations', '__reference_binds_to_temporary', '__reference_constructs_from_temporary',
+    '__reference_converts_from_temporary', '__array_rank', '__array_extent', '__builtin_offsetof', '__builtin_bit_cast', '__builtin_convertvector']), !.
 ccl_cpp_type(Env, Sc, typedef(Q)) --> ccl_qname(Env, type, Q), { compound(Q) }, ( { ccl_qname_typish(Env, Q) }, ccl_type_follows(Sc) ; ccl_declarator_follows ), !.
 %% an unknown qualified name is a type where a declarator follows it (`ns::what &w', `ns::T x'), an expression where `(' does (`std::move(a)')
 ccl_declarator_follows(S, S) :- S = [tok(K, V, _)|_], ( K == id ; K == p, memberchk(V, ['*', '&', '&&']) ; K == kw, ccl_qualifier(V) ), !.
 %% a qualified name is a type when its last name is one: `S b(std::move(a))' declares no function taking a std::move
 ccl_qname_typish(_, tmpl(_, _)) :- !.
 ccl_qname_typish(Env, scoped(_, Last)) :- !, ccl_qname_typish(Env, Last).
-ccl_qname_typish(Env, N) :- atom(N), ( ccl_known_typedef(Env, N) ; ccl_known_template(N) ; memberchk(N, [string, wstring, size_t, ptrdiff_t, nullptr_t, byte, type, value_type, pointer, reference, const_reference, iterator, const_iterator, size_type, difference_type, element_type]) ), !.
+ccl_qname_typish(Env, N) :- atom(N), ( ccl_known_typedef(Env, N) ; ccl_known_template(N), \+ ccl_fn_template(N) ; memberchk(N, [string, wstring, size_t, ptrdiff_t, nullptr_t, byte, type, value_type, pointer, reference, const_reference, iterator, const_iterator, size_type, difference_type, element_type]) ), !.
 ccl_type_follows(Sc) --> { memberchk(Sc, [file, param, member, typename]) }, !.
 ccl_type_follows(_) --> ( ccl_peek(id, _), ! ; ccl_peek(p, '*'), ! ; ccl_peek(p, '&'), ! ; ccl_peek(p, '&&') ).
 %% a qualified name: ::a::b<args>::c -- an atom for a plain name, tmpl(N, Args)

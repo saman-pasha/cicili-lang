@@ -111,6 +111,8 @@ ccl_resolve_type(T, T).
 ccl_resolve_base([S|Ss], Q, base(Q, [S|Ss])) :- atom(S), !.                      % a plain specifier list, the common case: one try
 ccl_resolve_base([typedef(N)], Q, T) :- atom(N), ccl_cached_named('$ccl_r:', N, T1, ccl_resolve_typedef(N, T1)), !, ccl_add_quals(Q, T1, T).
 ccl_resolve_base([typedef(N)], Q, T) :- atom(N), ccl_lang(cpp), ccl_tag(N, Ms), !, ccl_tag_type(N, Ms, Q, T).   % C++: a tag's name is a type name; a template-id (a compound) stays as it is
+ccl_resolve_base([decltype(E)], Q, base(Q, [unsigned, long])) :- ccl_lang(cpp), ccl_sizeof_expr(E), !.   % C++: libc++ spells size_t `decltype(sizeof(int))', and the type of a sizeof is size_t: the concrete type here, or the chain turns
+ccl_resolve_base([decltype(E)], Q, T) :- ccl_lang(cpp), ccl_type_of(E, T0), T0 \== unknown, !, ccl_add_quals(Q, T0, T).
 ccl_resolve_base([struct(Tag, none)], Q, base(Q, [struct(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base([union(Tag, none)], Q, base(Q, [union(Tag, Ms)])) :- ccl_tag(Tag, Ms), !.
 ccl_resolve_base(S, Q, base(Q, S)).
@@ -158,6 +160,8 @@ ccl_usual(A, B, T) :-
             ( RA > RB -> T = PA ; RB > RA -> T = PB ; UA == true -> T = PA ; UB == true -> T = PB ; T = PA )
     ;   T = unknown ).
 ccl_size_type(T) :- ( ccl_typedef_of(size_t, _) -> T = base([], [typedef(size_t)]) ; T = base([], [unsigned, long]) ).
+ccl_sizeof_expr(sizeof(_)).
+ccl_sizeof_expr(sizeof_type(_)).
 
 %% ---- the type of an expression ----------------------------------------------------
 ccl_type_of(int(_), base([], [int])) :- !.

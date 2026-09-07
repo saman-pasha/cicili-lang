@@ -964,7 +964,7 @@ ir_globals([var(N, T, Init)|Vs], Sto) :-
     ccl_resolve_type(T, T1),
     (   ( T1 = fn(_, _, _) ; Sto == extern ; Sto == typedef ) -> true
     ;   ir_sized_type(T, T1, Init, GT), ir_gconst_typed(Init, GT, LL, C), ir_galign(GT, Al),
-        ( Sto == static -> Link = 'internal global' ; Link = 'global' ),
+        ( Sto == static -> Link = 'internal global' ; Sto == linkonce -> Link = 'linkonce_odr global' ; Link = 'global' ),   % linkonce: a class's static with its initializer, the same in every unit
         atomic_list_concat(['@', N, ' = ', Link, ' ', LL, ' ', C, Al], Def),
         nb_getval('$ir_gdefs', Gs), nb_setval('$ir_gdefs', [Def|Gs]),
         nb_getval('$ir_gmap', M), nb_setval('$ir_gmap', [N-GT|M]),

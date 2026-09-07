@@ -175,6 +175,43 @@ what runs today.
   and the exception guard before it runs into the next forms -- under
   a budget now, since one unbounded run took the machine's memory.
   GREEN.
+  **The fourteenth step DONE: libc++'s first function compiled from
+  its own body.** `std::swap` of `<utility>`, over two pointers and
+  over two ints, builds through `cicili++` and prints what clang++
+  prints (`test/cpp/run/stdswap.cpp`) -- its result type through
+  `__enable_if_t`, `is_move_constructible` and `is_move_assignable`,
+  its body as libc++ wrote it. What that took: THE TEMPLATE TEMPLATE
+  PARAMETER (`template <class, class, class> class _Layout`), bound to
+  a template's name, passed on, used as a base -- the CRTP libc++'s
+  split buffer makes of its layout (`ttp.cpp`); FUNCTION TEMPLATES
+  CHOSEN AS C++ CHOOSES (`overloads.cpp`): every definition of the
+  name is a candidate, one whose arity, deduction, defaults,
+  constraints or class-typed parameters do not fit is none (a
+  template-id parameter whose argument is no instance of that template
+  fails to deduce, an alias template's is a non-deduced context), an
+  exact match beats a conversion, the most specialized wins among what
+  is left; the compiler's traits over two types decided
+  (`__is_constructible`, `__is_assignable`, `__is_convertible`,
+  `__is_base_of`) and the trait names a fixed list, since libc++ has
+  functions spelled like them; a class's members typed under its own
+  typedefs, a static inherited from a base folded, a static with its
+  initializer in the class defined once; anonymous struct and union
+  members (`anon.cpp`: libc++'s compressed pair is one); a function
+  template's name told from a type's, so `_Tp __t(std::move(__x))`
+  declares no function. THE AST BESIDE THE SUMMARY: a flattened
+  library header's items are kept as a clause file next to its
+  summary and consulted when the summary is served, so a program that
+  instantiates a library template reads the header once ever (0.8 s
+  where the first run took 8). AND THE LIBRARY'S FUNCTIONS ARE NOT
+  CHECKED: libc++'s bodies keep raw pointers by their own discipline,
+  which the safe part would refuse at every line, so what comes from a
+  library header is compiled as C++ has it, and the program's own
+  functions -- its own templates' instances included -- are checked
+  as always. `std::vector<int>` reaches 43 loads
+  and instances, up from 26, and stops inside libc++'s compressed pair,
+  where a layout class's own `pointer` has to come through
+  `allocator_traits`'s meta: the allocator machinery is the next
+  stretch. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

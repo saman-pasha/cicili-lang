@@ -276,8 +276,21 @@ it is done (see below); the checker and the lowering take the AST from here.
   used. `std::vector<int>` gets several classes deep before the next
   forms stop it, under an instantiation budget. What is left: the
   forms libc++'s bodies use past that point, and a cache of the
-  flattened header's AST beside its summary (today a program that
-  instantiates a library template reads the header again).
+  flattened header's AST beside its summary. THE FOURTEENTH STEP: that
+  AST cache (a clause file beside the summary, consulted when the
+  summary is served); the template template parameter; function
+  templates chosen as C++ chooses them -- every definition a
+  candidate, deduction failure and arity and class-typed parameters
+  refusing, fewest conversions then most specialized; the compiler's
+  traits over two types; anonymous struct and union members; a
+  function template's name told from a type's. The first of libc++'s
+  functions compiled from its own body is `std::swap`
+  (`test/cpp/run/stdswap.cpp`), and the decision that made it possible:
+  a library header's functions are compiled as C++ has them, not
+  checked -- the safe part keeps to the program's own code, its own
+  templates' instances included. `std::vector<int>` reaches 43 loads and
+  instances (26 before) and stops in libc++'s compressed pair, on the
+  allocator's own `pointer` meta.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

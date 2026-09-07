@@ -1021,6 +1021,132 @@ libc++'s bodies use past that point, `std::pmr` and other namespace
 collisions (the flattening), a lambda pack capture, `\N{...}`, nested
 classes as types, `using` declarations, a friend's scope.
 
+**M6's fourteenth step (0.45): libc++'s first function compiled from its
+own body, `std::swap`.** THE TEMPLATE TEMPLATE PARAMETER, `template <class,
+class, class> class _Layout = __split_buffer_pointer_layout`: bound to a
+template's NAME, `tname(X)` (`cpp_tname_arg/3`: an atom, a namespace
+flattened away, another such parameter's binding passed on --
+`__split_buffer<_Tp, _Allocator, _Layout>`); `cpp_subst` turns
+`base(Q, [typedef(P)])` into the name and `tmpl(P, Args)` into `tmpl(X,
+Args)` (in a scoped path too), the key is the name, a specialization's
+pattern matches one (`cpp_match_one`), `f(H<T>)` deduces H from an
+instance (`cpp_match`'s template-id clause), and `ccl_skip_to_close`
+counts nested `<>` in the parameter's own list. `__split_buffer`'s base,
+`_Layout<__split_buffer<_Tp, _Allocator, _Layout>, _Tp, _Allocator>`
+(the CRTP through the parameter), instantiates; `test/cpp/run/ttp.cpp`.
+FUNCTION TEMPLATES AS C++ CHOOSES (`cpp_instantiate_function`): the
+candidates are every DEFINITION of the name in declaration order (a
+prototype is a `declaration` item; the registry is assertz -- the
+`reverse` from the global-list days put the last declared first); a
+signature holds when the arity fits (`cpp_arity_holds`: defaults, a
+pack), the explicit arguments bind, the parameters deduce, the defaults
+fill, the constraints hold, AND every class-typed parameter accepts its
+argument (`cpp_params_accept`: the class itself, an instance of the
+template, a class derived from it, else a class with a one-argument
+constructor; a scalar parameter takes no class without a conversion
+operator; an argument the inference cannot type passes) -- before, the
+first candidate whose parameters deduced was taken, `__swap_allocator(a1,
+a2, true_type)` for a `false_type`; a template-id parameter whose
+argument is no instance of the template, nor a base of the argument's
+class (`cpp_instance_or_base`), is `deduction_failed(N)`, no candidate --
+before, it bound nothing and the defaults filled: `swap(tuple<_Tp...> &,
+...)` held for two pointers with `_Tp` an empty pack; an ALIAS template's
+template-id (`__type_identity_t<_Tp> *`) is a non-deduced context, the
+alias substituted once `_Tp` is bound explicitly and the parameter
+checked then; of the candidates that hold, the FEWEST CONVERSIONS win
+(`'$cpp_conversions'`: a derived object to a base's reference, a value
+through a constructor), then the MOST SPECIALIZED (`cpp_fn_more_special`:
+Y's parameter types deduce from X's taken as arguments with X's own
+parameters opaque, `$opaque.P`), the first declared among equals; the
+trace prints `candidate(F, K, holds(Conv) | refused(Why))`;
+`test/cpp/run/overloads.cpp` (thirteen choices, clang++'s). THE TRAITS
+over two or more types are decided (`cpp_trait_n`: constructible,
+assignable, convertible, base_of, over the registry -- a scalar converts
+as C++ converts, a class through its constructors, conversion operators
+and bases; the nothrow forms are the plain ones, the trivial ones ask no
+user-written special member) and the rest of the one-type ones
+(`cpp_trait_of`: scalar, fundamental, object, empty, polymorphic,
+aggregate, trivially copyable, trivially destructible ...);
+`ccl_builtin_trait` is a FIXED list of the compiler's -- libc++ has
+functions in the same spelling (`__is_overaligned_for_new(__align)`),
+read as the calls they are. A DATA MEMBER's type is resolved under the
+class's own typedefs at registration (`cpp_member_types`: `pointer
+__begin_` is `int *`; the trace `member_type_unresolved`), so
+`this->__front_cap_` has the type a call deduces from. A static
+inherited from a base folds (`cpp_static_const` walks the bases:
+`is_move_constructible<T>::value` is `integral_constant`'s), and a static
+WITH its initializer in the class is its own definition, `linkonce`
+(`cpp_static_decls`; `ir_globals` spells `linkonce_odr global`) --
+`integral_constant::value` was the undefined symbol at the link. A
+conversion operator mangles `op.conv_<key>`. A type without a
+constructor direct-initialized, `_Tp __t(std::move(__x))`, `int n{}`,
+takes the value or the type's zero (`cpp_plain_init`). `std::move` of a
+value without owners is the value, through `cpp_expr(move(X))`, the one
+door. A namespace-qualified call, `std::swap(a, b)`, `std::swap<int>(a,
+b)`, resolves as the bare name would and never as a member. THE READER
+(version 35): a FUNCTION template's name is a template (`move<int>(x)`
+reads as a template-id) but no type (`'$ccl_fn_templates'`,
+`ccl_note_if_fn_template` at the definition, a summary's `ftemplate(N)`
+line, `ccl_qname_typish` excluding them): `_Tp __t(std::move(__x))` had
+read as a function declaration taking a `std::move`, the vexing parse
+C++ resolves by knowing what `std::move` is. THE AST BESIDE THE
+SUMMARY (the thirteenth step's open item): `<name>-<fold>.ast.pl` holds
+one clause per named item of the flattened header, `'$cpp_hdr_ast'(Name,
+Item)`, written by `ccl_ast_write` with the summary and consulted
+(`ensure_loaded/1` takes a two-megabyte clause in 0.2 s under `--local`,
+where `term_to_atom/2` fails past tens of KB a line) by `cpp_load_ast`
+when the include node is `file(_, summary, summary(F))`; `cpp_hdr_item/2`
+answers from the index and the file alike, so the second run of a
+program that instantiates a library template needs no flatten (0.8 s
+where the first took 8). THE LIBRARY'S FUNCTIONS ARE NOT CHECKED -- the
+decision this step took, for the owner to confirm or reverse: libc++'s
+bodies keep raw pointers by their own discipline (a vector's begin, end
+and capacity; a swap of two pointers through references), which the safe
+part refuses at every line (`a borrow stored where it cannot be
+followed`, swap's first statement); a function that comes from a library
+header -- an inline one, a lazy class's member, an instance of the
+header's template, whatever such a walk emits -- is `'$cpp_libfn'(Name)`
+(`cpp_as_lib/2` around the emissions, a template's origin `'$cpp_lib'(N)`
+from `cpp_hdr_load`) and the check skips it (`cpp_library_function/1` in
+`ck_items`); the program's own functions, its own templates' instances
+wherever they are instantiated from, are checked as always, and the
+lowering lowers both. THE PROBE (`scratchpad/probe.sh SRC HOME LOG
+SECS`): the HOME is REMOVED first -- twice a run showed no spend and
+`template_without_body(vector)` because a leftover summary was served
+and nothing reached the index -- and `test/config.sh` is sourced by a
+shell whose `$0` sits in `test/`, since it finds the checkout from `$0`.
+THE LAYOUT FORMS libc++ builds its containers from: an ANONYMOUS
+STRUCT member's members are the class's own and an anonymous UNION's are
+reached through the one member it becomes (`cpp_norm_members_`, a hop in
+`cpp_data_member`; libc++'s compressed pair is such a struct) --
+`test/cpp/run/anon.cpp`; `__builtin_offsetof` is decided from the layout
+the compiler already computes (`cpp_offsetof/4` over
+`ccl_members_layout`, a dotted path walked), which is how libc++ finds a
+type's data size, the offset of a `char` placed after it --
+`test/cpp/run/offsetof.cpp`; an ARRAY'S BOUND is an expression the
+desugaring must rewrite like any other (`cpp_array_bound/2` in
+`cpp_type`), since `char __padding_[sizeof(_ToPad) -
+__datasizeof_v<_ToPad>]` needs its variable template instantiated and
+folded -- it was passed through untouched and the array came out empty;
+and a CLASS'S OWN TYPEDEF now wins over a namespace's of the same name
+inside the class, as C++ looks names up (the `\+ ccl_typedef_of(N, _)`
+guard in `cpp_type` inverted that order) -- `test/cpp/run/padding.cpp`.
+FOUND ON THE WAY, older than this step: `malloc(sizeof(T))` did not
+compile in C++ mode at all. libc++ spells `size_t` as
+`decltype(sizeof(int))`, the lowering has no `decltype`, and resolving it
+through `ccl_type_of` turns in a circle, since the type of a sizeof IS
+`size_t`: `ccl_resolve_base` answers a `decltype` of a sizeof with the
+concrete `unsigned long` and any other with the expression's type
+(`ccl_sizeof_expr/1`, cpp only). Gated by `test/cpp/run/stdswap.cpp`: `<utility>`'s `std::swap` over
+pointers and over ints, its result type through `__enable_if_t`,
+`is_move_constructible` and `is_move_assignable`, C++'s numbers on the
+first run and on the summary-served one. `std::vector<int>` now reaches
+43 loads and instances (26 at 0.44) and stops inside libc++'s compressed
+pair, `_FirstPaddingByte<pointer>`: the layout class's own `pointer`,
+`typename __alloc_traits::pointer`, does not resolve through
+`allocator_traits`'s own meta, so the instance is keyed by the unresolved
+name and has no members -- the allocator machinery is the next stretch.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

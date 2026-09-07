@@ -199,7 +199,7 @@ ccl_ensure_globals :-
       nb_setval('$ccl_scope', []), nb_setval('$ccl_gscope', []), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []), nb_setval('$ccl_enums', []), ccl_tables_changed,
       nb_setval('$ccl_expansions', []), nb_setval('$ccl_incpath', none), nb_setval('$ccl_kb_ready', no), nb_setval('$ccl_reading', []),
       nb_setval('$ccl_macro_files', []), nb_setval('$ccl_std_macros', none), nb_setval('$ccl_gensym', 0), nb_setval('$ccl_unit_paths', []),
-      nb_setval('$ccl_lang', c), nb_setval('$ccl_lang_forced', none), nb_setval('$ccl_class', []), nb_setval('$ccl_inc_kind', local), nb_setval('$ccl_hash', line),
+      nb_setval('$ccl_lang', c), nb_setval('$ccl_lang_forced', none), nb_setval('$ccl_fn_templates', []), nb_setval('$ccl_class', []), nb_setval('$ccl_inc_kind', local), nb_setval('$ccl_hash', line),
       nb_setval('$ccl_targ', 0), nb_setval('$ccl_tmpl_depth', 0),
       ( catch(nb_getval('$ccl_std', _), _, fail) -> true ; nb_setval('$ccl_std', 17) ),
       nb_setval('$ccl_templates', [vector, map, set, unordered_map, unordered_set, list, deque, array, pair, tuple, optional, variant,
@@ -365,7 +365,8 @@ ccl_read_unit(Path, How, Unit) :-
     ccl_sum_file(Path, F),
     (   ccl_sum_valid(F) -> How = summary, Unit = summary(F)
     ;   ccl_pp_parse(Path, U1, Info1, Files), How = preprocessed, ccl_partial(U1, Info1, Unit),
-        ( catch(ccl_sum_write(F, Path, Files, U1), _, fail) -> true ; true ) ).
+        ( catch(ccl_sum_write(F, Path, Files, U1), _, fail) -> true ; true ),
+        ( catch(ccl_ast_write(F, U1), _, fail) -> true ; true ) ).
 
 %% ---- the summary cache: a C++ library header, once ----------------------------
 %% What a header contributes downstream is its declarations -- the names and
@@ -405,6 +406,23 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
     ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
     ccl_pp_macros(Ms), ccl_sum_mnames(Ms, Out8), ccl_sum_terms_out(Ms, Out9),   % the macros the run defined, for the user's file, beside it
     ccl_mac_file(F, M), append(Out8, Out9, MCodes), write_file_from_codes(M, MCodes).
+%% THE AST BESIDE THE SUMMARY: the flattened header's named items, one clause each -- '$cpp_hdr_ast'(Name, Item) in
+%% <name>-<fold>.ast.pl -- consulted by the desugaring when the include is served from the summary, so a program that
+%% instantiates a library template needs no second flatten (two minutes for <vector>): what the summary keeps for the
+%% parser and the tables, this keeps for the templates. A clause file, not a term a line: ensure_loaded/1 takes a
+%% two-megabyte clause in a fraction of a second under --local, where term_to_atom/2 fails past tens of KB a line
+%% (cicili++ never runs over a store, where such a clause would be refused). The names are the desugaring's index
+%% names (cpp_index_name/2); an item with none is never asked for by name and is left out.
+ccl_ast_file(F, A) :- atom_length(F, N), N1 is N - 4, sub_atom(F, 0, N1, 4, B), atom_concat(B, '.ast.pl', A).
+ccl_ast_write(F, unit(Is)) :- ccl_ast_file(F, A), ccl_flat_items(Is, Flat), ccl_ast_lines(Flat, Codes), write_file_from_codes(A, Codes).
+ccl_flat_items([], []).
+ccl_flat_items([namespace(_, _, Js)|Is], Flat) :- !, ccl_flat_items(Js, F1), ccl_flat_items(Is, F2), append(F1, F2, Flat).
+ccl_flat_items([extern_c(_, Js)|Is], Flat) :- !, ccl_flat_items(Js, F1), ccl_flat_items(Is, F2), append(F1, F2, Flat).
+ccl_flat_items([I|Is], [I|Flat]) :- ccl_flat_items(Is, Flat).
+ccl_ast_lines([], []).
+ccl_ast_lines([I|Is], Out) :-
+    ( catch(cpp_index_name(I, N), _, fail) -> term_to_atom('$cpp_hdr_ast'(N, I), A), atom_codes(A, Cs), append(Cs, [0'., 10], L1) ; L1 = [] ),
+    ccl_ast_lines(Is, O2), append(L1, O2, Out).
 ccl_sum_mnames([], []) :- !.
 ccl_sum_mnames(Ms, Out) :- ccl_sum_mnames_(Ms, 100, Ns, Rest), ccl_sum_terms_out([mnames(Ns)], O1), ccl_sum_mnames(Rest, O2), append(O1, O2, Out).
 ccl_sum_mnames_([], _, [], []) :- !.
@@ -423,6 +441,7 @@ ccl_sum_enums([N-V|Es], Out) :- ccl_sum_terms_out([enum(N, V)], O1), ccl_sum_enu
 ccl_sum_names([], []).
 ccl_sum_names([N|Ns], Out) :- ccl_sum_terms_out([tname(N)], O1), ccl_sum_names(Ns, O2), append(O1, O2, Out).
 ccl_sum_tmpls([], []).
+ccl_sum_tmpls([fn(N)|Ns], Out) :- !, ccl_sum_terms_out([ftemplate(N)], O1), ccl_sum_tmpls(Ns, O2), append(O1, O2, Out).
 ccl_sum_tmpls([N|Ns], Out) :- ccl_sum_terms_out([template(N)], O1), ccl_sum_tmpls(Ns, O2), append(O1, O2, Out).
 %% a class's members without their bodies: what a type needs of them
 ccl_sum_slim(none, none) :- !.
@@ -439,7 +458,9 @@ ccl_concat_codes([C|Cs], Out) :- ccl_concat_codes(Cs, O2), append(C, O2, Out).
 ccl_tag_names([], []).
 ccl_tag_names([Tag-_|Gs], Ns) :- ccl_tag_names(Gs, Ns1), ( atom(Tag), Tag \== anon -> Ns = [Tag|Ns1] ; Ns = Ns1 ).
 ccl_items_templates([], []).
-ccl_items_templates([template(_, _, I)|Is], Ns) :- !, ccl_items_templates(Is, Ns1), ( ccl_template_name(I, N), N \== none -> Ns = [N|Ns1] ; Ns = Ns1 ).
+ccl_items_templates([template(_, _, I)|Is], Ns) :- !, ccl_items_templates(Is, Ns1),
+    (   ccl_template_name(I, N), N \== none -> ( ( I = function(_, _, _, _, _, _, _) ; I = declaration(_, _, _, _) ) -> Ns = [fn(N)|Ns1] ; Ns = [N|Ns1] )   % fn(N): a function or variable template, no type
+    ;   Ns = Ns1 ).
 ccl_items_templates([namespace(_, _, Js)|Is], Ns) :- !, ccl_items_templates(Js, N1), ccl_items_templates(Is, N2), append(N1, N2, Ns).
 ccl_items_templates([extern_c(_, Js)|Is], Ns) :- !, ccl_items_templates(Js, N1), ccl_items_templates(Is, N2), append(N1, N2, Ns).
 ccl_items_templates([_|Is], Ns) :- ccl_items_templates(Is, Ns).
@@ -482,7 +503,8 @@ ccl_sum_load_nocache(F, D, T, G, E, Tmpls, Names) :-
     ccl_sum_terms(F, Terms),
     findall(N-Ty, member(decl(N, Ty), Terms), D), findall(N-Ty, member(typedef(N, Ty), Terms), T),
     findall(Tag-Ms, member(tag(Tag, Ms), Terms), G), findall(N-V, member(enum(N, V), Terms), E),
-    findall(N, member(template(N), Terms), Tmpls), findall(N, member(tname(N), Terms), Names).
+    findall(N, member(template(N), Terms), Tmpls0), findall(fn(N), member(ftemplate(N), Terms), Tmpls1), append(Tmpls0, Tmpls1, Tmpls),
+    findall(N, member(tname(N), Terms), Names).
 %% a summary in the symbol table, as ccl_items_note puts a unit there
 ccl_sum_note(F) :-
     ccl_sum_load(F, D, T, G, E, Tmpls, Names),
@@ -494,7 +516,12 @@ ccl_sum_note(F) :-
 %% a summary's names into the templates and the Env in ONE read and one write
 %% each: one at a time, every addition copied the whole list (nb_setval/2),
 %% 190 names against 500 -- 15 ms of every rebuild of the symbol table
-ccl_note_templates(Ns) :- nb_getval('$ccl_templates', Ts), ccl_new_names(Ns, Ts, New), ( New == [] -> true ; append(New, Ts, Ts1), nb_setval('$ccl_templates', Ts1) ).
+ccl_note_templates(Ns0) :- ccl_split_fn_templates(Ns0, Ns, Fns),
+    nb_getval('$ccl_templates', Ts), ccl_new_names(Ns, Ts, New), ( New == [] -> true ; append(New, Ts, Ts1), nb_setval('$ccl_templates', Ts1) ),
+    nb_getval('$ccl_fn_templates', Fs), ccl_new_names(Fns, Fs, NewF), ( NewF == [] -> true ; append(NewF, Fs, Fs1), nb_setval('$ccl_fn_templates', Fs1) ).
+ccl_split_fn_templates([], [], []).
+ccl_split_fn_templates([fn(N)|Ns], [N|Ps], [N|Fs]) :- !, ccl_split_fn_templates(Ns, Ps, Fs).
+ccl_split_fn_templates([N|Ns], [N|Ps], Fs) :- ccl_split_fn_templates(Ns, Ps, Fs).
 ccl_add_envs(Ns) :- nb_getval('$ccl_env', G), ccl_new_names(Ns, G, New), ( New == [] -> true ; append(New, G, G1), nb_setval('$ccl_env', G1) ).
 ccl_new_names([], _, []).
 ccl_new_names([N|Ns], Have, New) :- ( atom(N), \+ memberchk(N, Have) -> New = [N|New1] ; New = New1 ), ccl_new_names(Ns, Have, New1).
