@@ -35,7 +35,7 @@ dr_drive(Inputs, Options) :-
         catch(cicili_link(Objects, LinkFlags, Out), E, dr_report(Out, E)) ),
     nb_getval('$dr_errors', N1),
     ( N1 =:= 0 -> write('cicili: ok') ; write('cicili: '), write(N1), write(' error(s)') ), nl.
-dr_no_link(O) :- ( memberchk(compile_only, O) ; memberchk(assembly, O) ; memberchk(emit_llvm, O) ; memberchk(syntax_only, O) ; memberchk(ast, O) ), !.
+dr_no_link(O) :- ( memberchk(compile_only, O) ; memberchk(assembly, O) ; memberchk(emit_llvm, O) ; memberchk(syntax_only, O) ; memberchk(ast, O) ; memberchk(preprocess, O) ), !.
 
 dr_inputs([], _, _, []).
 dr_inputs([F|Fs], Options, Flags, Objects) :-
@@ -50,6 +50,9 @@ dr_ext(F, E) :- atom_concat('.', E, Dot), sub_atom(F, _, _, 0, Dot).
 dr_cpp_ext(F) :- member(E, [cpp, cc, cxx, 'C']), dr_ext(F, E), !.
 
 %% a .c: read (headers, macros, := ...), the safe part, the IR, then what the options ask
+dr_c(F, Options, _, Objs, Objs) :- memberchk(preprocess, Options), !,                   % -E: the flattened text, cocolog's preprocessor (no clang)
+    dr_say(['preprocess ', F]),
+    (   catch(dr_preprocess(F, Options), E, (dr_report(F, E), fail)) -> true ; true ).
 dr_c(F, Options, Flags, Objs, Objs1) :-
     dr_say(['read ', F]), nb_setval('$dr_expansions', []),
     (   catch(cicili_ast(F, AST), E1, (dr_report(F, E1), fail))
@@ -58,9 +61,15 @@ dr_c(F, Options, Flags, Objs, Objs1) :-
         ;   memberchk(syntax_only, Options), ccl_lang(cpp) -> Objs = Objs1      % M5 is the reader; C++'s check and lowering are M6
         ;   (   catch(dr_ir(F, AST, IR), E2, (dr_report(F, E2), fail))
             ->  dr_emit(F, IR, Options, Flags, Objs, Objs1)
-            ;   Objs = Objs1 ) )
+            ;   ( nb_getval('$dr_errors', NE), NE =:= 0 -> dr_error(F, 0, ['the check or the lowering failed without saying why']) ; true ), Objs = Objs1 ) )
     ;   Objs = Objs1 ).
 
+%% the file through the preprocessor standalone -- its includes pulled in, every macro
+%% expanded -- spelled back as text (ccl_pp_spell/2): to -o FILE, else the answer itself
+dr_preprocess(F, Options) :-
+    ccl_ensure_globals, ccl_set_lang(F), ccl_pp_file(F, Tokens, _), ccl_pp_spell(Tokens, Codes),
+    (   memberchk(out(O), Options) -> write_file_from_codes(O, Codes)
+    ;   atom_codes(A, Codes), write(A) ).
 %% ---- the IR beside the units in the store (M4) ----------------------------------------
 %% A unit's IR is kept under a predicate of its own, '$ccl_ir:<Path>'(Index,
 %% Chunk) -- chunks of 3500 characters, well under the store's clause budget

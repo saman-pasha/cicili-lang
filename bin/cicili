@@ -4,6 +4,7 @@
 #   cicili prog.c -o prog            read, check, lower, compile, link -> prog (a.out without -o)
 #   cicili -c prog.c                 -> prog.o          cicili -S prog.c        -> prog.s
 #   cicili -emit-llvm -c prog.c      -> prog.ll         cicili -fsyntax-only prog.c
+#   cicili -E prog.c                 -> the preprocessed text (cocolog's preprocessor), -o FILE to a file
 #   cicili -O2 a.c b.c util.o -lm -o app               cicili -shared -O1 lib.c -o lib.dylib
 #   cicili -I include -I ../h prog.c                   cicili -ast-dump prog.c
 #   cicili --version                                   cicili -v ... (say each step)
@@ -49,6 +50,7 @@ while [ $# -gt 0 ]; do
     -S) opts="$opts assembly," ;;
     -emit-llvm) opts="$opts emit_llvm," ;;
     -fsyntax-only) opts="$opts syntax_only," ;;
+    -E) opts="$opts preprocess," ;;
     -ast-dump) opts="$opts ast," ;;
     -v) opts="$opts verbose,"; verbose=1 ;;
     --no-kb) store="--local" ;;
@@ -76,7 +78,10 @@ inputs="[${inputs%,}]"; opts="[${opts%,}]"
 case "$store" in --embed*) kb_prepare "$KB" ;; esac
 res=$("$C" $store query "use_module(library(cicili)), ccl_drive($inputs, $opts)" 2>&1)
 # one pass over the answer: diagnostics on stderr, as clang; `cicili: ...' and `unit(...)' lines on stdout
-printf '%s\n' "$res" | awk '/: error: |: note: / { print > "/dev/stderr"; next } /^cicili: ok$/ { next } /^cicili: |^unit\(/ { print }'
+case "$opts" in
+  *preprocess*) printf '%s\n' "$res" | awk '/: error: |: note: / { print > "/dev/stderr"; next } /^cicili: |^ +[0-9]+\. use_module|answer\(s\)\.$/ { next } { print }' ;;   # -E: the text itself
+  *) printf '%s\n' "$res" | awk '/: error: |: note: / { print > "/dev/stderr"; next } /^cicili: ok$/ { next } /^cicili: |^unit\(/ { print }' ;;
+esac
 case "$res" in
   *"cicili: ok"*) exit 0 ;;
   *"cicili: "[0-9]*" error"*) exit 1 ;;

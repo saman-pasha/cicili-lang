@@ -50,8 +50,11 @@ test/c/safe/             programs the check must REFUSE, each with the error its
 bin/cicili               the command: clang's arguments, one cocolog run over ~/.cicili/KB (ccl_drive/2);
                          six forks, since each is a floor (the findings)
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
-test/cpp.pl, cpp.sh      the C++ reader's gate: 21 checks over test/cpp/*.cpp, the six C++ files of Cicili's
+test/cpp.pl, cpp.sh      the C++ reader's gate: 33 checks over test/cpp/*.cpp, the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector> and <string> flattened and read WHOLE, under a fresh HOME
+test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
+                         file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
                          and the IR cache (dr_ir/3: a file's IR beside its unit in the store)
 test/driver.sh           the command's gate; test/c/link and test/c/inc its fixtures
@@ -856,6 +859,167 @@ type on a class's method (CRTP: `template` inside a class), `static
 operator[]`, `\N{...}`, the extended floating-point suffixes (`1.0f16`),
 `#warning` printed, `[[assume]]` told to LLVM, trailing whitespace
 before a line splice, `consteval` at compile time, modules; C++26's forms.
+
+**M6's thirteenth step (0.44): the road to libc++, its first stretch.**
+FOUND FIRST: the reader had never read a libc++ header -- it stopped at
+`<vector>`'s first item (a conversion operator) and `ccl_read_unit`
+takes a PARTIAL read silently (`partial(U, line(L), near(F))`), so every
+library summary held nothing but macros. THE LOOP: `cicili++ -E f.cpp -o
+flat.cpp` (clang's flag; `dr_preprocess`: `ccl_pp_file/3` standalone,
+spelled back by `ccl_pp_spell/2` in ccl_pp -- a token a word, a string
+with `\NNN` escapes, a line per source line, an infinite float as
+`1e999`), then `sh test/census.sh flat.cpp` (test/census.pl: the read
+through `cicili_ast/3`, the stop line, the farthest line and the tokens
+around both, then a histogram of the AST's functors with the template
+shapes apart) -- a few seconds a turn where a flatten is twenty. THE
+READER (version 34 still; every rule guarded by `ccl_cpp`): a
+conversion operator `operator T()` (`ccl_conv_type`: specifiers and
+pointers only, `int ()` would read as a function type) as
+`method(L, Qs, T, operator(conv(T)), [], false, Body)`; class-scope
+`typedef` and `using x = T` as `typedef` members whose names join the
+global env; `ccl_sto_pick/2` chooses the deciding storage word (`static
+inline constexpr` lost `static`); attributes anywhere (`[[...]]` before
+an item, a member, among the prefix words, after a lambda's parameters,
+`alignas(...)`); packs: `tparam(pack, N, D)`, `tparam(vpack(T), N,
+none)`, `param(pack(T), N)`, `pack(X)` for an expansion in a template
+argument, a call argument, a base, an initializer item, a constructor
+initializer, `sizeof_pack(N)`, `fold(Op, dots, E)` / `fold(Op, E,
+dots)` / `fold(Op, A, dots, B)`; a template argument is a full
+expression (`ccl_targ_expr`: `'$ccl_targ'` counts the depth and
+`ccl_op_open/1` makes `>` and `>>` closers, parentheses reset it); a
+template's parameters are types for the item's whole text
+(`ccl_tparam` adds each to the global env as read, `ccl_tparams_enter/3`
+and `ccl_tparams_leave/1` around the item, `'$ccl_tmpl_depth'` making
+the item's own name a template inside its body, `ccl_note_if_template`);
+`struct X<Args>` is `class(K, tmpl(X, Args), Bs, Ms)` (`ccl_class_targs`;
+the noters skip a compound tag), a declarator `X<T>::f`, `v<T>`,
+`operator+<...>` is `name(Q)` where a declarator may end
+(`ccl_declarator_id_end`: `(is_x<T>::value && y)` is no cast); `typename
+T::x`, `X<T>::template f<U>`, `decltype(e)` as a name's segment and
+`decltype(auto)`; the compiler's traits: `builtin_type(N, Args)` for the
+type-yielding ones (`ccl_builtin_type_name`: a fixed list, since the
+SDK's `(__istype(c, m))` is a call) and `call(id('__is_same'), [type(T),
+type(U)])` for the tests (`ccl_builtin_trait`); `noexcept(e)`,
+`alignof(T)`, `void()`, `int{}`, `typename X::y()` as `construct(T, As)`,
+`::new`, `::operator new`, `p.operator->()`, `operator""sv`, `f(...)
+= delete` at file scope, a member template's name noted, `template <int
+&...>`, `template <class...> class F = X`, `if (T x = e)` and `while` as
+a block of the declaration and the test, `return { a, b }`, `struct I
+{...};` inside a class as `nested(Base)`, `friend(L, Ms)` with the
+member read (a friend's body has semicolons), `extern template ...;`
+and `template class X<char>;` as `extern_template(L, I)` and
+`explicit_instantiation(L, I)`, a deduction guide as
+`deduction_guide(L, N, Ps, T)`, an out-of-class `X<T>::X(...)` with
+`inline` and attributes before it (`ccl_class_base/2`), an unnamed
+template parameter, `typename T::x = 0` told from a type parameter
+(`ccl_tparam_end`), the threaded env MERGED into the global one at every
+item (`ccl_env_sync/2`: before, a typedef's item replaced the global env
+and dropped every class name added on the side). THE VEXING PARSE: `S
+b(std::move(a));` had read as a function declaration; a qualified name
+is a type where its last name is known as one (`ccl_qname_typish`) or a
+declarator follows (`ccl_declarator_follows`: `ns::what &w`), an
+expression where `(` does. BOTH `<vector>` AND `<string>` READ WHOLE
+(441 and 434 items; `test/libcxx.sh`, a fresh HOME so nothing is served
+from a summary, about a minute).
+
+THE DESUGARING (`library/ccl_cpp.pl`), on the program's own classes:
+`test/cpp/run/generic.cpp`, `copies.cpp`, `bindings.cpp`. Packs:
+`cpp_bind_targs_` gives a pack parameter `P-pack(Rest)`; `cpp_subst`
+expands `pack(X)` wherever a list holds it (`cpp_subst_elems`: an
+argument, a template argument, `base(A, pack(Q))`, `item(D, pack(V))`,
+`param(pack(T), N)` into `N$1..N$k` with `N-vpack([id(N$1) ...])` bound
+by `cpp_param_packs` for the body) -- ONLY for packs that are bound
+(`cpp_pack_names`), so a member template's own expansion inside an
+instantiated class waits for its own instantiation; folds
+(`cpp_fold_right/left`, empty ones as the standard has them);
+`sizeof_pack`; a trailing parameter pack deduced element by element
+(`cpp_deduce_pack`); `cpp_type_key(pack(L))` joins the keys. SPECIALIZATIONS:
+`'$cpp_spec'(N, TPs, Pattern, Item)` from `cpp_spec_name`;
+`cpp_instantiate_class_` binds the primary's parameters (defaults
+merged from the other declarations of the name, `cpp_merge_defaults`,
+their parameters renamed), names the instance, records
+`'$cpp_inst'(Name, inst(N, FullArgs))`, then `cpp_pick_spec`: every
+specialization whose pattern matches (`cpp_match_pattern`: a type
+parameter binds, a value parameter compares by `ccl_const_eval`, a
+template-id pattern matches an instance of that template through its
+recorded arguments, `cpp_instance_of`), the most specialized of them
+(`cpp_more_special`: X's pattern as arguments matches Y's); the
+injected class name is bound to the instance (`Self`). FUNCTION
+TEMPLATES are candidate sets: `cpp_instantiate_function` tries each in
+declaration order, `cpp_signature_holds` inside a `catch` as a
+condition -- a `cpp_refuse` in binding, deduction or the resolution of a
+value parameter's type (`enable_if<c, int>::type`, no `type` member:
+`no_member_type`) is no candidate (SFINAE); the first candidate's
+refusal is the diagnostic when none fits (`'$cpp_first_refusal'`);
+overloads get `F.cK` in their instance names. MEMBER TEMPLATES:
+`'$cpp_mt'(C, Key, TPs, M)` from `cpp_register_class_extras`;
+`cpp_method` falls back to `cpp_member_template_call` (deduced from the
+arguments, or `o.f<T>(...)` given), `cpp_ctor` to
+`cpp_member_template_ctor`; the instance is declared and emitted at the
+call. DEPENDENT NAMES: `'$cpp_class_types'` (a class's typedefs, from
+its `typedef` members) answers `cpp_type(typedef(scoped(Path, N)))`
+through `cpp_scope_class` (a class, an instance, a namespace prefix
+skipped) and REFUSES `no_member_type` when the class has no such type;
+`cpp_subst` substitutes inside a scoped name's path (`C::value_type`
+with C bound); a class's own typedef names resolve inside its members
+through `'$cpp_class_ctx'` (`cpp_in_class`, set while a class is
+declared, walked or emitted); `cpp_targ_value` tells `X<T>::value` (a
+static member) from `X<T>::type` by what the class has; `X<T>::f(args)`
+calls a static method with a null this; `X<T>::value` folds to the
+static's constant (`'$cpp_static_inits'`); `decltype(e)` types the
+expression desugared; `__is_same` and a dozen traits are decided
+(`cpp_trait`, `cpp_builtin_type`). AUTO RESULTS of methods are deduced
+through the desugaring (`cpp_method_ret`: the first return desugared,
+then typed -- the inference knows no instance's call). COPIES: a
+constructor from the class itself (`cpp_copy_ctor(C, ref | rref)`)
+makes an lvalue initializer construct through it and `move(x)` through
+the move one, the argument x itself (a reference parameter takes the
+address, `cpp_ref_args_of` strips `move` there); `cpp_arg_fit` scores
+the value category (`cpp_category_mismatch`: an rvalue reference binds
+no lvalue, a plain one no rvalue; an rvalue prefers `C &&`); `a = b` goes
+to `operator=`; a by-value parameter of a class with a destructor takes
+`cpp_copy_temp` at the call (the copy constructor into a temporary) and
+the callee destroys it (`cpp_param_defers`, a defer first in the body);
+`return x` of such a local moves out into a temporary; a prvalue moves
+bitwise (C++17 elides that copy). THE CHECK: `r.f` with r a reference
+is keyed `r->f` (`ck_path`), a conditional returns either arm
+(`ck_no_escape`), `&c.f` borrows what `&c` does. BINDINGS: `auto [a, b]
+= e` is Cicili's pattern by another spelling (`ccl_destructure`, an
+array's elements by index, `ccl_bind_refs` for `auto &`). A braced
+temporary of a plain struct is a compound literal; deleted and defaulted
+members are dropped at `cpp_norm_members`, a pure one marked; an
+abstract class registers and is refused only where constructed
+(`cpp_not_abstract`). THE LIBRARY: a flattened header's items are
+indexed by name into FACTS, `'$cpp_hdr'(Name, Item)` (`cpp_index_header`;
+`cpp_hdr_load/1` registers every item of a name on the first miss of
+`cpp_class`, `cpp_template`, `cpp_class_template`); a header's class is
+LAZY (`'$cpp_lazy'`: the struct emitted, `cpp_use_member` emitting a
+member when `cpp_method`, `cpp_ctor` or `cpp_own_dtor` first names it);
+a header's inline function is emitted linkonce when loaded; an alias
+template instantiates as its type (`cpp_instantiate_type`; the class
+definition wins a name over `std::pmr::vector`, an alias sharing the
+flattened name, and alias and variable templates stay out of the C
+typedef table, `ccl_collect_item`); the registries that hold BODIES
+are facts too (`'$cpp_cls'`, `'$cpp_tmpl'`, `'$cpp_spec'`, `'$cpp_mt'`,
+`'$cpp_inst'`, `'$cpp_out'`, reset by `cpp_reset/1`): as lists in
+globals they were copied at every lookup, megabytes each once libc++
+was in them. THE BUDGET: `cpp_spend/1` counts loads and instances,
+`cpp_deeper/1` the nesting; past 3000 or 120 the compile stops with
+`instantiation_budget` / `instantiation_depth`, since one unbounded run
+of `std::vector<int>` took the machine's memory (the owner saw it);
+`'$cpp_trace'` prints each spend for the loop. `std::vector<int> v;`
+loads vector, allocator, allocator_traits, numeric_limits,
+initializer_list, `__wrap_iter`, `__vector_layout` and `__split_buffer`
+(26 loads and instances, two minutes: the declaration of a library
+class's hundred methods resolves every dependent type in them, a road
+of its own to profile) and stops at `template_without_body('_Layout')`:
+a template template parameter (`template <class, class, class> class
+_Layout`) bound to a template's name and used as one, the next form. NOT DONE: the AST cache beside a summary (a program that
+instantiates a library template needs the header read again, twenty
+seconds: `template_without_body` on a summary-served run), the forms
+libc++'s bodies use past that point, `std::pmr` and other namespace
+collisions (the flattening), a lambda pack capture, `\N{...}`, nested
+classes as types, `using` declarations, a friend's scope.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

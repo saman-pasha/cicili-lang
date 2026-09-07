@@ -141,7 +141,7 @@ c22 :- check('template <typename T> concept Number = requires (T a, T b) { a + b
       member(expr(bin('+', id(a), id(b))), Rs), member(compound(bin('<', id(a), id(b)), id('Boolean')), Rs),
       member(template(_, _, concept(_, 'Boolean', requires_expr([param(_, x)], [expr(not(id(x)))]))), Is) )).
 c23 :- check('template <typename T> requires Number<T> T twice(T x): the requires-clause kept with the parameters',
-    ( unit('cxx20.cpp', unit(Is)), member(template(_, [tparam(type, 'T', none), requires(tmpl('Number', [id('T')]))], function(_, _, _, twice, _, _, _)), Is) )).
+    ( unit('cxx20.cpp', unit(Is)), member(template(_, [tparam(type, 'T', none), requires(tmpl('Number', [base([], [typedef('T')])]))], function(_, _, _, twice, _, _, _)), Is) )).
 c24 :- check('(a <=> b) < 0: the three-way comparison, below the relational; consteval, constinit and char8_t are specifiers',
     ( fn_body('cxx20.cpp', order, [return(_, cond(bin('<', bin('<=>', id(a), id(b)), int(0)), _, _))]),
       unit('cxx20.cpp', unit(Is)), member(function(_, _, base([consteval], [int]), cube, _, _, _), Is),

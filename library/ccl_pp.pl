@@ -1093,3 +1093,39 @@ pp_predef('__cpp_range_based_for', cpp23, '202211L').
 pp_predef('__cpp_size_t_suffix', cpp23, '202011L').
 pp_predef('__cplusplus', cpp26, '202400L').
 pp_predef('__cpp_constexpr', cpp26, '202406L').
+
+%% ---- -E: the flattened stream spelled back as text ------------------------------
+%% ccl_pp_spell(+Tokens, -Codes): one token after another, a space between, a
+%% newline where the line changes (blank lines where lines were skipped, up to
+%% three, so the text keeps some of the shape); a string with its escapes,
+%% a char as its code, a number as its value with its suffix
+ccl_pp_spell(Tokens, Codes) :- ccl_pp_spell_(Tokens, 0, Codes).
+ccl_pp_spell_([], _, [10]).
+ccl_pp_spell_([tok(K, V, L)|Ts], L0, Codes) :-
+    ( L =:= L0 -> Codes = [32|C1] ; L0 =:= 0 -> Codes = C1 ; L - L0 > 3 -> Codes = [10, 10, 10|C1] ; L - L0 =:= 3 -> Codes = [10, 10|C1] ; Codes = [10|C1] ),   % a smaller line: another file begins
+    ccl_pp_spell_tok(K, V, C1, C2), ccl_pp_spell_(Ts, L, C2).
+ccl_pp_spell_tok(str, Cs, [34|Out], Rest) :- !, ccl_pp_spell_str(Cs, Out, [34|Rest]).
+ccl_pp_spell_tok(chr, C, [39|Out], Rest) :- !, ccl_pp_spell_str([C], Out, [39|Rest]).
+ccl_pp_spell_tok(uint, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'u|Rest], Out).
+ccl_pp_spell_tok(long, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'l|Rest], Out).
+ccl_pp_spell_tok(ulong, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'u, 0'l|Rest], Out).
+ccl_pp_spell_tok(pp, A, [35|Out], Rest) :- !, atom_codes(A, Cs), append(Cs, Rest, Out).
+ccl_pp_spell_tok(cocolog, A, Out, Rest) :- !, atom_codes('#cocolog', H), atom_codes(A, Cs), atom_codes('#end', E), append(H, [10|Cs], O1), append(O1, [10|E], O2), append(O2, Rest, Out).
+ccl_pp_spell_tok(float, F, Out, Rest) :- F > 1.0e308, !, atom_codes('1e999', Cs), append(Cs, Rest, Out).       % past double (a long double literal): infinite again when read
+ccl_pp_spell_tok(float, F, Out, Rest) :- F < -1.0e308, !, atom_codes('-1e999', Cs), append(Cs, Rest, Out).
+ccl_pp_spell_tok(_, V, Out, Rest) :- ( atom(V) -> atom_codes(V, Cs) ; number_codes(V, Cs) ), append(Cs, Rest, Out).
+ccl_pp_spell_str([], R, R).
+ccl_pp_spell_str([C|Cs], Out, R) :- ccl_pp_spell_chr(C, Out, O1), ccl_pp_spell_str(Cs, O1, R).
+ccl_pp_spell_chr(34, [92, 34|R], R) :- !.
+ccl_pp_spell_chr(39, [92, 39|R], R) :- !.
+ccl_pp_spell_chr(92, [92, 92|R], R) :- !.
+ccl_pp_spell_chr(10, [92, 0'n|R], R) :- !.
+ccl_pp_spell_chr(9, [92, 0't|R], R) :- !.
+ccl_pp_spell_chr(C, [C|R], R) :- C >= 32, C < 127, !.
+ccl_pp_spell_chr(C, [92, O1, O2, O3|R], R) :- C < 256, !, O1 is 0'0 + C // 64, O2 is 0'0 + (C // 8) mod 8, O3 is 0'0 + C mod 8.   % \NNN: three octal digits, which no digit after can extend
+ccl_pp_spell_chr(C, Out, R) :- atom_codes('\\u{', H), ccl_pp_hexn(C, Hs), append(H, Hs, O1), append(O1, [125|R], Out).                     % a code point: \u{...}
+ccl_pp_hexn(0, [0'0]) :- !.
+ccl_pp_hexn(C, Hs) :- ccl_pp_hexn_(C, [], Hs).
+ccl_pp_hexn_(0, Acc, Acc) :- !.
+ccl_pp_hexn_(C, Acc, Hs) :- D is C mod 16, C1 is C // 16, ccl_pp_hexd(D, H), ccl_pp_hexn_(C1, [H|Acc], Hs).
+ccl_pp_hexd(D, H) :- ( D < 10 -> H is 0'0 + D ; H is 0'a + D - 10 ).

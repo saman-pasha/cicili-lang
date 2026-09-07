@@ -130,6 +130,51 @@ what runs today.
   reaches the passes now (it did not, in C either). `cxx23.cpp` built
   at `-std=c++23`; `this auto` on a class's method refused by name.
   GREEN.
+  **The thirteenth step DONE: the road to libc++, its first
+  stretch.** THE READER READS libc++ WHOLE: `<vector>` (441 items) and
+  `<string>` (434), flattened by cocolog's preprocessor -- before this
+  step it stopped at their first item, a conversion operator, and every
+  library header had been an empty summary. What that took: conversion
+  operators, class-scope typedefs and aliases (known to the members
+  after them), `static inline` members, parameter packs (`class...
+  Ts`, `Ts... args`, `sizeof...`, `args...` in every list, fold
+  expressions), partial and explicit specializations (`struct X<T *>`,
+  `template <> struct X<int>`, `v<int> = true`), member templates and
+  `friend` definitions, `typename T::x` and `X<T>::template f<U>`,
+  `decltype` everywhere (a name's segment, `decltype(auto)`), the
+  compiler's type traits as types and as tests (`__remove_cv(T)`,
+  `__is_same(T, U)`), `noexcept(e)`, `alignof`, `operator""sv`, deduction
+  guides, explicit instantiations, `::operator new`, `if (T x = e)`,
+  `static_assert` at every level, and the vexing parse decided by
+  whether a qualified name is known as a type. **clang's `-E`** is
+  accepted: the flattened text, cocolog's preprocessor's, to `-o` or
+  the terminal (the loop that found the forms: flatten once, read in
+  seconds). `test/census.sh` counts a flattened header's constructs
+  and shows where the reader stops; `test/libcxx.sh` is the gate.
+  THE DESUGARING, on the program's own classes (`generic.cpp`):
+  parameter packs bound, expanded in every list, folded (`(args + ...
+  + 0)`), `sizeof...(Ts)`; a variadic `Tuple<H, T...>` by partial
+  specialization, the most specialized picked; `enable_if` over a
+  trait as SFINAE (every candidate of an overloaded function template
+  is tried, one whose signature does not hold is no candidate);
+  `typename C::value_type`; member templates and template
+  constructors deduced at the call, `b.as<int>()` given; a static
+  method through `X<T>::f(...)`; `auto` results deduced through the
+  desugaring; `__is_same` decided at compile time; a static const
+  member's constant folded. COPIES (`copies.cpp`): a copy constructor
+  copies, a move constructor moves, chosen by the value category
+  (`std::move(x)` to `C &&`); `operator=` by copy and by move; a
+  by-value parameter of a class with a destructor is a copy the callee
+  destroys; a local returned by value moves out. STRUCTURED BINDINGS
+  (`bindings.cpp`): `auto [a, b] = p`, by reference, of an array, of
+  a call's result. AND THE LIBRARY ITSELF: a flattened library header
+  is indexed by name, each item registered when a name is first asked
+  for, a class's members emitted as they are first used (the
+  standard's rule); `std::vector<int>` gets through `vector`,
+  `allocator`, `allocator_traits`, `numeric_limits`, `initializer_list`
+  and the exception guard before it runs into the next forms -- under
+  a budget now, since one unbounded run took the machine's memory.
+  GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -286,8 +331,16 @@ label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
 UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
 the extended floating-point suffixes, `[[assume]]` told to LLVM.
 **C++26**: its macros, so libc++ takes its paths, its forms still to
-come. libc++'s containers themselves await the forms their bodies use
--- allocators,
+come. The library itself: the reader reads `<vector>` and `<string>`
+whole, the desugaring registers a flattened header's items by name
+as a program asks for them, and `std::vector<int>` gets several
+classes deep before the next forms stop it -- under an instantiation
+budget, since one unbounded run took a machine's memory. `cicili++
+-E f.cpp -o flat.cpp` is clang's flag, the flattened text from
+cocolog's preprocessor; `sh test/census.sh flat.cpp` says where the
+reader stops in it and counts its constructs; `sh test/libcxx.sh` is
+the gate. libc++'s containers themselves await the forms their bodies
+use -- allocators,
 `enable_if` and partial specializations, `constexpr` and `noexcept`
 everywhere, rvalue-reference overloads by value category, exceptions --
 which is the road the C++ side is on.

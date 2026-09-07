@@ -261,8 +261,23 @@ it is done (see below); the checker and the lowering take the AST from here.
   function's first, the object passed as declared; a lambda's is the
   closure, so a lambda recurses), `a[i, j]`, `auto(x)`, the delimited
   escapes, `#elifdef`; deducing `this` with a deduced type on a class's
-  method refused, a member template. libc++'s containers await the
-  forms their bodies use, which is the road ahead.
+  method refused, a member template. THE ROAD TO libc++ (the thirteenth
+  step): the reader reads `<vector>` and `<string>` whole -- packs,
+  specializations, member templates, dependent names, decltype, the
+  compiler's traits, conversion and literal operators, deduction
+  guides -- with clang's `-E` as the loop's tool and `test/libcxx.sh`
+  as the gate; the desugaring binds and expands packs, folds, picks
+  the most specialized specialization, tries every candidate of an
+  overloaded function template (SFINAE), deduces member templates at
+  the call, copies and moves through the class's constructors by the
+  value category, destroys by-value parameters, binds structured
+  bindings; a flattened library header is indexed by name and its
+  items registered on demand, a class's members emitted as first
+  used. `std::vector<int>` gets several classes deep before the next
+  forms stop it, under an instantiation budget. What is left: the
+  forms libc++'s bodies use past that point, and a cache of the
+  flattened header's AST beside its summary (today a program that
+  instantiates a library template reads the header again).
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

@@ -317,6 +317,10 @@ ccl_destructure(L, Ps, E, Ds) :-
     (   E = id(_) -> Src = E, Ds = Ds1
     ;   ccl_gensym(tmp, Tmp), ccl_infer_decl(L, Tmp, E, D0), ccl_note_item(D0), Src = id(Tmp), Ds = [D0|Ds1] ),
     ccl_destructure_(L, Ps, Src, T, 1, Ds1).
+%% the bindings as references: each declaration's type wrapped, the name declared again with it
+ccl_bind_refs([], []).
+ccl_bind_refs([declaration(L, S, B, [var(N, T, A)])|Ds], [declaration(L, S, B, [var(N, ref([], T), A)])|Es]) :- \+ sub_atom(N, 0, 3, _, tmp), !, ccl_declare(N, ref([], T)), ccl_bind_refs(Ds, Es).
+ccl_bind_refs([D|Ds], [D|Es]) :- ccl_bind_refs(Ds, Es).
 ccl_destructure_(_, [], _, _, _, []).
 ccl_destructure_(L, [P|Ps], Src, T, I, Ds) :-
     ccl_pattern_decls(L, P, Src, T, I, D1), I1 is I + 1,
@@ -327,10 +331,12 @@ ccl_pattern_decls(L, P, Src, T, I, Ds) :- ccl_nth_member(L, T, I, F), ccl_member
 ccl_pattern_bind(_, skip, _, _, []) :- !.
 ccl_pattern_bind(L, bind(N), Access, _, [D]) :- !, ccl_infer_decl(L, N, Access, D), ccl_note_item(D).
 ccl_pattern_bind(L, sub(Ps), Access, MT, Ds) :- ccl_destructure_(L, Ps, Access, MT, 1, Ds).
+ccl_member_access(_, Src, T, at(I), index(Src, int(I)), ET) :- !, ccl_resolve_type(T, arr(_, ET)).
 ccl_member_access(L, Src, T, F, Access, MT) :-
     ccl_struct_behind(T, S, Arrow),
     ( Arrow == yes -> Access = arrow(Src, F) ; Access = member(Src, F) ),
     ( ccl_member_type(S, F, MT) -> true ; ccl_here(File, _), throw(error(no_member(F, T), here(File, L))) ).
+ccl_nth_member(_, T, I, at(I0)) :- ccl_resolve_type(T, arr(_, _)), !, I0 is I - 1.       % an array's I-th element
 ccl_nth_member(L, T, I, F) :-
     ccl_struct_behind(T, S, _),
     ( ccl_members_of(S, Ms), ccl_nth(I, Ms, member(_, F, _)) -> true ; ccl_here(File, _), throw(error(no_member(position(I), T), here(File, L))) ).
@@ -404,6 +410,7 @@ ccl_stmt_kids(for_each(_, _, _, S), [S]).        ccl_stmt_kids(switch(_, _, S), 
 ccl_stmt_kids(default(_, S), [S]).               ccl_stmt_kids(label(_, _, S), [S]).                ccl_stmt_kids(defer(_, _, S), [S]).
 ccl_collect_item(extern_c(_, Is), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_items(Is, D0, D, T0, T, G0, G, E0, E).      % C++: what the block declares
 ccl_collect_item(namespace(_, _, Is), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_items(Is, D0, D, T0, T, G0, G, E0, E).   % by its bare name, for now
+ccl_collect_item(template(_, _, I), D, D, T, T, G, G, E, E) :- ( I = typedef(_, _) ; I = declaration(_, _, _, _) ), !.   % an alias or variable template: the desugaring's, not a typedef (std::pmr::vector shares std::vector's flattened name)
 ccl_collect_item(template(_, _, I), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_item(I, D0, D, T0, T, G0, G, E0, E).
 ccl_collect_item(_, D, D, T, T, G, G, E, E).
 ccl_collect_unit(unit(Is), D0, D, T0, T, G0, G, E0, E) :- !, ccl_collect_items(Is, D0, D, T0, T, G0, G, E0, E).
@@ -430,8 +437,8 @@ ccl_collect_type(fn(R, Ps, _), G0, G, E0, E) :- !, ccl_collect_type(R, G0, G1, E
 ccl_collect_type(_, G, G, E, E).
 ccl_collect_specs([], G, G, E, E).
 ccl_collect_specs([S|Ss], G0, G, E0, E) :- ccl_collect_spec(S, G0, G1, E0, E1), ccl_collect_specs(Ss, G1, G, E1, E).
-ccl_collect_spec(class(_, Tag, _, Ms), G0, G, E0, E) :- !, ( Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).   % C++: a class is a tag too
-ccl_collect_spec(struct(Tag, Ms), G0, G, E0, E) :- Ms \== none, !, ( Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).
+ccl_collect_spec(class(_, Tag, _, Ms), G0, G, E0, E) :- !, ( \+ atom(Tag) -> G1 = G0 ; Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).   % C++: a class is a tag too (a specialization's template-id name is the desugaring's)
+ccl_collect_spec(struct(Tag, Ms), G0, G, E0, E) :- Ms \== none, !, ( \+ atom(Tag) -> G1 = G0 ; Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).
 ccl_collect_spec(union(Tag, Ms), G0, G, E0, E) :- Ms \== none, !, ( Tag == anon -> G1 = G0 ; G0 = [Tag-Ms|G1] ), ccl_collect_members(Ms, G1, G, E0, E).
 ccl_collect_spec(enum(Tag, Es), G0, G, E0, E) :- Es \== none, !, ( Tag == anon -> G = G0 ; G0 = [Tag-Es|G] ), ccl_collect_enumerators(Es, 0, [], E0, E).
 ccl_collect_spec(enum_class(Tag, Es), [Tag-Es|G], G, E0, E) :- Es \== none, !, ccl_collect_enumerators(Es, 0, [], E0, E).   % C++
@@ -459,6 +466,7 @@ ccl_note_item(function(_, _, _, Name, _, _, _)) :- \+ atom(Name), !.
 ccl_note_item(function(_, _, Ret, Name, Ps, V, _)) :- !, ccl_note_tags(Ret), ccl_note_params(Ps), ccl_declare(Name, fn(Ret, Ps, V)).
 ccl_note_item(namespace(_, _, Is)) :- !, ccl_note_each(Is).
 ccl_note_item(extern_c(_, Is)) :- !, ccl_note_each(Is).
+ccl_note_item(template(_, _, I)) :- ( I = typedef(_, _) ; I = declaration(_, _, _, _) ), !.
 ccl_note_item(template(_, _, I)) :- !, ccl_note_item(I).
 ccl_note_each([]).
 ccl_note_each([I|Is]) :- ccl_note_item(I), ccl_note_each(Is).
@@ -483,10 +491,10 @@ ccl_note_tags(fn(R, Ps, _)) :- !, ccl_note_tags(R), ccl_note_params(Ps).
 ccl_note_tags(_).
 ccl_note_specs([]).
 ccl_note_specs([S|Ss]) :- ccl_note_spec(S), ccl_note_specs(Ss).
-ccl_note_spec(struct(Tag, Ms)) :- Ms \== none, !, ( Tag == anon -> true ; ccl_note_tag(Tag, Ms) ), ccl_note_members(Ms).
+ccl_note_spec(struct(Tag, Ms)) :- Ms \== none, !, ( Tag == anon -> true ; \+ atom(Tag) -> true ; ccl_note_tag(Tag, Ms) ), ccl_note_members(Ms).
 ccl_note_spec(union(Tag, Ms)) :- Ms \== none, !, ( Tag == anon -> true ; ccl_note_tag(Tag, Ms) ), ccl_note_members(Ms).
 ccl_note_spec(enum(Tag, Es)) :- Es \== none, !, ( Tag == anon -> true ; ccl_note_tag(Tag, Es) ), ccl_declare_enumerators(Es).
-ccl_note_spec(class(_, Tag, _, Ms)) :- !, ( Tag == anon -> true ; ccl_note_tag(Tag, Ms) ), ccl_note_members(Ms).
+ccl_note_spec(class(_, Tag, _, Ms)) :- !, ( Tag == anon -> true ; \+ atom(Tag) -> true ; ccl_note_tag(Tag, Ms) ), ccl_note_members(Ms).
 ccl_note_spec(enum_class(Tag, Es)) :- Es \== none, !, ccl_note_tag(Tag, Es), ccl_declare_enumerators(Es).
 ccl_note_spec(_).
 ccl_note_members([]).
@@ -574,6 +582,12 @@ ccl_seed_typedefs([size_t, ssize_t, ptrdiff_t, intptr_t, uintptr_t, int8_t, int1
 %% the typedef names in force, kept globally too, for the casts and sizeofs
 %% that sit deep in an expression where no Env is threaded
 ccl_set_env(Env) --> { nb_setval('$ccl_env', Env) }.
+%% the threaded env's new names join the global one (never replace it: the global holds what a C++ class,
+%% a template parameter or a member alias added on the side, which the threaded env never sees)
+ccl_env_sync(Env0, Env1) :- ( Env1 == Env0 -> true ; ccl_env_added(Env1, Env0, New), ccl_add_envs(New) ).
+ccl_env_added(E1, E0, []) :- E1 == E0, !.
+ccl_env_added([N|E1], E0, [N|New]) :- !, ccl_env_added(E1, E0, New).
+ccl_env_added(E1, _, E1).
 ccl_known_typedef(Env, N) :- ( memberchk(N, Env) -> true ; nb_getval('$ccl_env', G), memberchk(N, G) ).
 
 %% token helpers, usable as nonterminals. Each consumption notes the farthest
@@ -588,12 +602,14 @@ ccl_far(L) :- nb_getval('$ccl_far', F), ( L > F -> nb_setval('$ccl_far', L) ; tr
 ccl_farthest(L) :- nb_getval('$ccl_far', L).
 
 ccl_externals(Env, Is) --> [tok(pp, T, _)], { ccl_line_marker(T) }, !, ccl_externals(Env, Is).   % clang -E's `# 93 "file"', dropped
-ccl_externals(Env0, Items) --> ccl_external(Env0, Env1, I), !, { ( Env1 == Env0 -> true ; nb_setval('$ccl_env', Env1) ) }, ccl_externals(Env1, More), { ccl_splice(I, More, Items) }.
+ccl_externals(Env0, Items) --> ccl_external(Env0, Env1, I), !, { ccl_env_sync(Env0, Env1) }, ccl_externals(Env1, More), { ccl_splice(I, More, Items) }.
 ccl_externals(_, []) --> [].
 ccl_line_marker(T) :- sub_atom(T, 0, 2, _, '# '), sub_atom(T, 2, 1, _, D), atom_codes(D, [C]), C >= 0'0, C =< 0'9.
 
 %% an #include is resolved and READ as the file is parsed (library(ccl_include)),
 %% so its typedef names are known to the rest of this file
+ccl_external(Env0, Env, I) --> ccl_cpp, ccl_gnu_attr, !, ccl_external(Env0, Env, I).                                    % [[noreturn]] before an item, dropped
+ccl_external(Env, Env, static_assert(L, E, M)) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(E, M).   % C++11: static_assert(e, "msg");
 ccl_external(Env0, Env, include(L, Spec, R)) --> [tok(pp, Text, L)], { ccl_include_spec(Text, Spec) }, !,
     { ccl_include(Spec, R), ccl_include_typedefs(R, Env0, Env), ccl_include_macros(R), ccl_include_scope(R) }.
 %% name { members }  at file scope is  typedef struct name { members } name;  (owner's rule)
@@ -616,30 +632,58 @@ ccl_external(Env, Env, static_assert(L, E, Msg)) --> ccl_line(L), ccl_kw('_Stati
 ccl_external(Env, Env, namespace(L, N, Items)) --> ccl_cpp, ccl_line(L), ( ccl_kw(inline) ; [] ), ccl_kw(namespace), !, ccl_attrs, ( ccl_id(N), ! ; { N = anon } ), ccl_p('{'), ccl_externals(Env, Items), ccl_p('}').
 ccl_external(Env, Env, using(L, enum(Q))) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_kw(enum), !, ccl_qname(Env, type, Q), ccl_p(';').      % C++20: using enum E
 ccl_external(Env, Env, using(L, namespace(Q))) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_kw(namespace), !, ccl_qname(Env, type, Q), ccl_p(';').
-ccl_external(Env0, [T|Env0], typedef(L, [var(T, Type, none)])) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(T), ccl_p('='), !, ccl_type_name(Env0, Type), ccl_p(';'),
+ccl_external(Env0, [T|Env0], typedef(L, [var(T, Type, none)])) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(T), ccl_attrs, ccl_p('='), !, ccl_type_name(Env0, Type), ccl_p(';'),
     { ccl_add_env(T), ccl_note_item(typedef(L, [var(T, Type, none)])) }.
 ccl_external(Env, Env, using(L, name(Q))) --> ccl_cpp, ccl_line(L), ccl_kw(using), !, ccl_qname(Env, type, Q), ccl_p(';').
 ccl_external(Env, Env, extern_c(L, Items)) --> ccl_cpp, ccl_line(L), ccl_kw(extern), [tok(str, S, _)], { ( S = [67] ; S = [67, 43, 43] ) }, !,
     ( ccl_p('{'), !, ccl_externals(Env, Items), ccl_p('}') ; ccl_external(Env, _, I), { Items = [I] } ).
-ccl_external(Env0, Env0, template(L, Ps, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, ccl_tparams(Env0, Ps0, Env1),
+%% explicit instantiations: `extern template void X<char>::f(int);' (a declaration), `template class X<char>;' (a definition)
+ccl_external(Env, Env, extern_template(L, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(extern), ccl_kw(template), !, ccl_external(Env, _, Item).
+ccl_external(Env, Env, explicit_instantiation(L, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(template), ccl_peek(K, V), { \+ ( K == p, V == '<' ) }, !, ccl_external(Env, _, Item).
+ccl_external(Env0, Env0, template(L, Ps, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, { nb_getval('$ccl_env', G0) }, ccl_tparams(Env0, Ps0, Env1),
     ( ccl_kw(requires), ccl_lor(R), { append(Ps0, [requires(R)], Ps) } ; { Ps = Ps0 } ),        % C++20: a requires-clause on the head, kept with the parameters
-    ccl_external(Env1, _, Item), { ccl_template_name(Item, N), ccl_note_template(N) }.
+    { ccl_tparams_enter(G0, Ps0, New) }, ( ccl_external(Env1, _, Item), !, { ccl_tparams_leave(New) } ; { ccl_tparams_leave(New), fail } ),
+    { ccl_template_name(Item, N), ccl_note_template(N) }.
+%% the parameters' names are types for the item's whole text -- the global env, which the expressions deep
+%% inside (a cast, a template argument in a decltype) consult -- and gone after it
+ccl_tparams_enter(G0, Ps, New) :- findall(N, ( member(tparam(K, N, _), Ps), atom(N), ( K == type ; K == pack ; K == template ) ), Ns), ccl_new_names(Ns, G0, New),   % added as each was read (ccl_tparam)
+    nb_getval('$ccl_tmpl_depth', D), D1 is D + 1, nb_setval('$ccl_tmpl_depth', D1).
+ccl_tparams_leave(New) :- nb_getval('$ccl_tmpl_depth', D), D1 is D - 1, nb_setval('$ccl_tmpl_depth', D1),
+    ( New == [] -> true ; nb_getval('$ccl_env', G), findall(X, ( member(X, G), \+ memberchk(X, New) ), G1), nb_setval('$ccl_env', G1) ).
+%% inside a template's item its own name is a template already: `__tuple_less<_Ip - 1>()' in its own body
+ccl_note_if_template(N) :- ( atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0 -> ccl_note_template(N) ; true ).
 ccl_external(Env, Env, concept(L, N, E)) --> ccl_cpp, ccl_line(L), ccl_kw(concept), !, ccl_id(N), { ccl_note_template(N) }, ccl_p('='), ccl_cond_expr(E), ccl_p(';').   % C++20: concept N = constraint
 ccl_external(Env, Env, D) --> ccl_cpp, ccl_line(L), ccl_kw(auto), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, none, D) }.
-ccl_external(Env, Env, ctor_def(L, C, Qs, Ps, Inits, Body)) --> ccl_cpp, ccl_line(L), ccl_id(C), ccl_p('::'), ccl_id(C), ccl_p('('), !, ccl_params(Env, Ps, _), ccl_p(')'), ccl_method_quals(Qs), ccl_ctor_inits(Env, Inits), ccl_fn_body(Env, Ps, Body).
-ccl_external(Env, Env, dtor_def(L, C, Qs, Body)) --> ccl_cpp, ccl_line(L), ccl_id(C), ccl_p('::'), ccl_p('~'), !, ccl_id(C), ccl_p('('), ccl_p(')'), ccl_method_quals(Qs), ccl_fn_body(Env, [], Body).
+%% C++17: a deduction guide, `Guard(Args...) -> Guard<Ts...>;' (nothing to lower: the reader reads it, the desugaring passes it over)
+ccl_external(Env, Env, deduction_guide(L, N, Ps, T)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_id(N), { ccl_known_template(N) }, ccl_p('('), ccl_params(Env, Ps, _), ccl_p(')'), ccl_p('->'), !,
+    ccl_type_name(Env, T), ccl_p(';').
+%% a constructor or destructor defined out of its class: C::C(...), X<T>::X(...), X<T>::~X()
+ccl_external(Env, Env, ctor_def(L, C, Qs, Ps, Inits, Body)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_qname(Env, type, scoped(Path, C)), { atom(C), ccl_last(Path, P), ccl_class_base(P, C) }, ccl_p('('), !,
+    ccl_params(Env, Ps, _), ccl_p(')'), ccl_method_quals(Qs), ccl_ctor_inits(Env, Inits), ccl_fn_body(Env, Ps, Body).
+ccl_external(Env, Env, dtor_def(L, C, Qs, Body)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_qname(Env, type, Q), { ccl_class_base(Q, C) }, ccl_p('::'), ccl_p('~'), !, ccl_id(C), ccl_p('('), ccl_p(')'), ccl_method_quals(Qs), ccl_fn_body(Env, [], Body).
+ccl_class_base(C, C) :- atom(C), !.
+ccl_class_base(tmpl(C, _), C) :- !.
+ccl_class_base(scoped(_, Last), C) :- ccl_class_base(Last, C).
+ccl_last([X], X) :- !.
+ccl_last([_|Xs], X) :- ccl_last(Xs, X).
 ccl_external(Env, Env, static_assert(L, E, Msg)) --> ccl_cpp, ccl_line(L), ccl_kw(static_assert), !, ccl_p('('), ccl_cond_expr(E), ( ccl_p(','), ccl_primary(Msg), ! ; { Msg = none } ), ccl_p(')'), ccl_p(';').
 ccl_external(Env0, Env, Item) --> ccl_line(L), ccl_decl_specs(Env0, file, Sto, Base), ccl_external_rest(Env0, Env, L, Sto, Base, Item).
 %% template <typename T, int N = 4, class... Ts> -- tparam(type | Type, Name, Default); the names are types in the item
 ccl_tparams(Env0, Ps, Env) --> ccl_p('<'), ( ccl_tparam_list(Env0, Ps, Env), ! ; { Ps = [], Env = Env0 } ), ccl_tclose.
 ccl_tparam_list(Env0, [P|Ps], Env) --> ccl_tparam(Env0, P, Env1), ( ccl_p(','), !, ccl_tparam_list(Env1, Ps, Env) ; { Ps = [], Env = Env1 } ).
-ccl_tparam(Env0, tparam(type, N, D), [N|Env0]) --> ( ccl_kw(typename), ! ; ccl_kw(class) ), !, ( ccl_p('...'), ! ; [] ), ccl_id(N), ( ccl_p('='), !, ccl_type_name([N|Env0], D) ; { D = none } ).
-ccl_tparam(Env0, tparam(template, N, none), [N|Env0]) --> ccl_kw(template), !, ccl_p('<'), ccl_skip_to_close, ( ccl_kw(class), ! ; ccl_kw(typename) ), ccl_id(N).
-ccl_tparam(Env0, tparam(T, N, D), Env0) --> ccl_decl_specs(Env0, param, _, Base), ccl_abstract_or_declarator(Env0, Base, N, T), ( ccl_p('='), !, ccl_shift(D) ; { D = none } ).
+ccl_tparam(Env0, tparam(K, N, D), [N|Env0]) --> ( ccl_kw(typename) ; ccl_kw(class) ), ( ccl_p('...'), { K = pack } ; { K = type } ), ( ccl_id(N) ; { N = anon } ), ccl_tparam_end, !,   % `class... Ts' a pack; `template <class>' unnamed
+    { ccl_add_env(N) }, ( ccl_p('='), !, ccl_type_name([N|Env0], D) ; { D = none } ).                                     % a type from here on: the defaults after it, the item (ccl_tparams_enter)
+ccl_tparam_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, [',', '>', '>>', '=']).                 % not `typename T::x = 0', a value parameter
+ccl_tparam(Env0, tparam(template, N, D), [N|Env0]) --> ccl_kw(template), !, ccl_p('<'), ccl_skip_to_close, ( ccl_kw(class), ! ; ccl_kw(typename) ), ( ccl_id(N), ! ; { N = anon } ), { ccl_add_env(N), ccl_note_template(N) },
+    ( ccl_p('='), !, ccl_qname(Env0, type, D) ; { D = none } ).                                                          % template <class...> class F = is_x
+ccl_tparam(Env0, tparam(vpack(T), N, none), Env0) --> ccl_decl_specs(Env0, param, _, Base), ccl_pointers(Ptrs), ccl_p('...'), !, ( ccl_id(N), ! ; { N = anon } ), { ccl_apply_pointers(Ptrs, Base, T) }.   % `int... Ns', `int &...': a pack of values
+ccl_tparam(Env0, tparam(T, N, D), Env0) --> ccl_decl_specs(Env0, param, _, Base), ccl_abstract_or_declarator(Env0, Base, N, T), ( ccl_p('='), !, ccl_targ_expr(D) ; { D = none } ).
 ccl_skip_to_close --> ccl_p('>'), !.
 ccl_skip_to_close --> [_], ccl_skip_to_close.
 ccl_template_name(concept(_, N, _), N) :- !.
 ccl_template_name(function(_, _, _, N, _, _, _), N) :- !.
+ccl_template_name(method(_, _, _, N, _, _, _), N) :- !.
+ccl_template_name(nested(base(_, [S])), N) :- ( S = class(_, N, _, _) ; S = struct(N, _) ; S = union(N, _) ), atom(N), !.
 ccl_template_name(declaration(_, _, _, [var(N, _, _)|_]), N) :- !.
 ccl_template_name(declare(_, base(_, [class(_, N, _, _)])), N) :- !.
 ccl_template_name(declare(_, base(_, [struct(N, _)])), N) :- !.
@@ -653,6 +697,7 @@ ccl_auto_decl(L, N, E, R, D) :-
 
 ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto, Ret, Name, Params, Var, Body)) -->
     ccl_declarator(Env, Base, Name, Type0), { Type0 = fn(_, _, _) }, ccl_attrs, ccl_method_quals(_), ccl_tie(Type0, Type), { Type = fn(Ret, Params, Var) }, ccl_peek(p, '{'),   % C++'s const/override after the parameters; no cut here, a prototype falls through
+    { ccl_note_if_template(Name) },
     { ccl_note_tags(Ret), ccl_note_params(Params), ccl_declare(Name, Type) },
     ccl_push_scope, { ccl_declare_params(Params) }, ccl_compound(Env, Body), ccl_pop_scope, !.
 ccl_external_rest(Env0, Env, L, Sto, Base, Item) -->
@@ -668,7 +713,10 @@ ccl_declared_names([var(N, _, _)|Ds], [N|Ns]) :- ccl_declared_names(Ds, Ns).
 %% unknown name before `*' is taken as a type there; `name x;' is one anywhere.
 ccl_decl_specs(Env, Scope, Sto, base(Quals, Specs)) -->
     ccl_specs(Env, Scope, [], [], [], Sto0, Quals, Specs),
-    { Specs \== [], ( Sto0 = [S|_] -> Sto = S ; Sto = none ) }.
+    { Specs \== [], ( Sto0 == [] -> Sto = none ; ccl_sto_pick(Sto0, Sto) ) }.
+%% several storage words (`static inline constexpr'): the one that decides where the thing lives
+ccl_sto_pick(Ss, S) :- member(S, [typedef, static, extern, thread_local, '_Thread_local', virtual, explicit, friend, mutable, register, auto, inline, '_Noreturn']), memberchk(S, Ss), !.
+ccl_sto_pick([S|_], S).
 
 ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, ccl_kw(auto), !, ccl_specs(Env, Sc, St0, Q0, [auto], St, Q, S).   % C++: auto is a type to deduce (C's storage class it is not)
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_storage(K) }, !, ccl_specs(Env, Sc, [K|St0], Q0, S0, St, Q, S).
@@ -686,8 +734,27 @@ ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_typedef_name(Env, Sc, N), !, c
 %% left to the C heuristics, and in a block the name must be followed by what
 %% a declarator starts with (`std::cout << x' is an expression)
 ccl_cpp_type(Env, _, typedef(Q)) --> ccl_kw(typename), !, ccl_qname(Env, type, Q).
+ccl_cpp_type(_, _, auto) --> ccl_kw(decltype), ccl_p('('), ccl_kw(auto), !, ccl_p(')').        % decltype(auto): deduced, as auto is
 ccl_cpp_type(_, _, decltype(E)) --> ccl_kw(decltype), !, ccl_p('('), ccl_expr(E), ccl_p(')').
-ccl_cpp_type(Env, Sc, typedef(Q)) --> ccl_qname(Env, type, Q), { compound(Q) }, ccl_type_follows(Sc).
+ccl_cpp_type(Env, Sc, builtin_type(N, As)) --> ccl_id(N), { ccl_builtin_type_name(N) }, ccl_p('('), ccl_builtin_args(Env, As), ccl_p(')'), ccl_type_follows(Sc), !.   % __remove_cv(T): a type from the compiler's trait
+%% the compiler's builtins that name a TYPE (any other `__x(...)' is a call: the SDK's `(__istype(c, m))')
+ccl_builtin_type_name(N) :- memberchk(N, ['__remove_cv', '__remove_const', '__remove_volatile', '__remove_cvref', '__remove_reference_t', '__remove_pointer',
+                                          '__remove_extent', '__remove_all_extents', '__add_pointer', '__add_lvalue_reference', '__add_rvalue_reference',
+                                          '__decay', '__make_signed', '__make_unsigned', '__underlying_type']).
+%% a trait's arguments are types (`__is_same(T, int)'), else expressions
+ccl_builtin_args(Env, [A|As]) --> ccl_builtin_arg(Env, A), !, ( ccl_p(','), !, ccl_builtin_args(Env, As) ; { As = [] } ).
+ccl_builtin_args(_, []) --> [].
+ccl_builtin_arg(Env, type(T)) --> ccl_type_name(Env, T0), ccl_targ_pack(T0, T), ccl_builtin_arg_end, !.
+ccl_builtin_arg(_, E) --> ccl_assign_expr(E0), ccl_targ_pack(E0, E).
+ccl_builtin_arg_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, [',', ')']).
+ccl_builtin_trait(N) :- atom(N), ( sub_atom(N, 0, 5, _, '__is_') ; sub_atom(N, 0, 6, _, '__has_') ; sub_atom(N, 0, 12, _, '__reference_') ; sub_atom(N, 0, 8, _, '__array_') ; memberchk(N, ['__builtin_offsetof', '__builtin_bit_cast', '__builtin_convertvector']) ), !.
+ccl_cpp_type(Env, Sc, typedef(Q)) --> ccl_qname(Env, type, Q), { compound(Q) }, ( { ccl_qname_typish(Env, Q) }, ccl_type_follows(Sc) ; ccl_declarator_follows ), !.
+%% an unknown qualified name is a type where a declarator follows it (`ns::what &w', `ns::T x'), an expression where `(' does (`std::move(a)')
+ccl_declarator_follows(S, S) :- S = [tok(K, V, _)|_], ( K == id ; K == p, memberchk(V, ['*', '&', '&&']) ; K == kw, ccl_qualifier(V) ), !.
+%% a qualified name is a type when its last name is one: `S b(std::move(a))' declares no function taking a std::move
+ccl_qname_typish(_, tmpl(_, _)) :- !.
+ccl_qname_typish(Env, scoped(_, Last)) :- !, ccl_qname_typish(Env, Last).
+ccl_qname_typish(Env, N) :- atom(N), ( ccl_known_typedef(Env, N) ; ccl_known_template(N) ; memberchk(N, [string, wstring, size_t, ptrdiff_t, nullptr_t, byte, type, value_type, pointer, reference, const_reference, iterator, const_iterator, size_type, difference_type, element_type]) ), !.
 ccl_type_follows(Sc) --> { memberchk(Sc, [file, param, member, typename]) }, !.
 ccl_type_follows(_) --> ( ccl_peek(id, _), ! ; ccl_peek(p, '*'), ! ; ccl_peek(p, '&'), ! ; ccl_peek(p, '&&') ).
 %% a qualified name: ::a::b<args>::c -- an atom for a plain name, tmpl(N, Args)
@@ -696,9 +763,12 @@ ccl_type_follows(_) --> ( ccl_peek(id, _), ! ; ccl_peek(p, '*'), ! ; ccl_peek(p,
 %% arguments read as such and end before a declarator; mode expr only when known.
 ccl_qname(Env, Mode, Q) --> ccl_p('::'), !, ccl_qseg(Env, Mode, S0), ccl_qrest(Env, Mode, [S0], global, Q).
 ccl_qname(Env, Mode, Q) --> ccl_qseg(Env, Mode, S0), ccl_qrest(Env, Mode, [S0], none, Q).
+ccl_qrest(Env, Mode, Acc, Lead, Q) --> ccl_p('::'), ccl_kw(template), !, ccl_id(N), ccl_targs(Env, As), ccl_qrest(Env, Mode, [tmpl(N, As)|Acc], Lead, Q).   % X<T>::template f<U>: a dependent template
 ccl_qrest(Env, Mode, Acc, Lead, Q) --> ccl_p('::'), ccl_qseg(Env, Mode, S), !, ccl_qrest(Env, Mode, [S|Acc], Lead, Q).
 ccl_qrest(_, _, [S], none, S) --> !.
 ccl_qrest(_, _, [Last|Rev], Lead, scoped(Path, Last)) --> { reverse(Rev, P0), ( Lead == global -> Path = [global|P0] ; Path = P0 ) }.
+ccl_qseg(_, _, decltype(E)) --> ccl_kw(decltype), !, ccl_p('('), { ccl_targ_save(D) }, ( ccl_expr(E), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')').   % decltype(e)::value
+ccl_qseg(_, _, operator(Op)) --> ccl_kw(operator), !, ccl_op_name(Op).                        % ::operator new(n), std::operator+(a, b)
 ccl_qseg(Env, Mode, S) --> ccl_id(N), ( ccl_targs_start(N, Mode), ccl_targs(Env, As), { S = tmpl(N, As) }, ! ; { S = N } ).
 ccl_targs_start(N, _) --> ccl_peek(p, '<'), { ccl_known_template(N) }, !.
 ccl_targs_start(_, type) --> ccl_targs_ahead.
@@ -715,17 +785,21 @@ ccl_skip_parens([tok(p, '(', _)|T], D, R) :- !, D1 is D + 1, ccl_skip_parens(T, 
 ccl_skip_parens([tok(p, ')', _)|T], 1, T) :- !.
 ccl_skip_parens([tok(p, ')', _)|T], D, R) :- !, D1 is D - 1, ccl_skip_parens(T, D1, R).
 ccl_skip_parens([_|T], D, R) :- ccl_skip_parens(T, D, R).
-ccl_targs_follow([tok(K, V, _)|_]) :- ( K == id ; K == p, memberchk(V, ['*', '&', '&&', '::', ',', ')', '>', '>>', ';', '{', '(']) ; K == kw, ccl_qualifier(V) ), !.
+ccl_targs_follow([tok(K, V, _)|_]) :- ( K == id ; K == p, memberchk(V, ['*', '&', '&&', '::', ',', ')', '>', '>>', ';', '{', '(', '...', '=', '[']) ; K == kw, ccl_qualifier(V) ), !.
 ccl_targs(Env, As) --> ccl_p('<'), ( ccl_targ_list(Env, As), ! ; { As = [] } ), ccl_tclose.
 ccl_targ_list(Env, [A|As]) --> ccl_targ(Env, A), ( ccl_p(','), !, ccl_targ_list(Env, As) ; { As = [] } ).
-ccl_targ(Env, A) --> ccl_type_name(Env, A), ccl_targ_end, !.
-ccl_targ(_, A) --> ccl_shift(A).
+ccl_targ(Env, A) --> ccl_type_name(Env, A0), ccl_targ_pack(A0, A), ccl_targ_end, !.
+ccl_targ(_, A) --> ccl_targ_expr(A0), ccl_targ_pack(A0, A).
+%% an expression inside `< >': any assignment-expression, a `>' closing it (ccl_op_open/1)
+ccl_targ_expr(E) --> { ccl_targ_enter }, ( ccl_assign_expr(E), !, { ccl_targ_leave } ; { ccl_targ_leave, fail } ).
+ccl_targ_pack(A, pack(A)) --> ccl_p('...'), !.                                       % `Ts...': the pack expanded
+ccl_targ_pack(A, A) --> [].
 ccl_targ_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, [',', '>', '>>']).
 %% the closing `>' of template arguments; a `>>' closes two, so one is left
 ccl_tclose(S0, S) :- S0 = [tok(p, '>', _)|S], !.
 ccl_tclose([tok(p, '>>', L)|T], [tok(p, '>', L)|T]).
 ccl_known_template(N) :- nb_getval('$ccl_templates', Ts), memberchk(N, Ts).
-ccl_note_template(N) :- atom(N), nb_getval('$ccl_templates', Ts), ( memberchk(N, Ts) -> true ; nb_setval('$ccl_templates', [N|Ts]) ).
+ccl_note_template(N) :- atom(N), N \== none, nb_getval('$ccl_templates', Ts), ( memberchk(N, Ts) -> true ; nb_setval('$ccl_templates', [N|Ts]) ).
 ccl_note_template(_).
 %% a class or enum name is a type name from its declaration on, for the unit
 ccl_add_env(N) :- nb_getval('$ccl_env', G), ( memberchk(N, G) -> true ; nb_setval('$ccl_env', [N|G]) ).
@@ -785,7 +859,8 @@ ccl_typeof(typeof(X)) --> ccl_id(T), { memberchk(T, [typeof, '__typeof__', '__ty
 %% because Cicili's own emitted C carries them (cleanup, unused, ...)
 ccl_attrs --> ccl_gnu_attr, !, ccl_attrs.
 ccl_attrs --> [].
-ccl_gnu_attr --> ccl_cpp, ccl_p('['), ccl_p('['), !, ccl_skip_attr.                         % C++'s [[nodiscard]] and kin, dropped
+ccl_gnu_attr --> ccl_cpp, ccl_p('['), ccl_p('['), !, ccl_skip_attr.
+ccl_gnu_attr --> ccl_cpp, ccl_kw(alignas), !, ccl_p('('), ccl_balanced, ccl_p(')').           % alignas(T), alignas(16): dropped, as the attributes are                         % C++'s [[nodiscard]] and kin, dropped
 ccl_skip_attr --> ccl_p(']'), ccl_p(']'), !.
 ccl_skip_attr --> [_], ccl_skip_attr.
 ccl_gnu_attr --> ccl_id(A), { memberchk(A, ['__attribute__', '__attribute']) }, !, ccl_p('('), ccl_p('('), ccl_balanced, ccl_p(')'), ccl_p(')').
@@ -797,19 +872,22 @@ ccl_balanced --> [tok(K, V, _)], { \+ ( K == p, ( V == '(' ; V == ')' ) ) }, !, 
 ccl_balanced --> [].
 
 ccl_struct_spec(Env, T) --> ccl_kw(K), { K == struct ; K == union ; K == class }, !, ccl_struct_body(Env, K, T).
-ccl_struct_body(Env, K, T) --> ccl_attrs, ccl_id(N), !, { ( ccl_lang(cpp) -> ccl_add_env(N) ; true ) },
-    ( ccl_cpp, ccl_class_tail(Env, K, N, T), ! ; ccl_p('{'), !, ccl_members(Env, Ms), ccl_p('}'), ccl_attrs, { T =.. [K, N, Ms] } ; { T =.. [K, N, none] } ).
+ccl_struct_body(Env, K, T) --> ccl_attrs, ccl_id(N), !, { ( ccl_lang(cpp) -> ccl_add_env(N), ccl_note_if_template(N) ; true ) }, ccl_class_targs(Env, N, Name),
+    ( ccl_cpp, ccl_class_tail(Env, K, Name, T), ! ; ccl_p('{'), !, ccl_members(Env, Ms), ccl_p('}'), ccl_attrs, { T =.. [K, N, Ms] } ; { T =.. [K, N, none] } ).
 ccl_struct_body(Env, K, T) --> ccl_attrs, ccl_p('{'), ccl_class_members(Env, anon, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, anon, [], Ms, T) }.
 %% C++: `struct N final : public B, C { ... }' -- class(Kind, N, Bases, Ms) when
 %% it has bases, is a `class', or holds anything but fields; else C's struct
+%% `struct X<int>', `struct X<T *>': a specialization, its name the template-id
+ccl_class_targs(Env, N, tmpl(N, As)) --> ccl_cpp, ccl_peek(p, '<'), !, ccl_targs(Env, As).
+ccl_class_targs(_, N, N) --> [].
 ccl_class_tail(Env, K, N, T) --> ( ccl_id(final), ! ; [] ), ( ccl_p(':'), !, ccl_bases(Env, Bs) ; { Bs = [] } ),
     ( ccl_p('{'), !, ccl_class_members(Env, N, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, N, Bs, Ms, T) } ; { Bs == [], T =.. [K, N, none] } ).
-ccl_bases(Env, [base(A, Q)|Bs]) --> ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ( ccl_kw(virtual), ! ; [] ), ccl_qname(Env, type, Q),
+ccl_bases(Env, [base(A, Q)|Bs]) --> ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ( ccl_kw(virtual), ! ; [] ), ccl_qname(Env, type, Q0), ccl_targ_pack(Q0, Q),
     ( ccl_p(','), !, ccl_bases(Env, Bs) ; { Bs = [] } ).
 ccl_class_members(Env, N, Ms) --> { ccl_class_push(N) }, ( ccl_members(Env, Ms), { ccl_class_pop }, ! ; { ccl_class_pop }, { fail } ).
 ccl_class_push(N) :- nb_getval('$ccl_class', S), nb_setval('$ccl_class', [N|S]).
 ccl_class_pop :- nb_getval('$ccl_class', [_|S]), nb_setval('$ccl_class', S).
-ccl_current_class(N) :- nb_getval('$ccl_class', [N|_]).
+ccl_current_class(N) :- nb_getval('$ccl_class', [C|_]), ( C == N -> true ; C = tmpl(N, _) ).
 ccl_make_class(union, N, _, Ms, union(N, Ms)) :- !.
 ccl_make_class(K, N, Bs, Ms, class(K, N, Bs, Ms)) :- ccl_lang(cpp), ( K == class ; Bs \== [] ; member(M, Ms), M \= member(_, _, _) ), !.
 ccl_make_class(K, N, _, Ms, T) :- T =.. [K, N, Ms].
@@ -821,20 +899,36 @@ ccl_members(_, []) --> [].
 %% with its initializers; a destructor; a method -- a function declarator with
 %% a body, `;', `= 0', `= default' or `= delete', its qualifiers (virtual,
 %% static, explicit, const, override, final, noexcept) in a list
+ccl_member_decl(Env, Ms) --> ccl_cpp, ccl_gnu_attr, !, ccl_member_decl(Env, Ms).                                                           % an attribute before any member, dropped
+ccl_member_decl(_, [static_assert(L, E, M)]) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(E, M).
 ccl_member_decl(_, [access(A)]) --> ccl_cpp, ccl_kw(A), { memberchk(A, [public, private, protected]) }, ccl_p(':'), !.
-ccl_member_decl(_, [friend(L)]) --> ccl_cpp, ccl_line(L), ccl_kw(friend), !, ccl_skip_to_semi.
+ccl_member_decl(Env, [friend(L, M)]) --> ccl_cpp, ccl_line(L), ccl_kw(friend), ccl_member_decl(Env, M), !.       % a friend function, declared or defined here; friend class X
+ccl_member_decl(_, [friend(L, [])]) --> ccl_cpp, ccl_line(L), ccl_kw(friend), !, ccl_skip_to_semi.
+%% a class-scope typedef, `typedef T value_type;' and `using value_type = T;': a typedef member, its names
+%% known to the members after it (the global env; a class's typedefs are C++'s, no struct of C has one)
+ccl_member_decl(Env, [typedef(L, Vs)]) --> ccl_cpp, ccl_line(L), ccl_kw(typedef), !, ccl_decl_specs(Env, member, _, Base), ccl_init_declarators(Env, Base, Vs), ccl_p(';'), { ccl_declared_names(Vs, Ns), ccl_add_envs(Ns) }.
+ccl_member_decl(Env, [typedef(L, [var(N, T, none)])]) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(N), ccl_attrs, ccl_p('='), !, ccl_type_name(Env, T), ccl_p(';'), { ccl_add_env(N) }.
 ccl_member_decl(_, [using(L)]) --> ccl_cpp, ccl_line(L), ccl_kw(using), !, ccl_skip_to_semi.
-ccl_member_decl(Env, [template(L, Ps, M)]) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, ccl_tparams(Env, Ps, Env1), ccl_member_decl(Env1, [M]).
+ccl_member_decl(Env, [template(L, Ps, M)]) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, { nb_getval('$ccl_env', G0) }, ccl_tparams(Env, Ps, Env1),
+    { ccl_tparams_enter(G0, Ps, New) }, ( ccl_member_decl(Env1, [M]), !, { ccl_tparams_leave(New) } ; { ccl_tparams_leave(New), fail } ),
+    { ccl_template_name(M, N), ccl_note_template(N) }.                                            % a member template's name: `f<T>()' is a template-id from here on
+%% a conversion operator, `operator T() const', `explicit operator bool()': a method named operator(conv(T)), no parameters
+ccl_member_decl(Env, [method(L, Qs, T, operator(conv(T)), [], false, Body)]) --> ccl_cpp, ccl_line(L), ccl_attrs, ccl_member_prefix(Qs0), ccl_attrs, ccl_kw(operator), ccl_conv_type(Env, T), ccl_p('('), ccl_p(')'), !,
+    ccl_method_quals(Qs1), ccl_fn_body(Env, [], Body), { append(Qs0, Qs1, Qs) }.
+%% a conversion type-id: specifiers and pointers or references only (`int ()' would read as a function type)
+ccl_conv_type(Env, T) --> ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) }.
 ccl_member_decl(Env, [ctor(L, Qs, Ps, Inits, Body)]) --> ccl_cpp, ccl_line(L), ccl_member_prefix(Qs0), ccl_id(N), { ccl_current_class(N) }, ccl_p('('), !,
     ccl_params(Env, Ps, _), ccl_p(')'), ccl_method_quals(Qs1), ccl_ctor_inits(Env, Inits), ccl_fn_body(Env, Ps, Body), { append(Qs0, Qs1, Qs) }.
 ccl_member_decl(Env, [dtor(L, Qs, Body)]) --> ccl_cpp, ccl_line(L), ccl_member_prefix(Qs0), ccl_p('~'), !, ccl_id(_), ccl_p('('), ccl_p(')'), ccl_method_quals(Qs1), ccl_fn_body(Env, [], Body), { append(Qs0, Qs1, Qs) }.
 ccl_member_decl(Env, [method(L, Qs, Ret, Name, Ps, Var, Body)]) --> ccl_cpp, ccl_line(L), ccl_member_prefix(Qs0), ccl_decl_specs(Env, member, Sto, Base), ccl_declarator(Env, Base, Name, Type), { Type = fn(Ret, Ps, Var) }, !,
     ccl_method_quals(Qs1), ccl_fn_body(Env, Ps, Body), { ( Sto == none -> Qs2 = Qs0 ; Qs2 = [Sto|Qs0] ), append(Qs2, Qs1, Qs) }.
-ccl_member_decl(Env, Ms) --> ccl_decl_specs(Env, member, Sto, Base0), { ccl_member_base(Sto, Base0, Base) }, ccl_member_declarators(Env, Base, Ms), ccl_p(';').
+ccl_member_decl(Env, Ms) --> ccl_decl_specs(Env, member, Sto, Base0), { ccl_member_base(Sto, Base0, Base) }, ccl_member_declarators(Env, Base, Ms0), ccl_p(';'),
+    { Ms0 == [] -> Ms = [nested(Base)] ; Ms = Ms0 }.                                             % `struct I { ... };' inside a class: a nested type, kept
 ccl_member_base(static, base(Q, S), base([static|Q], S)) :- ccl_lang(cpp), !.      % a static member: the word kept as a qualifier
 ccl_member_base(_, B, B).
 ccl_member_prefix([K|Qs]) --> ccl_kw(K), { memberchk(K, [virtual, static, explicit, inline, constexpr, consteval]) }, !,
     ( { K == explicit }, ccl_p('('), ccl_expr(_), ccl_p(')') ; [] ), ccl_member_prefix(Qs).      % C++20: explicit(cond), the condition dropped
+ccl_member_prefix(Qs) --> ccl_gnu_attr, !, ccl_member_prefix(Qs).                           % an attribute among the words
 ccl_member_prefix([]) --> [].
 ccl_method_quals([const|Qs]) --> ccl_kw(const), !, ccl_method_quals(Qs).
 ccl_method_quals(Qs) --> ccl_kw(volatile), !, ccl_method_quals(Qs).
@@ -848,7 +942,8 @@ ccl_method_quals([trailing(T)|Qs]) --> ccl_p('->'), !, { nb_getval('$ccl_env', E
 ccl_method_quals([]) --> [].
 ccl_ctor_inits(Env, Inits) --> ccl_p(':'), !, ccl_init_list(Env, Inits).
 ccl_ctor_inits(_, []) --> [].
-ccl_init_list(Env, [init(N, As)|Is]) --> ccl_qname(Env, type, N), ( ccl_p('('), !, ccl_args(As), ccl_p(')') ; ccl_p('{'), ccl_args(As), ccl_p('}') ), ( ccl_p(','), !, ccl_init_list(Env, Is) ; { Is = [] } ).
+ccl_init_list(Env, [I|Is]) --> ccl_qname(Env, type, N), ( ccl_p('('), !, ccl_args(As), ccl_p(')') ; ccl_p('{'), ccl_args(As), ccl_p('}') ), ccl_targ_pack(init(N, As), I),   % Base<T>(args)...: a pack of bases
+    ( ccl_p(','), !, ccl_init_list(Env, Is) ; { Is = [] } ).
 ccl_fn_body(_, _, pure) --> ccl_p('='), [tok(int, 0, _)], !, ccl_p(';').
 ccl_fn_body(_, _, default) --> ccl_p('='), ccl_kw(default), !, ccl_p(';').
 ccl_fn_body(_, _, delete) --> ccl_p('='), ccl_kw(delete), !, ccl_p(';').
@@ -859,7 +954,7 @@ ccl_skip_to_semi --> [_], ccl_skip_to_semi.
 ccl_member_declarators(Env, Base, Ms) --> [tok(pp, _, _)], !, ccl_member_declarators(Env, Base, Ms).   % a #define between two declarators
 ccl_member_declarators(Env, Base, Ms) --> ccl_member_declarator(Env, Base, M), ccl_member_default(M, Ds), ( ccl_p(','), !, ccl_member_declarators(Env, Base, Ms1) ; { Ms1 = [] } ), { append([M|Ds], Ms1, Ms) }.
 %% C++: a default member initializer, `int limit = 100;', kept beside the member
-ccl_member_default(member(_, N, _), [default_init(N, E)]) --> ccl_cpp, ccl_p('='), !, ccl_assign_expr(E).
+ccl_member_default(member(_, N, _), [default_init(N, E)]) --> ccl_cpp, ccl_p('='), !, ccl_initializer(E).      % = e, = { ... }
 ccl_member_default(member(_, N, _), [default_init(N, I)]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(I).
 ccl_member_default(_, []) --> [].
 ccl_member_declarators(_, _, []) --> [].
@@ -880,7 +975,14 @@ ccl_enumerator(enumerator(N, V)) --> ccl_id(N), ( ccl_p('='), !, ccl_cond_expr(V
 %% then array and function suffixes; ccl_mk_type folds them onto the base.
 ccl_init_declarators(Env, Base, Ds) --> [tok(pp, _, _)], !, ccl_init_declarators(Env, Base, Ds).
 ccl_init_declarators(Env, Base, [D|Ds]) --> ccl_init_declarator(Env, Base, D), ( ccl_p(','), !, ccl_init_declarators(Env, Base, Ds) ; { Ds = [] } ).
-ccl_init_declarator(Env, Base, var(N, T, Init)) --> ccl_declarator(Env, Base, N, T0), ccl_attrs, ccl_tie(T0, T), ccl_var_init(Init).
+ccl_init_declarator(Env, Base, var(N, T, Init)) --> ccl_declarator(Env, Base, N, T0), ccl_attrs, ccl_fn_quals(T0), ccl_tie(T0, T), ccl_var_init_fn(T0, Init).
+ccl_var_init_fn(T0, Init) --> ccl_cpp, { T0 = fn(_, _, _) }, ccl_p('='), ( ccl_kw(delete), !, { Init = delete } ; ccl_kw(default), { Init = default } ), !.   % f(...) = delete;
+ccl_var_init_fn(_, Init) --> ccl_var_init(Init).
+ccl_fn_quals(T0) --> ccl_cpp, { T0 = fn(_, _, _) }, !, ccl_method_quals(_).                % a prototype's noexcept, throw(), attributes
+ccl_fn_quals(_) --> [].
+%% static_assert(e, "msg") and static_assert(e): an item, a member, a statement -- static_assert(L, E, Msg | none)
+ccl_static_assert(E, M) --> ccl_p('('), ccl_assign_expr(E), ( ccl_p(','), !, ccl_assign_expr(M) ; { M = none } ), ccl_p(')'), ccl_p(';').
+ccl_word(W) --> [tok(K, W, _)], { K == kw ; K == id }, !.
 ccl_var_init(Init) --> ccl_p('='), !, ccl_initializer(Init).
 ccl_var_init(ctor(As)) --> ccl_cpp, ccl_p('('), !, ccl_args(As), ccl_p(')').           % C++: T x(args), direct initialization
 ccl_var_init(Init) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(Init).            % T x{args}
@@ -908,9 +1010,11 @@ ccl_quals([Q|Qs]) --> ccl_kw(Q), { ccl_qualifier(Q) }, !, ccl_quals(Qs).
 ccl_quals([own|Qs]) --> ccl_id(own), !, ccl_quals(Qs).
 ccl_quals(Qs) --> ccl_gnu_attr, !, ccl_quals(Qs).             % char * _Nonnull p, char * __restrict q
 ccl_quals([]) --> [].
-ccl_direct(_, name(operator(Op))) --> ccl_cpp, ccl_kw(operator), !, ccl_op_name(Op).
-ccl_direct(Env, name(Q)) --> ccl_cpp, ccl_id(C), ccl_peek(p, '::'), !, ccl_qrest(Env, type, [C], none, Q).   % Shape::area, defined out of its class
+ccl_direct(Env, name(N)) --> ccl_cpp, ccl_kw(operator), !, ccl_op_name(Op), ( ccl_peek(p, '<'), ccl_targs(Env, As), { N = tmpl(operator(Op), As) } ; { N = operator(Op) } ).   % operator+, operator+<char, ...> (an explicit instantiation)
+ccl_direct(Env, name(Q)) --> ccl_cpp, ccl_qname(Env, type, Q), { compound(Q) }, ccl_declarator_id_end, !.   % Shape::area defined out of its class, vector<T>::vector, a specialization f<int>, v<T, U>
+ccl_declarator_id_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, ['(', '=', ';', ',', '{', '[', ':']).   % not `(is_x<T>::value && y)': a cast's type-id has no name
 ccl_direct(_, name(N)) --> ccl_id(N), !.
+ccl_op_name(literal(Sfx)) --> [tok(str, [], _)], !, ccl_id(Sfx).                             % operator""sv: a literal operator
 ccl_op_name('[]') --> ccl_p('['), !, ccl_p(']').
 ccl_op_name('()') --> ccl_p('('), !, ccl_p(')').
 ccl_op_name(new) --> ccl_kw(new), !, ( ccl_p('['), ccl_p(']'), ! ; [] ).
@@ -922,7 +1026,11 @@ ccl_direct(_, none) --> [].
 ccl_suffixes(Env, [S|Ss]) --> ccl_suffix(Env, S), !, ccl_suffixes(Env, Ss).
 ccl_suffixes(_, []) --> [].
 ccl_suffix(_, arr(N)) --> ccl_p('['), ( ccl_p(']'), !, { N = none } ; ccl_quals(_), ( ccl_cond_expr(N), ! ; { N = none } ), ccl_p(']') ).
-ccl_suffix(Env, fn(Ps, Var)) --> ccl_p('('), ccl_params(Env, Ps, Var), ccl_p(')').
+ccl_suffix(Env, fn(Ps, Var)) --> ccl_p('('), ccl_params(Env, Ps, Var), ccl_p(')'), ccl_suffix_quals.
+%% a function type's exception specification, `void (*)(int) noexcept': dropped (const and the ref-qualifiers stay for the method rule)
+ccl_suffix_quals --> ccl_cpp, ccl_kw(noexcept), !, ( ccl_p('('), ccl_balanced, ccl_p(')'), ! ; [] ).
+ccl_suffix_quals --> ccl_cpp, ccl_kw(throw), ccl_p('('), !, ccl_balanced, ccl_p(')').
+ccl_suffix_quals --> [].
 
 ccl_params(_, [], false) --> ccl_kw(void), ccl_peek(p, ')'), !.
 ccl_params(Env, Ps, Var) --> ccl_param_list(Env, Ps, Var), !.
@@ -931,7 +1039,9 @@ ccl_param_list(_, [], true) --> ccl_p('...'), !.
 ccl_param_list(Env, [P|Ps], Var) --> ccl_param(Env, P), ( ccl_p(','), !, ccl_param_list(Env, Ps, Var) ; { Ps = [], Var = false } ).
 %% C++23: an explicit object parameter, `this Self &self': its type wrapped as this(T), for the desugaring
 ccl_param(Env, param(this(T), N)) --> ccl_cpp, ccl_kw(this), !, ccl_decl_specs(Env, param, _, Base), ccl_abstract_or_declarator(Env, Base, N, T0), ccl_attrs, ccl_tie(T0, T).
-ccl_param(Env, P) --> ccl_decl_specs(Env, param, _, Base), ccl_abstract_or_declarator(Env, Base, N, T0), ccl_attrs, ccl_tie(T0, T), ccl_param_default(T, N, P).
+ccl_param(Env, P) --> ccl_decl_specs(Env, param, _, Base), ccl_param_rest(Env, Base, P).
+ccl_param_rest(Env, Base, param(pack(T), N)) --> ccl_cpp, ccl_pointers(Ptrs), ccl_p('...'), !, ( ccl_id(N), ! ; { N = anon } ), { ccl_apply_pointers(Ptrs, Base, T) }.   % `Ts &&... args': a pack
+ccl_param_rest(Env, Base, P) --> ccl_abstract_or_declarator(Env, Base, N, T0), ccl_attrs, ccl_tie(T0, T), ccl_param_default(T, N, P).
 ccl_param_default(T, N, param(T, N, E)) --> ccl_cpp, ccl_p('='), !, ccl_assign_expr(E).        % C++'s default argument
 ccl_param_default(T, N, param(T, N)) --> [].
 
@@ -960,7 +1070,7 @@ ccl_initializer(E) --> ccl_assign_expr(E).
 ccl_init_items([I|Is]) --> ccl_init_item(I), !, ( ccl_p(','), !, ccl_init_items(Is) ; { Is = [] } ).
 ccl_init_items([]) --> [].
 ccl_init_item(item(Ds, V)) --> ccl_designators(Ds), { Ds \== [] }, !, ccl_p('='), ccl_initializer(V).
-ccl_init_item(item([], V)) --> ccl_initializer(V).
+ccl_init_item(item([], V)) --> ccl_initializer(V0), ccl_targ_pack(V0, V).                       % { xs[Is]... }: the pack expanded
 ccl_designators([D|Ds]) --> ccl_designator(D), !, ccl_designators(Ds).
 ccl_designators([]) --> [].
 ccl_designator(field(N)) --> ccl_p('.'), ccl_id(N).
@@ -968,13 +1078,17 @@ ccl_designator(at(E)) --> ccl_p('['), ccl_cond_expr(E), ccl_p(']').
 
 %% ---- statements -------------------------------------------------------------
 ccl_compound(Env, block(Items)) --> ccl_p('{'), ccl_push_scope, ccl_block_items(Env, Items), ccl_p('}'), ccl_pop_scope.
-ccl_block_items(Env0, Items) --> ccl_block_item(Env0, Env1, I), !, { ( Env1 == Env0 -> true ; nb_setval('$ccl_env', Env1) ) }, ccl_block_items(Env1, More), { ccl_splice(I, More, Items) }.
+ccl_block_items(Env0, Items) --> ccl_block_item(Env0, Env1, I), !, { ccl_env_sync(Env0, Env1) }, ccl_block_items(Env1, More), { ccl_splice(I, More, Items) }.
 ccl_block_items(_, []) --> [].
 ccl_block_item(Env, Env, directive(L, Text)) --> [tok(pp, Text, L)], !.
 ccl_block_item(Env, Env, '$splice'(Ds)) --> ccl_line(L), ccl_p('{'), ccl_pattern(P), ccl_p('}'), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_destructure(L, P, E, Ds) }.
 ccl_block_item(Env, Env, D) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_tie_name(Y), ccl_p(';'), { ccl_infer_decl(L, N, E, Y, D), ccl_note_item(D) }.
 ccl_block_item(Env, Env, D) --> ccl_cpp, ccl_line(L), ccl_kw(auto), ( ccl_p('&'), { R = ref } ; { R = none } ), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, R, D) }.
-ccl_block_item(Env0, [N|Env0], typedef(L, [var(N, T, none)])) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(N), ccl_p('='), !, ccl_type_name(Env0, T), ccl_p(';'),   % C++11: using T = type; in a block
+%% C++17: structured bindings, `auto [a, b] = e;' -- Cicili's pattern `{ a, b } := e' by another spelling, a declaration per
+%% name (a struct's members in order, an array's elements); `auto &[a, b]' binds references
+ccl_block_item(Env, Env, '$splice'(Ds)) --> ccl_cpp, ccl_line(L), ( ccl_kw(const) ; [] ), ccl_kw(auto), ( ccl_p('&&'), { Ref = yes } ; ccl_p('&'), { Ref = yes } ; { Ref = no } ),
+    ccl_p('['), ccl_pattern(Ps), ccl_p(']'), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_destructure(L, Ps, E, Ds0), ( Ref == yes -> ccl_bind_refs(Ds0, Ds) ; Ds = Ds0 ) }.
+ccl_block_item(Env0, [N|Env0], typedef(L, [var(N, T, none)])) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(N), ccl_attrs, ccl_p('='), !, ccl_type_name(Env0, T), ccl_p(';'),   % C++11: using T = type; in a block
     { ccl_add_env(N), ccl_note_item(typedef(L, [var(N, T, none)])) }.
 ccl_block_item(Env, Env, using(L, U)) --> ccl_cpp, ccl_line(L), ccl_kw(using), !, ( ccl_kw(namespace), !, ccl_qname(Env, type, Q), { U = namespace(Q) } ; ccl_kw(enum), !, ccl_qname(Env, type, Q), { U = enum(Q) } ; ccl_qname(Env, type, Q), { U = name(Q) } ), ccl_p(';').
 ccl_block_item(Env0, Env, I) --> ccl_line(L), ccl_decl_specs(Env0, block, Sto, Base), ccl_init_declarators(Env0, Base, Ds), ccl_p(';'), !,
@@ -984,6 +1098,7 @@ ccl_block_item(Env, Env, declare(L, Base)) --> ccl_line(L), ccl_decl_specs(Env, 
 ccl_block_item(Env, Env, S) --> ccl_statement(Env, S).
 
 ccl_statement(Env, S) --> ccl_compound(Env, S), !.
+ccl_statement(_, static_assert(L, E, M)) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(E, M).
 ccl_statement(Env, S) --> ccl_cpp, ccl_p('['), ccl_p('['), !, ccl_skip_attr, ccl_statement(Env, S).                    % C++20: [[likely]] on a statement, dropped
 ccl_statement(_, co_return(L, none)) --> ccl_cpp, ccl_line(L), ccl_kw(co_return), ccl_p(';'), !.                            % coroutines: read, refused later
 ccl_statement(_, co_return(L, E)) --> ccl_cpp, ccl_line(L), ccl_kw(co_return), !, ccl_expr(E), ccl_p(';').
@@ -992,7 +1107,12 @@ ccl_statement(Env, if_consteval(L, Neg, T, E)) --> ccl_cpp, ccl_line(L), ccl_kw(
 ccl_statement(Env, if_constexpr(L, C, T, E)) --> ccl_cpp, ccl_line(L), ccl_kw(if), ccl_kw(constexpr), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ).   % C++17: decided at compile time
 ccl_statement(Env, block([Init1, if(L, C, T, E)])) --> ccl_cpp, ccl_line(L), ccl_kw(if), ccl_p('('), ccl_for_init(Env, Init), !,                       % C++17: if (init; cond), a block of the two
     ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ), { ccl_init_stmt(L, Init, Init1) }.
+ccl_statement(Env, block([D, if(L, id(N), T, E)])) --> ccl_cpp, ccl_line(L), ccl_kw(if), ccl_p('('), ccl_cond_decl(Env, L, N, D), ccl_p(')'), !,   % if (T x = e): the declaration, then the test of x
+    ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ).
 ccl_statement(Env, if(L, C, T, E)) --> ccl_line(L), ccl_kw(if), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ).
+ccl_statement(Env, block([D, while(L, id(N), S)])) --> ccl_cpp, ccl_line(L), ccl_kw(while), ccl_p('('), ccl_cond_decl(Env, L, N, D), ccl_p(')'), !, ccl_statement(Env, S).   % while (T x = e)
+%% a declaration as a condition: `T x = e', `auto x = e', its value the test
+ccl_cond_decl(Env, L, N, declaration(L, none, Base, [var(N, Ty, Init)])) --> ccl_decl_specs(Env, block, _, Base), ccl_init_declarator(Env, Base, var(N, Ty, Init)), { atom(N), Init \== none, ccl_note_item(declaration(L, none, Base, [var(N, Ty, Init)])) }.
 ccl_statement(Env, while(L, C, S)) --> ccl_line(L), ccl_kw(while), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, S).
 ccl_statement(Env, do(L, S, C)) --> ccl_line(L), ccl_kw(do), !, ccl_statement(Env, S), ccl_kw(while), ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_p(';').
 ccl_statement(Env, S) --> ccl_line(L), ccl_kw(for), !, ccl_p('('), ccl_for_rest(Env, L, S).
@@ -1005,6 +1125,7 @@ ccl_range_decl(Env, var(N, T, none)) --> ccl_decl_specs(Env, block, _, Base), cc
 ccl_statement(Env, try(L, Body, Catches)) --> ccl_cpp, ccl_line(L), ccl_kw(try), !, ccl_compound(Env, Body), ccl_catches(Env, Catches).
 ccl_catches(Env, [catch(P, B)|Cs]) --> ccl_kw(catch), !, ccl_p('('), ( ccl_p('...'), !, { P = any } ; ccl_param(Env, P) ), ccl_p(')'), ccl_compound(Env, B), ccl_catches(Env, Cs).
 ccl_catches(_, []) --> [].
+ccl_statement(_, return(L, I)) --> ccl_cpp, ccl_line(L), ccl_kw(return), ccl_peek(p, '{'), !, ccl_initializer(I), ccl_p(';').   % return { a, b };
 ccl_statement(_, return(L, E)) --> ccl_line(L), ccl_kw(return), ccl_expr(E), !, ccl_p(';').
 ccl_statement(_, return(L)) --> ccl_line(L), ccl_kw(return), !, ccl_p(';').
 ccl_statement(_, break(L)) --> ccl_line(L), ccl_kw(break), !, ccl_p(';').
@@ -1060,7 +1181,14 @@ ccl_cond_expr(E) --> ccl_lor(C), ( ccl_p('?'), !, ccl_expr(A), ccl_p(':'), ccl_c
 ccl_lor(E) --> ccl_binary(1, E).
 ccl_shift(E) --> ccl_binary(8, E).                                                % a template argument: shift and above, so its `>' closes
 ccl_binary(Min, E) --> ccl_cast_expr(A), ccl_binary_rest(Min, A, E).
-ccl_binary_rest(Min, A, E) --> ccl_peek(p, Op), ccl_line(L), { ccl_far(L), ccl_binop(Op, P), P >= Min }, !, ccl_p(Op), { P1 is P + 1 }, ccl_binary(P1, B), ccl_binary_rest(Min, bin(Op, A, B), E).
+ccl_binary_rest(Min, A, E) --> ccl_peek(p, Op), ccl_line(L), { ccl_far(L), ccl_binop(Op, P), P >= Min, ccl_op_open(Op) }, !, ccl_p(Op), { P1 is P + 1 }, ccl_binary(P1, B), ccl_binary_rest(Min, bin(Op, A, B), E).
+%% inside a template argument (`'$ccl_targ' > 0) a `>' or `>>' closes it and is no operator; parentheses open the operators again
+ccl_op_open(Op) :- ( Op == '>' ; Op == '>>' ), !, nb_getval('$ccl_targ', 0).
+ccl_op_open(_).
+ccl_targ_enter :- nb_getval('$ccl_targ', D), D1 is D + 1, nb_setval('$ccl_targ', D1).
+ccl_targ_leave :- nb_getval('$ccl_targ', D), D1 is D - 1, nb_setval('$ccl_targ', D1).
+ccl_targ_save(D) :- nb_getval('$ccl_targ', D), nb_setval('$ccl_targ', 0).
+ccl_targ_restore(D) :- nb_setval('$ccl_targ', D).
 ccl_binary_rest(_, E, E) --> [].
 ccl_binop('||', 1). ccl_binop('&&', 2). ccl_binop('|', 3). ccl_binop('^', 4). ccl_binop('&', 5).
 ccl_binop('==', 6). ccl_binop('!=', 6). ccl_binop('<', 7). ccl_binop('>', 7). ccl_binop('<=', 7). ccl_binop('>=', 7).
@@ -1080,8 +1208,11 @@ ccl_cast_rest(T, cast(T, E)) --> ccl_cast_expr(E).
 %% C++: new T, new T(args), new T{args}, new T[n]; delete p, delete[] p; throw e
 ccl_unary(E) --> ccl_peek(K, V), ccl_unary_(V, K, E).
 ccl_unary_(new, kw, E) --> ccl_cpp, !, ccl_kw(new), ccl_new_expr(E).
+ccl_unary_('::', p, E) --> ccl_cpp, ccl_p('::'), ( ccl_kw(new), !, ccl_new_expr(E) ; ccl_kw(delete), ( ccl_p('['), !, ccl_p(']'), ccl_cast_expr(X), { E = delete_array(X) } ; ccl_cast_expr(X), { E = delete(X) } ) ), !.   % ::new, ::delete
 ccl_unary_(delete, kw, E) --> ccl_cpp, !, ccl_kw(delete), ( ccl_p('['), !, ccl_p(']'), ccl_cast_expr(X), { E = delete_array(X) } ; ccl_cast_expr(X), { E = delete(X) } ).
 ccl_unary_(co_await, kw, co_await(E)) --> ccl_cpp, !, ccl_kw(co_await), ccl_cast_expr(E).                  % C++20 coroutines: read, refused later
+ccl_unary_(noexcept, kw, noexcept_expr(E)) --> ccl_cpp, !, ccl_kw(noexcept), ccl_p('('), { ccl_targ_save(D) }, ( ccl_expr(E), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')').   % noexcept(e): a bool
+ccl_unary_(alignof, kw, alignof_type(T)) --> ccl_cpp, !, ccl_kw(alignof), ccl_p('('), ccl_type_name([], T), ccl_p(')').
 ccl_unary_(co_yield, kw, co_yield(E)) --> ccl_cpp, !, ccl_kw(co_yield), ccl_assign_expr(E).
 ccl_unary_(throw, kw, throw(E)) --> ccl_cpp, !, ccl_kw(throw), ( ccl_assign_expr(E), ! ; { E = none } ).
 ccl_new_expr(E) --> { nb_getval('$ccl_env', Env) }, ( ccl_p('('), ccl_args(_), ccl_p(')'), ! ; [] ), ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) },
@@ -1097,7 +1228,7 @@ ccl_unary_('+', p, pos(E))     --> !, ccl_p('+'), ccl_cast_expr(E).
 ccl_unary_('-', p, neg(E))     --> !, ccl_p('-'), ccl_cast_expr(E).
 ccl_unary_('~', p, bitnot(E))  --> !, ccl_p('~'), ccl_cast_expr(E).
 ccl_unary_('!', p, not(E))     --> !, ccl_p('!'), ccl_cast_expr(E).
-ccl_unary_(sizeof, kw, E)      --> !, ccl_kw(sizeof), ( ccl_p('('), ccl_type_name([], T), ccl_p(')'), !, { E = sizeof_type(T) } ; ccl_unary(X), { E = sizeof(X) } ).
+ccl_unary_(sizeof, kw, E)      --> !, ccl_kw(sizeof), ( ccl_p('...'), !, ccl_p('('), ccl_id(N), ccl_p(')'), { E = sizeof_pack(N) } ; ccl_p('('), ccl_type_name([], T), ccl_p(')'), !, { E = sizeof_type(T) } ; ccl_unary(X), { E = sizeof(X) } ).   % sizeof...(Ts)
 ccl_unary_(_, _, E)            --> ccl_postfix(E).
 
 ccl_postfix(E) --> ccl_primary(P), ccl_postfix_(P, E).
@@ -1105,9 +1236,12 @@ ccl_postfix(E) --> ccl_primary(P), ccl_postfix_(P, E).
 ccl_postfix_(A, E) --> ccl_peek(p, V), !, ccl_postfix_p(V, A, E).
 ccl_postfix_(E, E) --> [].
 ccl_postfix_p('{', id(T), E) --> ccl_cpp, { nb_getval('$ccl_env', G), ccl_known_typedef(G, T) }, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(id(T), Vs), E).   % T{args}, a temporary
+ccl_postfix_p('{', tmpl(N, As), E) --> ccl_cpp, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(tmpl(N, As), Vs), E).           % X<T>{args}
+ccl_postfix_p('{', scoped(P, N), E) --> ccl_cpp, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(scoped(P, N), Vs), E).
 ccl_postfix_p('[', A, E) --> ccl_cpp, { ccl_std_at_least(23) }, !, ccl_p('['), ccl_args(As), ccl_p(']'), { As = [I] -> Ix = index(A, I) ; Ix = index(A, args(As)) }, ccl_postfix_(Ix, E).   % C++23: a[i, j] is operator[](i, j)
 ccl_postfix_p('[', A, E) --> !, ccl_p('['), ccl_expr(I), ccl_p(']'), ccl_postfix_(index(A, I), E).
-ccl_postfix_p('(', A, E) --> !, ccl_p('('), ccl_args(As), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
+ccl_postfix_p('(', id(N), E) --> ccl_cpp, { ccl_builtin_trait(N) }, !, ccl_p('('), { nb_getval('$ccl_env', Env) }, ccl_builtin_args(Env, As), ccl_p(')'), ccl_postfix_(call(id(N), As), E).   % __is_same(T, U): the arguments types
+ccl_postfix_p('(', A, E) --> !, ccl_p('('), { ccl_targ_save(D) }, ( ccl_args(As), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
 ccl_postfix_p('.', A, E) --> ccl_cpp, ccl_p('.'), ccl_p('~'), !, ccl_id(T), ccl_postfix_(member(A, dtor(T)), E).      % C++: x.~T(), the destructor called
 ccl_postfix_p('->', A, E) --> ccl_cpp, ccl_p('->'), ccl_p('~'), !, ccl_id(T), ccl_postfix_(arrow(A, dtor(T)), E).
 ccl_postfix_p('.', A, E) --> !, ccl_p('.'), ccl_member_name(N), ccl_postfix_(member(A, N), E).
@@ -1118,10 +1252,11 @@ ccl_postfix_p(_, E, E) --> [].
 %% C++: x.item<float>(), a member template with its arguments -- the member's
 %% name is tmpl(N, Args) when the arguments read as such, ending before what a
 %% call or a closing paren starts (`x.n < y' scans to its `;' and is not one)
+ccl_member_name(operator(Op)) --> ccl_cpp, ccl_kw(operator), !, ccl_op_name(Op).                % p.operator->(), x.operator=(y)
 ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_id(N), ccl_targs_ahead, { nb_getval('$ccl_env', Env) }, ccl_targs(Env, As), !.
 ccl_member_name(N) --> ccl_id(N).
-ccl_args([A|As]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).   % C++: f({1, 2}), a braced list as an argument
-ccl_args([A|As]) --> ccl_assign_expr(A), !, ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).
+ccl_args([A|As]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(A0), ccl_targ_pack(A0, A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).   % C++: f({1, 2}), a braced list as an argument
+ccl_args([A|As]) --> ccl_assign_expr(A0), !, ccl_targ_pack(A0, A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).                             % f(args...): the pack expanded
 ccl_item_values([], []).
 ccl_item_values([item(_, V)|Is], [V|Vs]) :- ccl_item_values(Is, Vs).
 ccl_args([]) --> [].
@@ -1138,12 +1273,17 @@ ccl_primary_(chr, C, chr(C))     --> !, [_].
 %% C++ primaries: this, true, false, nullptr, the casts, a functional cast of
 %% a basic type, a lambda, and a qualified or template name
 ccl_primary_(kw, this, this) --> ccl_cpp, !, ccl_kw(this).
+ccl_primary_(kw, operator, id(operator(Op))) --> ccl_cpp, !, ccl_kw(operator), ccl_op_name(Op).                  % operator*() called by its name
 ccl_primary_(kw, true, bool(true)) --> ccl_cpp, !, ccl_kw(true).
 ccl_primary_(kw, false, bool(false)) --> ccl_cpp, !, ccl_kw(false).
 ccl_primary_(kw, nullptr, nullptr) --> ccl_cpp, !, ccl_kw(nullptr).
 ccl_primary_(kw, KW, ccast(K, T, E)) --> ccl_cpp, { ccl_cast_kw(KW, K) }, !, ccl_kw(KW), ccl_p('<'), { nb_getval('$ccl_env', Env) }, ccl_type_name(Env, T), ccl_tclose, ccl_p('('), ccl_expr(E), ccl_p(')').
-ccl_primary_(kw, K, ccast(functional, base([], [K]), E)) --> ccl_cpp, { ccl_basic_type(K) }, !, ccl_kw(K), ccl_p('('), ccl_expr(E), ccl_p(')').
+ccl_primary_(kw, K, ccast(functional, base([], [K]), E)) --> ccl_cpp, { ccl_basic_type(K) }, !, ccl_kw(K),
+    ( ccl_p('('), ccl_p(')'), !, { E = none } ; ccl_p('('), !, ccl_expr(E), ccl_p(')') ; ccl_initializer(init(Is)), { Is = [] -> E = none ; Is = [item(_, E)] } ).   % int(x), void(), int{}
 ccl_primary_(kw, auto, decay_copy(E)) --> ccl_cpp, !, ccl_kw(auto), ( ccl_p('('), !, ccl_expr(E), ccl_p(')') ; ccl_p('{'), ccl_expr(E), ccl_p('}') ).   % C++23: auto(x), auto{x}: a decayed copy
+ccl_primary_(kw, decltype, E) --> ccl_cpp, !, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), { ( Q = decltype(X) -> E = decltype_expr(X) ; E = Q ) }.   % decltype(e)::value, a scoped name
+ccl_primary_(kw, typename, construct(T, As)) --> ccl_cpp, !, { nb_getval('$ccl_env', Env) }, ccl_conv_type(Env, T),                    % typename X<T>::tag(): a temporary of a dependent type (`()' is the arguments, not a function type)
+    ( ccl_p('('), !, ccl_args(As), ccl_p(')') ; ccl_initializer(init(Is)), { ccl_item_values(Is, As) } ).
 ccl_primary_(kw, requires, requires_expr(Ps, Reqs)) --> ccl_cpp, !, ccl_kw(requires), { nb_getval('$ccl_env', Env) },   % C++20: requires (params) { requirements }
     ( ccl_p('('), ccl_params(Env, Ps, _), ccl_p(')') ; { Ps = [] } ), ccl_p('{'), ccl_requirements(Env, Reqs), ccl_p('}').
 ccl_primary_(p, '[', lambda(Caps1, Ps, Ret, Body)) --> ccl_cpp, !, ccl_p('['), ccl_lambda_caps(Caps), ccl_p(']'), { nb_getval('$ccl_env', Env0) },
@@ -1151,6 +1291,7 @@ ccl_primary_(p, '[', lambda(Caps1, Ps, Ret, Body)) --> ccl_cpp, !, ccl_p('['), c
     ccl_attrs, ( ccl_p('('), !, ccl_params(Env, Ps, _), ccl_p(')') ; { Ps = [] } ), ccl_lambda_specs, ( ccl_p('->'), !, ccl_type_name(Env, Ret) ; { Ret = none } ),
     ccl_push_scope, { ccl_declare_params(Ps) }, ccl_compound(Env, Body), ccl_pop_scope.
 %% C++23: the specifiers with or without the parentheses (`[] mutable -> int { }'), a static lambda, an attribute after the captures
+ccl_lambda_specs --> ccl_gnu_attr, !, ccl_lambda_specs.                                                         % an attribute after the parameters
 ccl_lambda_specs --> ccl_kw(K), { memberchk(K, [mutable, constexpr, consteval, static]) }, !, ccl_lambda_specs.
 ccl_lambda_specs --> ccl_kw(noexcept), !, ( ccl_p('('), ccl_balanced, ccl_p(')'), ! ; [] ), ccl_lambda_specs.
 ccl_lambda_specs --> [].
@@ -1173,6 +1314,11 @@ ccl_lambda_cap(cap(this)) --> ccl_kw(this), !.
 ccl_lambda_cap(cap(val, N)) --> ccl_id(N).
 ccl_primary_(id, N, id(N))   --> !, ccl_id(N).
 ccl_primary_(p, '(', stmt_expr(B)) --> ccl_p('('), ccl_peek(p, '{'), !, { nb_getval('$ccl_env', Env) }, ccl_compound(Env, B), ccl_p(')').   % GNU ({ ... })
-ccl_primary_(p, '(', E)      --> ccl_p('('), ccl_expr(E), ccl_p(')').
+ccl_primary_(p, '(', F)      --> ccl_cpp, ccl_p('('), ccl_fold(F), !, ccl_p(')').    % C++17: a fold expression
+ccl_primary_(p, '(', E)      --> ccl_p('('), { ccl_targ_save(D) }, ( ccl_expr(E), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')').
+%% (... op E) is fold(Op, dots, E); (E op ...) fold(Op, E, dots); (A op ... op B) fold(Op, A, dots, B): the desugaring finds the pack's side
+ccl_fold(fold(Op, dots, E)) --> ccl_p('...'), !, ccl_fold_op(Op), ccl_cast_expr(E).
+ccl_fold(F) --> ccl_cast_expr(A), ccl_fold_op(Op), ccl_p('...'), ( ccl_fold_op(Op), !, ccl_cast_expr(B), { F = fold(Op, A, dots, B) } ; { F = fold(Op, A, dots) } ).
+ccl_fold_op(Op) --> [tok(p, Op, _)], { ccl_binop(Op, _) ; memberchk(Op, [',', '=', '+=', '-=', '*=', '/=', '%=', '&=', '|=', '^=', '<<=', '>>=']) }, !.
 ccl_strings(S0, S) --> [tok(str, S1, _)], !, { append(S0, S1, S2) }, ccl_strings(S2, S).
 ccl_strings(S, S) --> [].

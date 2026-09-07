@@ -364,6 +364,7 @@ ck_member_ties([member(MT, F, _)|Ms], Base, Sep, Seen, Ts) :-
 
 %% the path an lvalue names: a, a.f, a->f, a->inner.f
 ck_path(id(N), N) :- atom(N).
+ck_path(member(id(R), F), K) :- ck_is_ref(R), !, ck_path(arrow(id(R), F), K).            % C++: r.f with r a reference is the referent's field, r->f
 ck_path(member(E, F), K) :- ck_path(E, B), atomic_list_concat([B, '.', F], K).
 ck_path(arrow(E, F), K) :- ck_path(E, B), atomic_list_concat([B, '->', F], K).
 ck_owner_path(St, E, K) :- ck_path(E, K), ck_is_owner(St, K).
@@ -620,8 +621,8 @@ ck_borrows_from(member(E, F), St, P) :- ck_path(member(E, F), K), ck_state(St, K
 ck_borrows_from(arrow(E, F), St, P) :- ck_path(arrow(E, F), K), ck_state(St, K, S), !, ck_borrow_source(K, S, P).
 ck_borrows_from(bin(Op, A, _), St, P) :- memberchk(Op, ['+', '-']), !, ck_borrows_from(A, St, P).
 ck_borrows_from(cast(_, A), St, P) :- !, ck_borrows_from(A, St, P).
-ck_borrows_from(addr(index(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
-ck_borrows_from(addr(member(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
+ck_borrows_from(addr(index(A, _)), St, P) :- !, ck_borrows_from(addr(A), St, P).             % &a[i], &c.f: what &a, &c borrow (an anchor, an owner's slot)
+ck_borrows_from(addr(member(A, _)), St, P) :- !, ck_borrows_from(addr(A), St, P).
 ck_borrows_from(addr(arrow(A, _)), St, P) :- !, ck_borrows_from(A, St, P).
 ck_borrows_from(addr(id(N)), St, P) :- ck_is_ref(N), !, ck_state(St, N, S), ck_borrow_source(N, S, P).   % C++: &x of a reference is the pointer held
 ck_borrows_from(id(N), St, P) :- ck_is_ref(N), !, ck_local_type(N, ptr(_, RT)), ck_carries_type(RT), ck_state(St, N, S), ck_borrow_source(N, S, P).   % its value: what it refers to
@@ -648,6 +649,8 @@ ck_fn_sig(T, Sig) :- ccl_resolve_type(T, T1), ( T1 = fn(_, _, _) -> Sig = T1 ; T
 ck_borrow_source(K, S, P) :- ( ck_owner_state(S) -> P = K ; memberchk(S, [anchor, loose, array]) -> P = K ; S = borrow(P) -> true ; S = dangling(P) ).
 %% a return: a tied owner only within the result's tie; a borrow of a parameter
 %% or a global may leave, and with a result tie only what lies within it
+ck_no_escape(cond(_, A, B), St) :- !, ck_no_escape(A, St), ck_no_escape(B, St).           % c ? a : b returns either
+ck_no_escape(comma(_, B), St) :- !, ck_no_escape(B, St).
 ck_no_escape(E, St) :-
     nb_getval('$ck_ret_tie', RT),
     (   nb_getval('$ck_ret', Ret), ck_ref_as_ptr(Ret, RP), RP \== Ret                 % C++: a reference result is a pointer out
