@@ -271,7 +271,7 @@ ccl_one_char(0':, ':').  ccl_one_char(0';, ';').  ccl_one_char(0'=, '=').  ccl_o
 %% ---- the parser: a DCG over tokens -----------------------------------------
 
 ccl_unit(Tokens, unit(Items), Rest) :-
-    ccl_ensure_globals, ccl_seed_typedefs(Env), nb_setval('$ccl_env', Env), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []), nb_setval('$ccl_expansions', []),
+    ccl_ensure_globals, ccl_seed_typedefs(Env), ccl_env_put(Env), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []), nb_setval('$ccl_expansions', []),
     ccl_standard_macros, ccl_scope_init,
     phrase(ccl_externals(Env, Items0), Tokens, Rest),
     nb_getval('$ccl_expansions', Es0),
@@ -364,7 +364,17 @@ ccl_gdeclare(Ds) :- nb_getval('$ccl_gscope', G), append(Ds, G, G1), nb_setval('$
 %% a list of declarations into the innermost frame -- the file scope's when no frame is open
 ccl_scope_add(Ds) :- nb_getval('$ccl_scope', S), ( S = [F|S1] -> append(Ds, F, F1), nb_setval('$ccl_scope', [F1|S1]) ; ccl_gdeclare(Ds) ).
 ccl_note_typedef(N, T) :- nb_getval('$ccl_typedefs', L), nb_setval('$ccl_typedefs', [N-T|L]), ccl_tables_changed.
-ccl_note_tag(Tag, Ms) :- nb_getval('$ccl_tags', L), nb_setval('$ccl_tags', [Tag-Ms|L]), ccl_tables_changed.
+ccl_note_tag(Tag, Ms0) :- ( ccl_lang(cpp) -> ccl_slim_members(Ms0, Ms) ; Ms = Ms0 ),     % C++: a class's tag without its bodies -- the table is copied whole at every lookup, and cocolog reclaims nothing
+    nb_getval('$ccl_tags', L), nb_setval('$ccl_tags', [Tag-Ms|L]), ccl_tables_changed.
+%% a class's members with the bodies dropped: what the tables need (the shapes, the data members, the typedefs)
+ccl_slim_members(none, none) :- !.
+ccl_slim_members([], []).
+ccl_slim_members([method(L, Q, R, N, Ps, V, _)|Ms], [method(L, Q, R, N, Ps, V, none)|Ms1]) :- !, ccl_slim_members(Ms, Ms1).
+ccl_slim_members([ctor(L, Q, Ps, _, _)|Ms], [ctor(L, Q, Ps, [], none)|Ms1]) :- !, ccl_slim_members(Ms, Ms1).
+ccl_slim_members([dtor(L, Q, _)|Ms], [dtor(L, Q, none)|Ms1]) :- !, ccl_slim_members(Ms, Ms1).
+ccl_slim_members([template(L, Ps, M)|Ms], [template(L, Ps, M1)|Ms1]) :- !, ccl_slim_members([M], [M1]), ccl_slim_members(Ms, Ms1).
+ccl_slim_members([friend(L, M)|Ms], [friend(L, M1)|Ms1]) :- !, ccl_slim_members([M], [M1]), ccl_slim_members(Ms, Ms1).
+ccl_slim_members([M|Ms], [M|Ms1]) :- ccl_slim_members(Ms, Ms1).
 %% the answer caches of ccl_typedef_of/2, ccl_tag/2 and ccl_members_layout/4 (ccl_infer), emptied when a table is written
 ccl_tables_changed :-
     ccl_named_caches(Ps), ccl_forget_named(Ps),
@@ -581,14 +591,43 @@ ccl_seed_typedefs([size_t, ssize_t, ptrdiff_t, intptr_t, uintptr_t, int8_t, int1
 
 %% the typedef names in force, kept globally too, for the casts and sizeofs
 %% that sit deep in an expression where no Env is threaded
-ccl_set_env(Env) --> { nb_setval('$ccl_env', Env) }.
+ccl_set_env(Env) --> { ccl_env_put(Env) }.
 %% the threaded env's new names join the global one (never replace it: the global holds what a C++ class,
 %% a template parameter or a member alias added on the side, which the threaded env never sees)
 ccl_env_sync(Env0, Env1) :- ( Env1 == Env0 -> true ; ccl_env_added(Env1, Env0, New), ccl_add_envs(New) ).
 ccl_env_added(E1, E0, []) :- E1 == E0, !.
 ccl_env_added([N|E1], E0, [N|New]) :- !, ccl_env_added(E1, E0, New).
 ccl_env_added(E1, _, E1).
-ccl_known_typedef(Env, N) :- ( memberchk(N, Env) -> true ; nb_getval('$ccl_env', G), memberchk(N, G) ).
+ccl_known_typedef(Env, N) :- ccl_env_member(Env, N).
+%% the threaded env walked (it may end in the marker `genv' where a deep rule stands for the global env), then the
+%% global env's SET -- never a copy of the global env's six hundred names, which the parser asked at nearly every
+%% identifier: 1.5 GB of a 20 s parse of <vector>, cocolog reclaiming nothing (below)
+ccl_env_member(Env, N) :- var(Env), !, ccl_set_has('$ccl_envs', N).                  % an unbound env (a rule that passes none): the global one -- NEVER walked, or the walk binds it to an endless list
+ccl_env_member([H|T], N) :- !, ( H == N -> true ; ccl_env_member(T, N) ).
+ccl_env_member(_, N) :- ccl_set_has('$ccl_envs', N).
+%% ---- a SET of names in BUCKETS, a global each: membership without a copy of the set --------------------------------
+%% cocolog copies a global whole at every nb_getval and reclaims the heap on backtracking only (its DESIGN-compiling.md:
+%% no collector), so a deterministic run keeps every copy. A name's bucket is its first and last character and its
+%% length modulo 7, a dozen names; the list of all names stays beside the set for the enumerations and the snapshots
+%% (ccl_save_globals), and every write of such a list goes through the set as well: ccl_env_put/1, ccl_add_env/1,
+%% ccl_add_envs/1, ccl_tparams_leave/1, ccl_note_template/1, ccl_note_templates/1.
+ccl_set_bucket(Set, N, K) :- atom_length(N, Len), M is Len mod 7, sub_atom(N, 0, 1, _, F), sub_atom(N, _, 1, 0, L), atomic_list_concat([Set, F, L, M], K).
+ccl_set_has(Set, N) :- atom(N), ccl_set_bucket(Set, N, K), catch(nb_getval(K, B), _, ( ccl_set_new_bucket(Set, K), fail )), memberchk(N, B).
+ccl_set_add(Set, N) :- atom(N), ccl_set_bucket(Set, N, K), ( catch(nb_getval(K, B), _, fail) -> true ; ccl_set_new_bucket(Set, K), B = [] ), ( memberchk(N, B) -> true ; nb_setval(K, [N|B]) ).
+ccl_set_del(Set, N) :- atom(N), ccl_set_bucket(Set, N, K), ( catch(nb_getval(K, B), _, fail) -> ccl_delete_one(B, N, B1), nb_setval(K, B1) ; true ).
+ccl_set_new_bucket(Set, K) :- nb_setval(K, []), atom_concat(Set, ':keys', KK), ( catch(nb_getval(KK, Ks), _, fail) -> true ; Ks = [] ), nb_setval(KK, [K|Ks]).   % a bucket once made stays, so a miss never throws again (a bare catch, NOT ccl_global/3: that one runs ccl_ensure_globals first, which is where these sets are first filled -- an endless re-entry that took the machine down)
+ccl_set_adds(_, []).
+ccl_set_adds(Set, [N|Ns]) :- ( atom(N) -> ccl_set_add(Set, N) ; true ), ccl_set_adds(Set, Ns).
+ccl_set_dels(_, []).
+ccl_set_dels(Set, [N|Ns]) :- ( atom(N) -> ccl_set_del(Set, N) ; true ), ccl_set_dels(Set, Ns).
+ccl_set_clear(Set) :- atom_concat(Set, ':keys', KK), ( catch(nb_getval(KK, Ks), _, fail) -> true ; Ks = [] ), ccl_set_clear_(Ks).
+ccl_set_clear_([]).
+ccl_set_clear_([K|Ks]) :- nb_setval(K, []), ccl_set_clear_(Ks).
+ccl_set_rebuild(Set, Ns) :- ccl_set_clear(Set), ccl_set_adds(Set, Ns).
+%% the global env replaced whole (a file's start, a restore): the set rebuilt from it
+ccl_env_put(Env) :- nb_setval('$ccl_env', Env), ccl_set_rebuild('$ccl_envs', Env).
+ccl_templates_put(Ts) :- nb_setval('$ccl_templates', Ts), ccl_set_rebuild('$ccl_tmpls', Ts).
+ccl_fn_templates_put(Ts) :- nb_setval('$ccl_fn_templates', Ts), ccl_set_rebuild('$ccl_ftmpls', Ts).
 
 %% token helpers, usable as nonterminals. Each consumption notes the farthest
 %% line reached, so a failure can say where the grammar gave up, not only
@@ -601,9 +640,22 @@ ccl_peek(K, V, S, S) :- S = [tok(K, V, _)|_].
 ccl_far(L) :- nb_getval('$ccl_far', F), ( L > F -> nb_setval('$ccl_far', L) ; true ).
 ccl_farthest(L) :- nb_getval('$ccl_far', L).
 
-ccl_externals(Env, Is) --> [tok(pp, T, _)], { ccl_line_marker(T) }, !, ccl_externals(Env, Is).   % clang -E's `# 93 "file"', dropped
-ccl_externals(Env0, Items) --> ccl_external(Env0, Env1, I), !, { ccl_env_sync(Env0, Env1) }, ccl_externals(Env1, More), { ccl_splice(I, More, Items) }.
-ccl_externals(_, []) --> [].
+%% THE ITEM LOOP, EACH ITEM IN A SCOPE THAT BACKTRACKS: cocolog reclaims the heap on backtracking only (no
+%% collector), so a header's parse kept every item's intermediates until the run ended -- 700 MB for <vector>'s 442
+%% items, and growing with the header. Each item is read inside \+ \+, which throws its garbage away; the item and
+%% the count of tokens LEFT after it survive through a global (one copy into the store, one out), and the position
+%% after the item is the input walked that many tokens fewer -- length/2 is a C builtin, the walk is the item's own
+%% length. The tables, the env, the templates, the farthest line are globals and survive the scope; the threaded env
+%% starts every item after the first as the marker genv, since the global env has every name synced by then.
+ccl_externals(Env, Items, S0, S) :- length(S0, L0), ccl_externals_(Env, L0, Items, S0, S).
+ccl_externals_(Env, L0, Items, S0, S) :-
+    (   S0 = [tok(pp, T, _)|S1], ccl_line_marker(T) -> L1 is L0 - 1, ccl_externals_(Env, L1, Items, S1, S)   % clang -E's `# 93 "file"', dropped
+    ;   \+ \+ ( phrase(ccl_external(Env, Env1, I), S0, S2), ccl_env_sync(Env, Env1), length(S2, Left), nb_setval('$ccl_item', item(I, Left)) )
+    ->  nb_getval('$ccl_item', item(I, Left)), nb_setval('$ccl_item', none), Skip is L0 - Left, ccl_skip(Skip, S0, S1),
+        ccl_externals_(genv, Left, More, S1, S), ccl_splice(I, More, Items)
+    ;   Items = [], S = S0 ).
+ccl_skip(0, S, S) :- !.
+ccl_skip(N, [_|T], S) :- N1 is N - 1, ccl_skip(N1, T, S).
 ccl_line_marker(T) :- sub_atom(T, 0, 2, _, '# '), sub_atom(T, 2, 1, _, D), atom_codes(D, [C]), C >= 0'0, C =< 0'9.
 
 %% an #include is resolved and READ as the file is parsed (library(ccl_include)),
@@ -649,15 +701,15 @@ ccl_external(Env0, Env0, template(L, Ps, Item)) --> ccl_cpp, ccl_line(L), ccl_kw
 ccl_tparams_enter(G0, Ps, New) :- findall(N, ( member(tparam(K, N, _), Ps), atom(N), ( K == type ; K == pack ; K == template ) ), Ns), ccl_new_names(Ns, G0, New),   % added as each was read (ccl_tparam)
     nb_getval('$ccl_tmpl_depth', D), D1 is D + 1, nb_setval('$ccl_tmpl_depth', D1).
 ccl_tparams_leave(New) :- nb_getval('$ccl_tmpl_depth', D), D1 is D - 1, nb_setval('$ccl_tmpl_depth', D1),
-    ( New == [] -> true ; nb_getval('$ccl_env', G), findall(X, ( member(X, G), \+ memberchk(X, New) ), G1), nb_setval('$ccl_env', G1) ).
+    ( New == [] -> true ; nb_getval('$ccl_env', G), findall(X, ( member(X, G), \+ memberchk(X, New) ), G1), nb_setval('$ccl_env', G1), ccl_set_dels('$ccl_envs', New) ).
 %% inside a template's item its own name is a template already: `__tuple_less<_Ip - 1>()' in its own body
 ccl_note_if_template(N) :- ( atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0 -> ccl_note_template(N) ; true ).
 %% a FUNCTION template's name is a template (`move<int>(x)' reads as a template-id) but no type: `_Tp __t(std::move(__x))'
 %% declares no function taking a std::move -- the vexing parse C++ resolves by knowing what std::move is
 ccl_note_if_fn_template(N) :- ( atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0 -> ccl_note_fn_template(N) ; true ).
-ccl_note_fn_template(N) :- atom(N), N \== none, nb_getval('$ccl_fn_templates', Ts), ( memberchk(N, Ts) -> true ; nb_setval('$ccl_fn_templates', [N|Ts]) ).
+ccl_note_fn_template(N) :- atom(N), N \== none, ( ccl_set_has('$ccl_ftmpls', N) -> true ; nb_getval('$ccl_fn_templates', Ts), nb_setval('$ccl_fn_templates', [N|Ts]), ccl_set_add('$ccl_ftmpls', N) ).
 ccl_note_fn_template(_).
-ccl_fn_template(N) :- nb_getval('$ccl_fn_templates', Ts), memberchk(N, Ts).
+ccl_fn_template(N) :- ccl_set_has('$ccl_ftmpls', N).
 ccl_external(Env, Env, concept(L, N, E)) --> ccl_cpp, ccl_line(L), ccl_kw(concept), !, ccl_id(N), { ccl_note_template(N) }, ccl_p('='), ccl_cond_expr(E), ccl_p(';').   % C++20: concept N = constraint
 ccl_external(Env, Env, D) --> ccl_cpp, ccl_line(L), ccl_kw(auto), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, none, D) }.
 %% C++17: a deduction guide, `Guard(Args...) -> Guard<Ts...>;' (nothing to lower: the reader reads it, the desugaring passes it over)
@@ -822,11 +874,11 @@ ccl_targ_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, [',', '>', '>>']).
 %% the closing `>' of template arguments; a `>>' closes two, so one is left
 ccl_tclose(S0, S) :- S0 = [tok(p, '>', _)|S], !.
 ccl_tclose([tok(p, '>>', L)|T], [tok(p, '>', L)|T]).
-ccl_known_template(N) :- nb_getval('$ccl_templates', Ts), memberchk(N, Ts).
-ccl_note_template(N) :- atom(N), N \== none, nb_getval('$ccl_templates', Ts), ( memberchk(N, Ts) -> true ; nb_setval('$ccl_templates', [N|Ts]) ).
+ccl_known_template(N) :- ccl_set_has('$ccl_tmpls', N).
+ccl_note_template(N) :- atom(N), N \== none, ( ccl_set_has('$ccl_tmpls', N) -> true ; nb_getval('$ccl_templates', Ts), nb_setval('$ccl_templates', [N|Ts]), ccl_set_add('$ccl_tmpls', N) ).
 ccl_note_template(_).
 %% a class or enum name is a type name from its declaration on, for the unit
-ccl_add_env(N) :- nb_getval('$ccl_env', G), ( memberchk(N, G) -> true ; nb_setval('$ccl_env', [N|G]) ).
+ccl_add_env(N) :- ( ccl_set_has('$ccl_envs', N) -> true ; nb_getval('$ccl_env', G), nb_setval('$ccl_env', [N|G]), ccl_set_add('$ccl_envs', N) ).
 ccl_specs(_, _, St, Q0, S0, St, Q, S) --> [], { reverse(Q0, Q), reverse(S0, S) }.
 
 ccl_storage(K) :- memberchk(K, [typedef, extern, static, auto, register, inline, '_Noreturn', '_Thread_local', mutable, thread_local, explicit, virtual, friend]).
@@ -962,7 +1014,7 @@ ccl_method_quals([noexcept|Qs]) --> ccl_kw(noexcept), !, ( ccl_p('('), ccl_balan
 ccl_method_quals(Qs) --> ccl_kw(throw), !, ccl_p('('), ccl_balanced, ccl_p(')'), ccl_method_quals(Qs).
 ccl_method_quals(Qs) --> ( ccl_p('&'), ! ; ccl_p('&&') ), !, ccl_method_quals(Qs).
 ccl_method_quals(Qs) --> ccl_gnu_attr, !, ccl_method_quals(Qs).
-ccl_method_quals([trailing(T)|Qs]) --> ccl_p('->'), !, { nb_getval('$ccl_env', Env) }, ccl_type_name(Env, T), ccl_method_quals(Qs).
+ccl_method_quals([trailing(T)|Qs]) --> ccl_p('->'), !, { Env = genv }, ccl_type_name(Env, T), ccl_method_quals(Qs).
 ccl_method_quals([]) --> [].
 ccl_ctor_inits(Env, Inits) --> ccl_p(':'), !, ccl_init_list(Env, Inits).
 ccl_ctor_inits(_, []) --> [].
@@ -987,7 +1039,7 @@ ccl_member_declarator(_, Base, member(Base, anon, Bits)) --> ccl_p(':'), ccl_con
 
 ccl_enum_spec(enum_class(N, Es)) --> ccl_cpp, ccl_kw(enum), ( ccl_kw(class), ! ; ccl_kw(struct) ), !, ccl_id(N), { ccl_add_env(N) }, ccl_enum_base, ( ccl_p('{'), !, ccl_enumerators(Es), ccl_p('}') ; { Es = none } ).
 ccl_enum_spec(enum(N, Es)) --> ccl_kw(enum), ( ccl_id(N), { ( ccl_lang(cpp) -> ccl_add_env(N) ; true ) }, ! ; { N = anon } ), ( ccl_cpp, ccl_enum_base, ! ; [] ), ( ccl_p('{'), !, ccl_enumerators(Es), ccl_p('}') ; { Es = none } ).
-ccl_enum_base --> ccl_p(':'), !, { nb_getval('$ccl_env', Env) }, ccl_type_name(Env, _).   % `enum E : int', the underlying type dropped
+ccl_enum_base --> ccl_p(':'), !, { Env = genv }, ccl_type_name(Env, _).   % `enum E : int', the underlying type dropped
 ccl_enum_base --> [].
 ccl_enumerators(Es) --> [tok(pp, _, _)], !, ccl_enumerators(Es).             % a #define among the enumerators
 ccl_enumerators([E|Es]) --> ccl_enumerator(E), ( ccl_p(','), !, ccl_enumerators(Es) ; { Es = [] } ).
@@ -1044,7 +1096,7 @@ ccl_op_name('()') --> ccl_p('('), !, ccl_p(')').
 ccl_op_name(new) --> ccl_kw(new), !, ( ccl_p('['), ccl_p(']'), ! ; [] ).
 ccl_op_name(delete) --> ccl_kw(delete), !, ( ccl_p('['), ccl_p(']'), ! ; [] ).
 ccl_op_name(Op) --> [tok(p, Op, _)], !.
-ccl_op_name(conv(T)) --> { nb_getval('$ccl_env', Env) }, ccl_type_name(Env, T).
+ccl_op_name(conv(T)) --> { Env = genv }, ccl_type_name(Env, T).
 ccl_direct(Env, paren(D)) --> ccl_p('('), ccl_decl_syntax(Env, D), ccl_p(')'), !.
 ccl_direct(_, none) --> [].
 ccl_suffixes(Env, [S|Ss]) --> ccl_suffix(Env, S), !, ccl_suffixes(Env, Ss).
@@ -1239,7 +1291,7 @@ ccl_unary_(noexcept, kw, noexcept_expr(E)) --> ccl_cpp, !, ccl_kw(noexcept), ccl
 ccl_unary_(alignof, kw, alignof_type(T)) --> ccl_cpp, !, ccl_kw(alignof), ccl_p('('), ccl_type_name([], T), ccl_p(')').
 ccl_unary_(co_yield, kw, co_yield(E)) --> ccl_cpp, !, ccl_kw(co_yield), ccl_assign_expr(E).
 ccl_unary_(throw, kw, throw(E)) --> ccl_cpp, !, ccl_kw(throw), ( ccl_assign_expr(E), ! ; { E = none } ).
-ccl_new_expr(E) --> { nb_getval('$ccl_env', Env) }, ( ccl_p('('), ccl_args(_), ccl_p(')'), ! ; [] ), ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) },
+ccl_new_expr(E) --> { Env = genv }, ( ccl_p('('), ccl_args(_), ccl_p(')'), ! ; [] ), ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) },
     ( ccl_p('['), !, ccl_expr(N), ccl_p(']'), { E = new_array(T, N) }
     ; ccl_p('('), !, ccl_args(As), ccl_p(')'), { E = new(T, As) }
     ; ccl_p('{'), !, ccl_args(As), ccl_p('}'), { E = new(T, As) }
@@ -1259,12 +1311,12 @@ ccl_postfix(E) --> ccl_primary(P), ccl_postfix_(P, E).
 %% the postfix operators, chosen by the punctuator that follows
 ccl_postfix_(A, E) --> ccl_peek(p, V), !, ccl_postfix_p(V, A, E).
 ccl_postfix_(E, E) --> [].
-ccl_postfix_p('{', id(T), E) --> ccl_cpp, { nb_getval('$ccl_env', G), ccl_known_typedef(G, T) }, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(id(T), Vs), E).   % T{args}, a temporary
+ccl_postfix_p('{', id(T), E) --> ccl_cpp, { ccl_known_typedef(genv, T) }, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(id(T), Vs), E).   % T{args}, a temporary
 ccl_postfix_p('{', tmpl(N, As), E) --> ccl_cpp, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(tmpl(N, As), Vs), E).           % X<T>{args}
 ccl_postfix_p('{', scoped(P, N), E) --> ccl_cpp, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(scoped(P, N), Vs), E).
 ccl_postfix_p('[', A, E) --> ccl_cpp, { ccl_std_at_least(23) }, !, ccl_p('['), ccl_args(As), ccl_p(']'), { As = [I] -> Ix = index(A, I) ; Ix = index(A, args(As)) }, ccl_postfix_(Ix, E).   % C++23: a[i, j] is operator[](i, j)
 ccl_postfix_p('[', A, E) --> !, ccl_p('['), ccl_expr(I), ccl_p(']'), ccl_postfix_(index(A, I), E).
-ccl_postfix_p('(', id(N), E) --> ccl_cpp, { ccl_builtin_trait(N) }, !, ccl_p('('), { nb_getval('$ccl_env', Env) }, ccl_builtin_args(Env, As), ccl_p(')'), ccl_postfix_(call(id(N), As), E).   % __is_same(T, U): the arguments types
+ccl_postfix_p('(', id(N), E) --> ccl_cpp, { ccl_builtin_trait(N) }, !, ccl_p('('), { Env = genv }, ccl_builtin_args(Env, As), ccl_p(')'), ccl_postfix_(call(id(N), As), E).   % __is_same(T, U): the arguments types
 ccl_postfix_p('(', A, E) --> !, ccl_p('('), { ccl_targ_save(D) }, ( ccl_args(As), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
 ccl_postfix_p('.', A, E) --> ccl_cpp, ccl_p('.'), ccl_p('~'), !, ccl_id(T), ccl_postfix_(member(A, dtor(T)), E).      % C++: x.~T(), the destructor called
 ccl_postfix_p('->', A, E) --> ccl_cpp, ccl_p('->'), ccl_p('~'), !, ccl_id(T), ccl_postfix_(arrow(A, dtor(T)), E).
@@ -1277,7 +1329,7 @@ ccl_postfix_p(_, E, E) --> [].
 %% name is tmpl(N, Args) when the arguments read as such, ending before what a
 %% call or a closing paren starts (`x.n < y' scans to its `;' and is not one)
 ccl_member_name(operator(Op)) --> ccl_cpp, ccl_kw(operator), !, ccl_op_name(Op).                % p.operator->(), x.operator=(y)
-ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_id(N), ccl_targs_ahead, { nb_getval('$ccl_env', Env) }, ccl_targs(Env, As), !.
+ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_id(N), ccl_targs_ahead, { Env = genv }, ccl_targs(Env, As), !.
 ccl_member_name(N) --> ccl_id(N).
 ccl_args([A|As]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(A0), ccl_targ_pack(A0, A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).   % C++: f({1, 2}), a braced list as an argument
 ccl_args([A|As]) --> ccl_assign_expr(A0), !, ccl_targ_pack(A0, A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).                             % f(args...): the pack expanded
@@ -1301,14 +1353,14 @@ ccl_primary_(kw, operator, id(operator(Op))) --> ccl_cpp, !, ccl_kw(operator), c
 ccl_primary_(kw, true, bool(true)) --> ccl_cpp, !, ccl_kw(true).
 ccl_primary_(kw, false, bool(false)) --> ccl_cpp, !, ccl_kw(false).
 ccl_primary_(kw, nullptr, nullptr) --> ccl_cpp, !, ccl_kw(nullptr).
-ccl_primary_(kw, KW, ccast(K, T, E)) --> ccl_cpp, { ccl_cast_kw(KW, K) }, !, ccl_kw(KW), ccl_p('<'), { nb_getval('$ccl_env', Env) }, ccl_type_name(Env, T), ccl_tclose, ccl_p('('), ccl_expr(E), ccl_p(')').
+ccl_primary_(kw, KW, ccast(K, T, E)) --> ccl_cpp, { ccl_cast_kw(KW, K) }, !, ccl_kw(KW), ccl_p('<'), { Env = genv }, ccl_type_name(Env, T), ccl_tclose, ccl_p('('), ccl_expr(E), ccl_p(')').
 ccl_primary_(kw, K, ccast(functional, base([], [K]), E)) --> ccl_cpp, { ccl_basic_type(K) }, !, ccl_kw(K),
     ( ccl_p('('), ccl_p(')'), !, { E = none } ; ccl_p('('), !, ccl_expr(E), ccl_p(')') ; ccl_initializer(init(Is)), { Is = [] -> E = none ; Is = [item(_, E)] } ).   % int(x), void(), int{}
 ccl_primary_(kw, auto, decay_copy(E)) --> ccl_cpp, !, ccl_kw(auto), ( ccl_p('('), !, ccl_expr(E), ccl_p(')') ; ccl_p('{'), ccl_expr(E), ccl_p('}') ).   % C++23: auto(x), auto{x}: a decayed copy
-ccl_primary_(kw, decltype, E) --> ccl_cpp, !, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), { ( Q = decltype(X) -> E = decltype_expr(X) ; E = Q ) }.   % decltype(e)::value, a scoped name
-ccl_primary_(kw, typename, construct(T, As)) --> ccl_cpp, !, { nb_getval('$ccl_env', Env) }, ccl_conv_type(Env, T),                    % typename X<T>::tag(): a temporary of a dependent type (`()' is the arguments, not a function type)
+ccl_primary_(kw, decltype, E) --> ccl_cpp, !, { Env = genv }, ccl_qname(Env, expr, Q), { ( Q = decltype(X) -> E = decltype_expr(X) ; E = Q ) }.   % decltype(e)::value, a scoped name
+ccl_primary_(kw, typename, construct(T, As)) --> ccl_cpp, !, { Env = genv }, ccl_conv_type(Env, T),                    % typename X<T>::tag(): a temporary of a dependent type (`()' is the arguments, not a function type)
     ( ccl_p('('), !, ccl_args(As), ccl_p(')') ; ccl_initializer(init(Is)), { ccl_item_values(Is, As) } ).
-ccl_primary_(kw, requires, requires_expr(Ps, Reqs)) --> ccl_cpp, !, ccl_kw(requires), { nb_getval('$ccl_env', Env) },   % C++20: requires (params) { requirements }
+ccl_primary_(kw, requires, requires_expr(Ps, Reqs)) --> ccl_cpp, !, ccl_kw(requires), { Env = genv },   % C++20: requires (params) { requirements }
     ( ccl_p('('), ccl_params(Env, Ps, _), ccl_p(')') ; { Ps = [] } ), ccl_p('{'), ccl_requirements(Env, Reqs), ccl_p('}').
 ccl_primary_(p, '[', lambda(Caps1, Ps, Ret, Body)) --> ccl_cpp, !, ccl_p('['), ccl_lambda_caps(Caps), ccl_p(']'), { nb_getval('$ccl_env', Env0) },
     ( ccl_tparams(Env0, TPs, Env), { Caps1 = [tparams(TPs)|Caps] } ; { Env = Env0, Caps1 = Caps } ),                     % C++20: a template lambda, its parameters kept with the captures
@@ -1327,8 +1379,8 @@ ccl_requirement(Env, type(T)) --> ccl_kw(typename), !, ccl_type_name(Env, T), cc
 ccl_requirement(_, compound(E, C)) --> ccl_p('{'), !, ccl_expr(E), ccl_p('}'), ( ccl_p('->'), ccl_cond_expr(C) ; { C = none } ), ccl_p(';').
 ccl_requirement(_, nested(E)) --> ccl_kw(requires), !, ccl_cond_expr(E), ccl_p(';').
 ccl_requirement(_, expr(E)) --> ccl_expr(E), ccl_p(';').
-ccl_primary_(id, _, E) --> ccl_cpp, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
-ccl_primary_(p, '::', E) --> ccl_cpp, { nb_getval('$ccl_env', Env) }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
+ccl_primary_(id, _, E) --> ccl_cpp, { Env = genv }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
+ccl_primary_(p, '::', E) --> ccl_cpp, { Env = genv }, ccl_qname(Env, expr, Q), !, { ( atom(Q) -> E = id(Q) ; E = Q ) }.
 ccl_cast_kw(static_cast, static). ccl_cast_kw(dynamic_cast, dynamic). ccl_cast_kw(reinterpret_cast, reinterpret). ccl_cast_kw(const_cast, const).
 ccl_lambda_caps([]) --> ccl_peek(p, ']'), !.
 ccl_lambda_caps([C|Cs]) --> ccl_lambda_cap(C), ( ccl_p(','), !, ccl_lambda_caps(Cs) ; { Cs = [] } ).
@@ -1337,7 +1389,7 @@ ccl_lambda_cap(C) --> ccl_p('&'), !, ( ccl_id(N), !, { C = cap(ref, N) } ; { C =
 ccl_lambda_cap(cap(this)) --> ccl_kw(this), !.
 ccl_lambda_cap(cap(val, N)) --> ccl_id(N).
 ccl_primary_(id, N, id(N))   --> !, ccl_id(N).
-ccl_primary_(p, '(', stmt_expr(B)) --> ccl_p('('), ccl_peek(p, '{'), !, { nb_getval('$ccl_env', Env) }, ccl_compound(Env, B), ccl_p(')').   % GNU ({ ... })
+ccl_primary_(p, '(', stmt_expr(B)) --> ccl_p('('), ccl_peek(p, '{'), !, { Env = genv }, ccl_compound(Env, B), ccl_p(')').   % GNU ({ ... })
 ccl_primary_(p, '(', F)      --> ccl_cpp, ccl_p('('), ccl_fold(F), !, ccl_p(')').    % C++17: a fold expression
 ccl_primary_(p, '(', E)      --> ccl_p('('), { ccl_targ_save(D) }, ( ccl_expr(E), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')').
 %% (... op E) is fold(Op, dots, E); (E op ...) fold(Op, E, dots); (A op ... op B) fold(Op, A, dots, B): the desugaring finds the pack's side

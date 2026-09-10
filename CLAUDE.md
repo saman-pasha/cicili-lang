@@ -1147,6 +1147,82 @@ pair, `_FirstPaddingByte<pointer>`: the layout class's own `pointer`,
 `allocator_traits`'s own meta, so the instance is keyed by the unresolved
 name and has no members -- the allocator machinery is the next stretch.
 
+**M6's fifteenth step (0.46): the allocator machinery, and the memory
+that had to come first.** THE MEMORY: cocolog has no collector (the
+finding below): a `cicili++` run of `std::vector<int>` peaked at 4.5 GB
+and, with a runaway of mine on top, restarted the owner's machine. The
+preprocessor runs each file inside `\+ \+` (3.1 GB -> 564 MB for the
+flatten), the parser reads EACH ITEM inside `\+ \+` (`ccl_externals/4`:
+the item and the count of tokens left kept through a global, the
+position recovered by that count -- the parse of the flattened
+`<vector>` 1033 -> 440 MB, of which the top pass is 355), the name sets
+the parser asks at every identifier are buckets (`ccl_set_has/2`), a
+class's tag is noted without its bodies, and a gate's harness runs each
+check inside `\+ \+`; every run of mine is under `scratchpad/guard.sh`
+or `watch.sh`, and the module is rebuilt after a cocolog update (the
+engine went 1.2.5 -> 1.2.12 under this step). THE DETECTION IDIOM, which
+libc++'s allocator traits are built on (`__pointer` is
+`__detected_or_t<_Tp *, __pointer_member, _Alloc>`): a partial
+specialization's pattern is matched in TWO PASSES (`cpp_match_pattern`:
+`cpp_match_deducible`, then `cpp_match_later`) -- the deducible elements
+bind the parameters, then every NON-DEDUCED element (an alias template's
+template-id such as `__void_t<_Op<_Args...>>`, a name qualified by a
+parameter, a decltype; `cpp_non_deduced/2`) is substituted, resolved and
+compared with its argument, a refusal in that resolution being no match:
+the SFINAE that picks `__detector<_Default, __void_t<_Op<_Args...>>, _Op,
+_Args...>` only where `_Op<_Args...>` has a type; a pattern element that
+still names a free parameter is no match; a template-id pattern over a
+template template parameter deduces the template too (`cpp_match_tmpl`,
+`_Sp<_Tp, _Args...>`); an alias template's template-id in a FUNCTION
+parameter is a non-deduced context as well (`cpp_match`); a PLAIN STRUCT
+is a scope (`cpp_path_class`: `NoPtr::pointer` is refused as
+`no_member_type`, never flattened to a namespace's bare name), an enum's
+name is not (`Color::Green` is its enumerator); `test/cpp/run/detect.cpp`
+(found and not found, clang++'s). A TYPEDEF IS RESOLVED IN THE CLASS THAT
+DEFINES IT (`cpp_class_typedef/4` gives the defining class, `cpp_in_class`
+around the resolution in `cpp_type`, `cpp_path_class`): `allocator_traits`
+writes `pointer` as `typename __base::pointer` with `__base` its own
+alias, which the asking class did not know -- and a scope the resolver
+does not find flattens SILENTLY as a namespace (`cpp_type`'s last scoped
+clause), which the trace now prints as `flatten(Path, N)`; the probe
+showed `flatten([__base], pointer)` nineteen times. AND THE CLASSES THE ALLOCATOR
+DRAGS IN, each a defect of its own: a class DECLARED and not defined
+(`class bad_alloc;`) was indexed under its name and registered as the
+class, with no members, so the real definition never registered
+(`cpp_index_name` requires a body of a class as it always did of a
+struct; `cpp_lazy_class` skips a bodyless one); a CONSTRUCTOR that is
+declared and not defined -- libc++'s `bad_alloc()` lives in the shipped
+binary -- had no clause in `cpp_member_fns`, where a method and a
+destructor had one, and became a declaration now; a member of a class
+whose only constructors are a defaulted one and a converting TEMPLATE
+(`std::allocator`) is default-initialized with nothing to call
+(`cpp_trivial_default/1`) and copied from its own class by the implicit
+copy, the template never preferred over it (`cpp_ctor`'s guard), and a
+CONSTRUCTOR'S PARAMETERS are in scope while its member initializers are
+built (`a_(a)` has to type `a` to choose) -- `test/cpp/run/alloc.cpp`;
+`__is_constructible` and `__is_assignable` unref the ARGUMENT and count a
+constructor template and a defaulted constructor, so `std::allocator` is
+move-constructible as C++ says (it read false, and the `enable_if` behind
+`std::swap`'s result type then had no `type`); `auto` deduces ANY type
+and not only a plain one (`ccl_add_quals`), where `auto __new_begin =
+__begin_ - __size` -- a POINTER -- silently failed
+(`test/cpp/run/autoptr.cpp`); a specialization is picked only where it
+HAS a body. AND THE SILENT FAILURES BEHIND ALL OF THEM: a registration
+or an emission that merely FAILED left the class half-registered -- its
+`'$cpp_cls'` fact asserted, its members never emitted, and
+`cpp_class/2`'s own load then failing -- so every later lookup lied;
+each is a refusal now (`class_not_registered`, `class_not_emitted`,
+`instance_not_emitted`, `base_not_registered`, `members_not_split`,
+`member_types`), and the steps of a class's registration and emission
+trace under `'$cpp_trace'` (`item_member_fns`, `method_body_failed`,
+`instantiate_failed`, `want(Name)` ...), which is how each of these was
+found. FOUND ON THE WAY: a missing input file compiled to `cicili: ok`
+(`dr_input` refuses it now, `no such file or directory`).
+`std::vector<int>` now reaches 67 loads and instances (43 at 0.45, 26 at
+0.44) -- through the exception classes, the compressed pair, the
+allocator's traits and `std::swap`'s result type -- and stops in
+`__to_address`, `cannot_deduce('_Tp')`, the next stretch.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -1580,6 +1656,52 @@ module (a segfault that looked like the error path's). The build mirrors `module
 
 ## Findings about the neighbours, worked around here
 
+* **cocolog HAS NO GARBAGE COLLECTOR: the heap is reclaimed on backtracking
+  and by nothing else** (its own DESIGN-compiling.md says so; measured
+  2026-09-10 on 1.2.12: a list of a million integers is 44 MB, thirty of
+  them built in a deterministic recursion 521 MB, thirty `nb_setval`s of
+  one 992 MB, thirty `assertz`+`retract` 2.2 GB -- and thirty inside
+  `\+ \+ (...)` or a failure-driven loop 42 MB). A deterministic run keeps
+  every term it ever built: the flatten of `<vector>`'s closure peaked at
+  3.1 GB, the parse of the flattened text at 1.5 GB, a `cicili++` run of
+  `std::vector<int>` at 4.5 GB, on the owner's 16 GB machine. So: (1) the
+  preprocessor runs EACH FILE inside `\+ \+`, keeping only its output
+  under a key, spliced in by `pp_finish` (`pp_include_file`: 3.1 GB ->
+  564 MB, the same text); (2) a gate's harness runs each check inside
+  `\+ \+` (test/cpp.pl, test/reader.pl), so a process's peak is its
+  biggest check's, not their sum; (3) a SET of names the parser asks at
+  every identifier is BUCKETS, a global each (`ccl_set_has/2` and kin in
+  ccl_syntax: the env's names `'$ccl_envs'`, the templates `'$ccl_tmpls'`,
+  the function templates `'$ccl_ftmpls'`; the lists stay for the
+  enumerations and the snapshots, every writer keeps both), where
+  `ccl_known_typedef` and `ccl_known_template` copied six hundred and
+  fifteen hundred names per call (1.47 -> 1.03 GB for the parse); a deep
+  grammar rule passes the marker `genv` for the global env instead of a
+  copy of it (`ccl_env_member/2` walks a threaded env to its tail, then
+  asks the set); (4) a C++ class's tag is noted without its bodies
+  (`ccl_slim_members`). What is left of the parse's gigabyte is the
+  committed items' intermediates -- the item loop cuts, nothing above it
+  backtracks -- a one-time cost per library header, cached afterwards.
+  `ccl_global/3` runs `ccl_ensure_globals` FIRST: inside the
+  initialization only a bare `catch(nb_getval(K, V), _, fail)` may read a
+  global, or the initialization re-enters itself without end (that
+  runaway restarted the machine). Raise with cocolog's owner: a collector,
+  or `garbage_collect/0`.
+* **No cocolog run of mine is unguarded, not even a small fixture:**
+  `scratchpad/guard.sh SECS MB LOG QUERY [HOME]` runs one query under
+  `perl -e 'alarm N; exec @ARGV'` (SIGALRM survives exec, so the alarm
+  kills cocolog itself) and a watchdog that sums every `cocolog ... query`
+  process's RSS and kills them all past MB, reporting the peak;
+  `scratchpad/watch.sh MB SECS LOG` is that watchdog beside a whole gate.
+  ONE GUARDED RUN AT A TIME: the watchdog sums every cocolog process. A
+  background run gets `< /dev/null`, or the query loop waits on a stdin
+  that never closes. `ulimit -v` is not enforced on macOS. A watchdog that
+  kills only the direct child (a shell) leaves cocolog, its grandchild,
+  running: that is what took the machine down.
+* **After a cocolog update, REBUILD the module** (`module/build.sh`): the
+  engine went 1.2.5 -> 1.2.12 mid-work and 1.2.8 moved the globals table
+  into the `coco_store` struct; the `.so` reads the SDK's structs by
+  their layout at build time.
 * **A `catch/3` whose goal succeeds leaves a live frame: a later `throw/1`
   runs that catch's recovery and then continues after the catch** (in
   cocolog; `catch((catch(nb_getval(k, X), _, X = none), throw(x(X))), x(G),

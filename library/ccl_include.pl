@@ -186,7 +186,7 @@ ccl_save_globals(g(F, E, Far, M, Sc, Gs, Td, Tg, En, Ex)) :-
     ccl_global('$ccl_scope', Sc, []), ccl_global('$ccl_gscope', Gs, []), ccl_global('$ccl_typedefs', Td, []), ccl_global('$ccl_tags', Tg, []),
     ccl_global('$ccl_enums', En, []), ccl_global('$ccl_expansions', Ex, []).
 ccl_restore_globals(g(F, E, Far, M, Sc, Gs, Td, Tg, En, Ex)) :-
-    nb_setval('$ccl_file', F), nb_setval('$ccl_env', E), nb_setval('$ccl_far', Far), nb_setval('$ccl_macros', M),
+    nb_setval('$ccl_file', F), ccl_env_put(E), nb_setval('$ccl_far', Far), nb_setval('$ccl_macros', M),
     nb_setval('$ccl_scope', Sc), nb_setval('$ccl_gscope', Gs), nb_setval('$ccl_typedefs', Td), nb_setval('$ccl_tags', Tg), nb_setval('$ccl_enums', En),
     ccl_tables_changed, nb_setval('$ccl_expansions', Ex).
 %% every global is set once per process (ccl_ensure_globals/0), so reads are
@@ -195,14 +195,14 @@ ccl_restore_globals(g(F, E, Far, M, Sc, Gs, Td, Tg, En, Ex)) :-
 ccl_global(K, V, _) :- ccl_ensure_globals, nb_getval(K, V).
 ccl_ensure_globals :-
     ( catch(nb_getval('$ccl_inited', yes), _, fail) -> true
-    ; nb_setval('$ccl_file', none), nb_setval('$ccl_env', []), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []),
+    ; nb_setval('$ccl_file', none), ccl_env_put([]), nb_setval('$ccl_far', 0), nb_setval('$ccl_macros', []),
       nb_setval('$ccl_scope', []), nb_setval('$ccl_gscope', []), nb_setval('$ccl_typedefs', []), nb_setval('$ccl_tags', []), nb_setval('$ccl_enums', []), ccl_tables_changed,
       nb_setval('$ccl_expansions', []), nb_setval('$ccl_incpath', none), nb_setval('$ccl_kb_ready', no), nb_setval('$ccl_reading', []),
       nb_setval('$ccl_macro_files', []), nb_setval('$ccl_std_macros', none), nb_setval('$ccl_gensym', 0), nb_setval('$ccl_unit_paths', []),
-      nb_setval('$ccl_lang', c), nb_setval('$ccl_lang_forced', none), nb_setval('$ccl_fn_templates', []), nb_setval('$ccl_class', []), nb_setval('$ccl_inc_kind', local), nb_setval('$ccl_hash', line),
+      nb_setval('$ccl_lang', c), nb_setval('$ccl_lang_forced', none), ccl_fn_templates_put([]), nb_setval('$ccl_class', []), nb_setval('$ccl_inc_kind', local), nb_setval('$ccl_hash', line),
       nb_setval('$ccl_targ', 0), nb_setval('$ccl_tmpl_depth', 0),
       ( catch(nb_getval('$ccl_std', _), _, fail) -> true ; nb_setval('$ccl_std', 17) ),
-      nb_setval('$ccl_templates', [vector, map, set, unordered_map, unordered_set, list, deque, array, pair, tuple, optional, variant,
+      ccl_templates_put([vector, map, set, unordered_map, unordered_set, list, deque, array, pair, tuple, optional, variant,
                                    unique_ptr, shared_ptr, weak_ptr, function, basic_string, initializer_list, allocator, less, greater, hash,
                                    numeric_limits, is_same, enable_if, remove_reference, decay, queue, stack, priority_queue, span,
                                    '__builtin_common_type', '__type_pack_element', '__make_integer_seq', '__integer_pack']),   % the compiler's template-shaped builtins
@@ -517,12 +517,15 @@ ccl_sum_note(F) :-
 %% each: one at a time, every addition copied the whole list (nb_setval/2),
 %% 190 names against 500 -- 15 ms of every rebuild of the symbol table
 ccl_note_templates(Ns0) :- ccl_split_fn_templates(Ns0, Ns, Fns),
-    nb_getval('$ccl_templates', Ts), ccl_new_names(Ns, Ts, New), ( New == [] -> true ; append(New, Ts, Ts1), nb_setval('$ccl_templates', Ts1) ),
-    nb_getval('$ccl_fn_templates', Fs), ccl_new_names(Fns, Fs, NewF), ( NewF == [] -> true ; append(NewF, Fs, Fs1), nb_setval('$ccl_fn_templates', Fs1) ).
+    ccl_set_new(Ns, '$ccl_tmpls', New), ( New == [] -> true ; nb_getval('$ccl_templates', Ts), append(New, Ts, Ts1), nb_setval('$ccl_templates', Ts1) ),
+    ccl_set_new(Fns, '$ccl_ftmpls', NewF), ( NewF == [] -> true ; nb_getval('$ccl_fn_templates', Fs), append(NewF, Fs, Fs1), nb_setval('$ccl_fn_templates', Fs1) ).
 ccl_split_fn_templates([], [], []).
 ccl_split_fn_templates([fn(N)|Ns], [N|Ps], [N|Fs]) :- !, ccl_split_fn_templates(Ns, Ps, Fs).
 ccl_split_fn_templates([N|Ns], [N|Ps], Fs) :- ccl_split_fn_templates(Ns, Ps, Fs).
-ccl_add_envs(Ns) :- nb_getval('$ccl_env', G), ccl_new_names(Ns, G, New), ( New == [] -> true ; append(New, G, G1), nb_setval('$ccl_env', G1) ).
+ccl_add_envs(Ns) :- ccl_set_new(Ns, '$ccl_envs', New), ( New == [] -> true ; nb_getval('$ccl_env', G), append(New, G, G1), nb_setval('$ccl_env', G1) ).
+%% the names not in the set yet, added to it as they are found (a duplicate among them counted once)
+ccl_set_new([], _, []).
+ccl_set_new([N|Ns], Set, New) :- ( atom(N), \+ ccl_set_has(Set, N) -> ccl_set_add(Set, N), New = [N|New1] ; New = New1 ), ccl_set_new(Ns, Set, New1).
 ccl_new_names([], _, []).
 ccl_new_names([N|Ns], Have, New) :- ( atom(N), \+ memberchk(N, Have) -> New = [N|New1] ; New = New1 ), ccl_new_names(Ns, Have, New1).
 ccl_read_unit(Path, How, Unit) :-

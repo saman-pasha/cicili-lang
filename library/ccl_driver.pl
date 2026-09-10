@@ -41,6 +41,7 @@ dr_inputs([], _, _, []).
 dr_inputs([F|Fs], Options, Flags, Objects) :-
     dr_input(F, Options, Flags, Objects, Objects1),
     dr_inputs(Fs, Options, Flags, Objects1).
+dr_input(F, _, _, Objs, Objs) :- \+ exists_file(F), !, dr_error(F, 0, ['no such file or directory']).   % as clang says it; a missing input compiled to `cicili: ok' once
 dr_input(F, Options, Flags, Objs, Objs1) :-
     (   ( dr_ext(F, c) ; dr_cpp_ext(F) ) -> dr_c(F, Options, Flags, Objs, Objs1)
     ;   dr_ext(F, ll) -> dr_ll(F, Options, Flags, Objs, Objs1)

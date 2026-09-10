@@ -30,7 +30,7 @@ setup :-
 section(S) :- write('-- '), write(S), nl.
 check(Name, Goal) :-
     nb_setval('$t_err', none),
-    (   catch(Goal, E, (nb_setval('$t_err', E), fail))
+    (   \+ \+ catch(Goal, E, (nb_setval('$t_err', E), fail))   % \+ \+: cocolog reclaims the heap on backtracking only, so a check's garbage goes here, not into the next check's peak
     ->  write('ok   '), write(Name), nl
     ;   nb_getval('$t_fails', N), N1 is N + 1, nb_setval('$t_fails', N1),
         write('FAIL '), write(Name), nl,

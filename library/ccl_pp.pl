@@ -73,7 +73,7 @@ pp_macro_terms([N|Ns], G, Ms) :-
 pp_reset :-
     ( catch(nb_getval('$pp_gen', G0), _, fail) -> G is G0 + 1 ; G = 1 ), nb_setval('$pp_gen', G),
     nb_setval('$pp_names', []), nb_setval('$pp_files', []), nb_setval('$pp_once', []), nb_setval('$pp_stack', []),
-    nb_setval('$pp_counter', 0), nb_setval('$pp_errors', []), nb_setval('$pp_paste', no), nb_setval('$pp_top', no), nb_setval('$pp_hdrs', []), nb_setval('$pp_ninc', 0).
+    nb_setval('$pp_counter', 0), nb_setval('$pp_outs', 0), nb_setval('$pp_errors', []), nb_setval('$pp_paste', no), nb_setval('$pp_top', no), nb_setval('$pp_hdrs', []), nb_setval('$pp_ninc', 0).
 pp_key(N, K) :- atom_concat('$pp:', N, K).
 %% a macro: its parameters (obj for an object-like one; va(N) the variadic
 %% one) and its body -- the codes as defined, the tokens once used
@@ -197,10 +197,16 @@ pp_include_file(Path, Out0, Out) :-
     nb_getval('$pp_stack', St), length(St, Depth),
     (   Depth > 120 -> Out0 = Out
     ;   pp_guarded(Path) -> Out0 = Out
-    ;   pp_source(Path, Lines), nb_setval('$pp_stack', [Path|St]),
-        pp_run(Lines, Out0, Out),
+    ;   nb_setval('$pp_stack', [Path|St]), pp_out_key(K),
+        \+ \+ ( pp_source(Path, Lines), pp_run(Lines, OutF, []), nb_setval(K, OutF), pp_note_guard(Path, Lines) ),   % EACH FILE IN A SCOPE THAT BACKTRACKS (below)
         nb_getval('$pp_stack', [_|St1]), nb_setval('$pp_stack', St1),
-        pp_note_guard(Path, Lines) ).
+        Out0 = [pp_out(K)|Out] ).
+%% cocolog reclaims the heap on backtracking and by nothing else (its DESIGN-compiling.md: no collector), so a
+%% deterministic run keeps every term it ever built: the flatten of <vector>'s closure peaked at 3.1 GB. Each file is
+%% preprocessed inside \+ \+, which throws its garbage away -- the lines, the lexed tokens, the expansions -- and only
+%% its output survives, copied once into a global under a fresh key; the stream carries pp_out(K) where the file's
+%% tokens go, and pp_finish splices them in. The macro table, the guards, the file list are globals and survive alike.
+pp_out_key(K) :- nb_getval('$pp_outs', N), N1 is N + 1, nb_setval('$pp_outs', N1), atom_concat('$pp_out:', N1, K).
 pp_guarded(Path) :- atom_concat('$pp_guard:', Path, K), catch(nb_getval(K, G), _, fail), G \== none, pp_defined(G).
 pp_note_guard(Path, Lines) :-
     atom_concat('$pp_guard:', Path, K),
@@ -326,8 +332,10 @@ pp_escape([92|Cs], [92, 92|Es]) :- !, pp_escape(Cs, Es).
 pp_escape([10|Cs], [92, 0'n|Es]) :- !, pp_escape(Cs, Es).
 pp_escape([C|Cs], [C|Es]) :- pp_escape(Cs, Es).
 %% the output: bare tokens, a number from a macro body read as the reader has it
-pp_finish([], []).
-pp_finish([X|Xs], [T|Ts]) :- pp_unwrap(X, T0, _), pp_norm(T0, T), pp_finish(Xs, Ts).
+pp_finish(Out, Tokens) :- pp_finish_(Out, Tokens, []).
+pp_finish_([], T, T).
+pp_finish_([pp_out(K)|Xs], T0, T) :- !, nb_getval(K, Sub), nb_setval(K, none), pp_finish_(Sub, T0, T1), pp_finish_(Xs, T1, T).   % a file's output, spliced (its global freed of it)
+pp_finish_([X|Xs], [T|Ts], Tail) :- pp_unwrap(X, T0, _), pp_norm(T0, T), pp_finish_(Xs, Ts, Tail).
 pp_norm(tok(num, Cs, L), tok(int, V, L)) :- pp_plain_int(Cs), !, number_codes(V, Cs).   % a plain decimal, most of them: no lexer run
 pp_norm(tok(num, Cs, L), T) :- !, nb_getval('$ccl_hash', M), nb_setval('$ccl_hash', line), atom_codes(A, Cs), ( ccl_lex_atom(A, 0, [tok(K, V, _)], []) -> T = tok(K, V, L) ; T = tok(int, 0, L) ), nb_setval('$ccl_hash', M).
 pp_norm(T, T).

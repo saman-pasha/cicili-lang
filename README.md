@@ -212,6 +212,38 @@ what runs today.
   where a layout class's own `pointer` has to come through
   `allocator_traits`'s meta: the allocator machinery is the next
   stretch. GREEN.
+  **The fifteenth step DONE: the allocator machinery's first forms, and
+  the memory that had to come first.** cocolog reclaims memory on
+  backtracking only, so a run kept everything it built: reading
+  `<vector>` peaked at 4.5 GB. Now each file is preprocessed and each
+  item is parsed inside a scope that backtracks, a name the parser asks
+  at every identifier is answered from a bucket rather than a copy of
+  the whole table, and a gate runs each check in such a scope: the
+  flatten 3.1 GB -> 564 MB, the parse 1.5 GB -> 440 MB. The forms: the
+  DETECTION IDIOM libc++ builds its allocator traits on -- a detector's
+  partial specialization chosen by `__void_t<_Op<_Args...>>` matching
+  `void`, `_Op` a template template parameter bound to an alias, the
+  pattern a non-deduced context evaluated after the other elements bind,
+  a member absent meaning no match (`detect.cpp`); a typedef resolved in
+  the class that defines it, so `allocator_traits`'s `pointer`, written
+  as its own base's `__pointer<value_type, allocator_type>`, resolves
+  from any class that asks; a plain struct as a scope, an enum's name
+  not. And the defects the allocator's own classes turned up: a class
+  declared and not defined was registered as if it were the class, so
+  the real definition never was; a constructor declared and not defined
+  had no case, where a method and a destructor did; a class whose only
+  constructors are a defaulted one and a converting template is
+  default-initialized with nothing to call and copied by the implicit
+  copy; the traits that ask whether a type is constructible or
+  assignable now count a constructor template and look through a
+  reference, so `std::allocator` is move-constructible as C++ says;
+  `auto` deduces a pointer, which silently failed before. Behind all of
+  them one habit: a registration that merely failed left a class
+  half-registered and every later lookup lied. Each is a refusal now,
+  with the steps traceable. `std::vector<int>` reaches 67 loads and
+  instances, up from 43, through the exception classes, the compressed
+  pair, the allocator's traits and `std::swap`'s result type, and stops
+  in libc++'s `__to_address`. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

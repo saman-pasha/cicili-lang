@@ -290,7 +290,18 @@ it is done (see below); the checker and the lowering take the AST from here.
   checked -- the safe part keeps to the program's own code, its own
   templates' instances included. `std::vector<int>` reaches 43 loads and
   instances (26 before) and stops in libc++'s compressed pair, on the
-  allocator's own `pointer` meta.
+  allocator's own `pointer` meta. THE FIFTEENTH STEP: cocolog has no
+  collector, so the preprocessor and the parser run each file and each
+  item inside a scope that backtracks and the parser's name sets are
+  buckets (a `<vector>` read 4.5 GB -> under 1 GB); the detection idiom
+  (a specialization's non-deduced pattern elements evaluated after the
+  deducible ones bind, a refusal being no match); a typedef resolved in
+  its defining class; the allocator's classes (a class or a constructor
+  declared and not defined, a defaulted constructor beside a converting
+  template, the constructible and assignable traits, `auto` deducing a
+  pointer); and a registration that failed silently, leaving a class
+  half-registered, is a refusal. `std::vector<int>` reaches 67 loads and
+  instances and stops in `__to_address`.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in
