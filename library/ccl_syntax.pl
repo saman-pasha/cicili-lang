@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(35).
+ccl_reader_version(36).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -753,10 +753,15 @@ ccl_template_name(declare(_, base(_, [struct(N, _)])), N) :- !.
 ccl_template_name(typedef(_, [var(N, _, _)|_]), N) :- !.
 ccl_template_name(_, none).
 %% `auto x = e': the type inferred as `:=' infers it, or auto when it cannot be
+%% `auto x = e': the type is taken here when the reader can already see it, and left as `auto' for the desugaring
+%% otherwise. A type that still carries a DEPENDENT name (`typename T::pointer', from a template's raw signature --
+%% the symbol table holds a function template under its unsubstituted type) is not deduced yet: only the
+%% instantiation knows it, so `auto' stays and cpp_decl_pieces deduces it there.
 ccl_auto_decl(L, N, E, R, D) :-
-    (   ccl_type_of(E, T0), T0 \== unknown -> ccl_infer_decl(L, N, E, D0), D0 = declaration(L, none, Base, [var(N, T1, E)]), ( R == ref -> T = ref([], T1) ; T = T1 ), D = declaration(L, none, Base, [var(N, T, E)])
+    (   ccl_type_of(E, T0), T0 \== unknown, \+ ccl_dependent_type(T0) -> ccl_infer_decl(L, N, E, D0), D0 = declaration(L, none, Base, [var(N, T1, E)]), ( R == ref -> T = ref([], T1) ; T = T1 ), D = declaration(L, none, Base, [var(N, T, E)])
     ;   ( R == ref -> T = ref([], base([], [auto])) ; T = base([], [auto]) ), D = declaration(L, none, base([], [auto]), [var(N, T, E)]) ),
     ccl_note_item(D).
+ccl_dependent_type(T) :- compound(T), ( T = scoped(_, _) -> true ; T =.. [_|As], member(A, As), ccl_dependent_type(A) ), !.
 
 ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto, Ret, Name, Params, Var, Body)) -->
     ccl_declarator(Env, Base, Name, Type0), { Type0 = fn(_, _, _) }, ccl_attrs, ccl_method_quals(_), ccl_tie(Type0, Type), { Type = fn(Ret, Params, Var) }, ccl_peek(p, '{'),   % C++'s const/override after the parameters; no cut here, a prototype falls through

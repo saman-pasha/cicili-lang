@@ -1314,6 +1314,40 @@ instantiated where its arguments' class scope was not in hand, which is
 a name-resolution defect rather than a missing form, and the next thing
 to chase.
 
+**M6's eighteenth step (0.49): the name resolution behind a badly keyed
+instance.** `std::vector<int>` had made TWO instances of one template,
+`__allocation_result.pointer.size_type` beside the good
+`__allocation_result.int_p.size_t`: the first keyed by names that never
+resolved. THE CAUSE was in the READER, not the desugaring. `auto r =
+std::__allocate_at_least(a, n)` was deduced AT READ TIME by
+`ccl_auto_decl/5`, from the symbol table's declaration of
+`__allocate_at_least` -- and a function template is declared there under
+its RAW, unsubstituted signature (`ccl_collect_item` walks into a
+template's item), so the deduced type was `__allocation_result<typename
+_Traits::pointer, typename _Traits::size_type>` with `_Traits` free.
+The desugaring then resolved it, could not find `_Traits` as a scope, and
+FLATTENED it as if it were a namespace (`cpp_type`'s last scoped clause),
+giving `pointer` and `size_type` as the arguments. A type that still
+carries a DEPENDENT name is not deduced yet (`ccl_dependent_type/1`: a
+`scoped/2` anywhere in it): `auto` stays, and `cpp_decl_pieces` deduces
+it once the call is instantiated, which is the only place that knows.
+Reader version 36. `test/cpp/run/autodep.cpp`. THE TOOL that found it,
+worth keeping: `cpp_where/2`, a SCOPED breadcrumb of what the desugaring
+is working on -- `class(N)`, `fn(F)`, `load(N)`, `member(C, M)`,
+`sig(F)`, `subst(F)`, `body(C)`, `auto(N)`, `call(F)`, `args(F)`,
+`stmt(Functor, Line)` -- printed by every trace that would otherwise be
+silent (`flatten(Path, N, in(Where))`). An unscoped first attempt named
+the last thing ENTERED and sent me to the wrong class twice; scoped, it
+named the statement. And the reproduction is the other half: the shape
+cut down to thirteen lines runs in ONE SECOND where the probe takes
+fifty, which is what made the last four defects quick. `std::vector<int>`
+now reaches 182 loads and instances (177 at 0.48) and stops in the
+EXCEPTION classes -- `__throw_length_error` pulls `length_error`,
+`logic_error`, `basic_string` and `char_traits`, whose primary is
+declared and whose `char` specialization the index does not hold -- which
+is the road to `<string>` and, behind it, the question of exceptions
+themselves.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -1788,7 +1822,12 @@ module (a segfault that looked like the error path's). The build mirrors `module
   background run gets `< /dev/null`, or the query loop waits on a stdin
   that never closes. `ulimit -v` is not enforced on macOS. A watchdog that
   kills only the direct child (a shell) leaves cocolog, its grandchild,
-  running: that is what took the machine down.
+  running: that is what took the machine down. AND A BUMP OF
+  `ccl_reader_version/1` invalidates every summary, so the FIRST gate
+  run after one re-flattens the library headers and peaks far higher
+  than the steady state (the C++ gate: 2512 MB cold against 1847 warm,
+  which tripped a 2500 MB watchdog and read as a failure). Re-run before
+  believing a RED that arrives with a version bump.
 * **After a cocolog update, REBUILD the module** (`module/build.sh`): the
   engine went 1.2.5 -> 1.2.12 mid-work and 1.2.8 moved the globals table
   into the `coco_store` struct; the `.so` reads the SDK's structs by

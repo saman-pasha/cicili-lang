@@ -281,6 +281,17 @@ what runs today.
   instantiated as a class; and an operator member template could not be
   named at all. `std::vector<int>` reaches 177 loads and instances.
   GREEN.
+* **The eighteenth step DONE: a name that resolved to the wrong thing.**
+  Two instances of one template existed side by side, one of them keyed
+  by names that never resolved. The cause was in the reader: `auto` was
+  deduced at read time from a function template's raw, unsubstituted
+  signature, so the deduced type still named a template parameter that
+  nothing had bound, and the desugaring then flattened that parameter
+  away as though it were a namespace. A type that still carries a
+  dependent name is not deduced yet, so `auto` stays and the desugaring
+  deduces it once the call is instantiated. `std::vector<int>` reaches
+  182 loads and instances and now stops in the exception classes, which
+  pull in the string. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

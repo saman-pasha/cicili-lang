@@ -312,8 +312,12 @@ it is done (see below); the checker and the lowering take the AST from here.
   the class that holds them and a class of their own), aggregate
   initialization without a constructor, a specialization's pattern
   qualifiers, a variable template as a template argument, an operator
-  member template's name. `std::vector<int>` reaches 177 loads and
-  instances.
+  member template's name. THE EIGHTEENTH STEP: `auto` whose deduced type
+  still carries a dependent name stays `auto` for the desugaring, since
+  the symbol table holds a function template under its raw signature;
+  with it, a scoped breadcrumb of what the desugaring is working on, so
+  a silent resolution says where it happened. `std::vector<int>` reaches
+  182 loads and instances and stops in the exception classes.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in
