@@ -300,8 +300,16 @@ it is done (see below); the checker and the lowering take the AST from here.
   declared and not defined, a defaulted constructor beside a converting
   template, the constructible and assignable traits, `auto` deducing a
   pointer); and a registration that failed silently, leaving a class
-  half-registered, is a refusal. `std::vector<int>` reaches 67 loads and
-  instances and stops in `__to_address`.
+  half-registered, is a refusal. THE SIXTEENTH STEP: the isolation
+  around an instantiation restores the symbol table on a THROW too (SFINAE
+  throws by design, and a rejected candidate left the caller's locals
+  untyped); unary operators on a class; a class template's temporary; a
+  qualified path walked segment by segment; a member alias template.
+  the detection behind `iterator_traits` (an ellipsis
+  ranked last, a member template with explicit arguments, a `decltype`
+  as a scope, a static constant folded in its class's words, a missing
+  member refusing). `std::vector<int>` reaches 156 loads and instances
+  and stops on a nested class.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

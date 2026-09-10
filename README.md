@@ -244,6 +244,32 @@ what runs today.
   instances, up from 43, through the exception classes, the compressed
   pair, the allocator's traits and `std::swap`'s result type, and stops
   in libc++'s `__to_address`. GREEN.
+  **The sixteenth step DONE: `__to_address` and the uninitialized-memory
+  algorithms.** One defect paid for most of it: the wrapper that sets
+  the symbol table aside while a template is instantiated restored it on
+  success and on failure, but not when the goal threw, and SFINAE throws
+  by design. So after a rejected candidate, the calling function's own
+  locals had no types: the first argument of a call deduced and the
+  second did not. The forms that followed: a unary operator on a class
+  goes to the class's operator, as a binary one already did, which
+  libc++'s iterators are built on; a temporary of a class template's
+  instance written with explicit arguments; a qualified path of several
+  class segments walked one inside the next; a member alias template,
+  registered and resolved through its class; a member initialized from a
+  move choosing its constructor through it. And the detection that
+  `iterator_traits` is built on: an ellipsis takes any number of
+  arguments and is C++'s worst match, so a variadic overload wins only
+  where nothing else fits; a member template named with explicit
+  arguments resolves inside its own class; a `decltype` is a scope, so
+  `decltype(test<T>(...))::value` names the class the expression has; a
+  static constant's initializer is worked out in its class's own words
+  before it is folded; and asking a class for a member it does not have
+  refuses, which is what rejects the losing candidate. It had quietly
+  become a value named after the class, so the wrong overload won.
+  `std::vector<int>` reaches 156 loads and instances, up from 67,
+  through the relocation algorithms, the exception guard, the wrap
+  iterator and the iterator traits, and stops on a nested class,
+  vector's own, which is not yet registered as a type. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

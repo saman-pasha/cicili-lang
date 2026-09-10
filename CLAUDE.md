@@ -1223,6 +1223,63 @@ found. FOUND ON THE WAY: a missing input file compiled to `cicili: ok`
 allocator's traits and `std::swap`'s result type -- and stops in
 `__to_address`, `cannot_deduce('_Tp')`, the next stretch.
 
+**M6's sixteenth step (0.47): `__to_address` and the uninitialized-memory
+algorithms.** THE ONE THAT PAID FOR THE REST: `cpp_isolated/1` set the
+symbol table's open scopes aside and restored them on success and on
+failure but NOT ON A THROW -- and SFINAE throws and catches by design
+(`cpp_holding_candidates` catches `not_lowered` to reject a candidate),
+so after a candidate was rejected the CALLER's own locals had no types.
+`__to_address(__first)` deduced and `__to_address(__last)`, the next
+argument of the same call, did not (`cannot_deduce('_Tp')`, the argument
+traced as `unknown`); a `catch` that restores and rethrows, as
+`cpp_in_class` and `cpp_as_lib` already had. It took the probe from 67
+loads to 97. THE FORMS: a UNARY operator on a class goes to the class's
+operator, as a binary one already did (`cpp_expr` on `deref`, `preinc`,
+`predec`, `postinc`, `postdec` -- postfix passing the `int` C++ marks it
+with -- `not`, `neg`, `bitnot`, all through `cpp_operator/5`), without
+which libc++'s `addressof(*__first)` could not be typed
+(`test/cpp/run/unaryops.cpp`); a temporary of a class TEMPLATE's
+instance written with explicit arguments, `Guard<A, I>(a, i, j)`, which
+only a plain class had (`cpp_call`'s `tmpl` clause, guarded by
+`cpp_targs_settled/1` so an argument that did not fold never names an
+instance by its spelling); a QUALIFIED PATH of two or more class
+segments walked segment by segment, each named inside the one before
+(`cpp_scope_walk/3` behind `cpp_scope_class/2`, the old last-segment
+rule tried first), which is how `allocator_traits<A>::propagate_on_container_swap::value`
+folds; a MEMBER ALIAS TEMPLATE registered (`cpp_member_key` had only
+methods and constructors) and resolved through its class,
+`_IfImpl<C>::template _Select<A, B>` -- and its clause sits BEFORE
+`cpp_type`'s template-id clause, since `cpp_template_id/3` strips a
+scope to a bare name for `std::vector<int>`'s sake and swallowed this;
+a member initialized from `std::move(x)` chooses its constructor on the
+RAW initializer, so the choice looks through the move
+(`cpp_init_arg_class/2`). AND THE DETECTION
+`iterator_traits` IS BUILT ON, `__has_iterator_typedefs<It>::value`
+deciding between two static member function TEMPLATES -- one taking
+`...`, one taking five defaulted `__void_t<typename _Up::X> *`
+parameters -- read through `decltype` of the call: an ELLIPSIS takes any
+number of arguments and is C++'s WORST match, so a variadic candidate is
+tried last and only where nothing else fits (`cpp_variadic_member/1`,
+the flag threaded into `cpp_signature_holds/7` and `cpp_arity_holds/3`);
+a member TEMPLATE named unqualified with explicit arguments,
+`__test<_Tp>(nullptr, ...)`, resolves inside its own class with a null
+`this`, as `X<T>::f(args)` already did; a `decltype(...)` is a SCOPE
+(`cpp_path_class`), so `decltype(__test<_Tp>(...))::value` names the
+class the expression has; a static const's initializer is DESUGARED in
+its class's own words before it is folded (`cpp_fold_static/4`, a guard
+per name since folding may ask for itself), where only a literal
+constant folded before; and `typename _Up::X` on a class that has
+neither such a type NOR such a member REFUSES (`cpp_targ_value`), which
+is the SFINAE that rejects the candidate -- it had quietly become a
+value named after the class, so the wrong overload won.
+`test/cpp/run/detect2.cpp` (found and not found, clang++'s).
+`std::vector<int>` now reaches 156 loads and instances (67 at the start
+of this step, 43 at 0.45) -- through `__to_address`,
+`__uninitialized_allocator_relocate`, the exception guard,
+`__allocator_destroy`, `reverse_iterator`, `__wrap_iter` and
+`iterator_traits` -- and stops on a NESTED CLASS, `vector`'s own
+`__destroy_vector`, which is not registered as a type: the next stretch.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
