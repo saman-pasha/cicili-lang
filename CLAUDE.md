@@ -1280,6 +1280,40 @@ of this step, 43 at 0.45) -- through `__to_address`,
 `iterator_traits` -- and stops on a NESTED CLASS, `vector`'s own
 `__destroy_vector`, which is not registered as a type: the next stretch.
 
+**M6's seventeenth step (0.48): nested classes, and what vector asked for
+next.** A NESTED CLASS is a type of the class that holds it and a class of
+its own under the mangled name `Enclosing.Nested`: its NAME is registered
+first (`cpp_nested_names/2`, so a member of that type resolves before the
+nested class exists), the class itself after the enclosing one is
+registered (`cpp_nested_classes/3`, so its own members may name the class
+that holds it -- libc++'s `vector` destroys itself through
+`__destroy_vector`, which holds a `vector &`), and the enclosing class's
+typedefs are copied into it (`cpp_enclosing_types/2`), as C++'s scoping
+has them. It is reachable three ways: as a type (`Plain::Nested` outside,
+`Nested` within, both through `cpp_class_typedef`), as a temporary
+through the enclosing name, and named BARE inside its own class
+(`__destroy_vector(*this)`); a class with no constructors takes braced
+AGGREGATE initialization rather than a constructor
+(`cpp_temporary`'s first clause, beside the empty `__less<>()` case) --
+`test/cpp/run/nested.cpp`. AND THREE DEFECTS IT UNCOVERED, each older
+than this step: a specialization's pattern QUALIFIERS were ignored, so
+`numeric_limits<const _Tp>` matched every argument and the class derived
+from ITSELF (`cpp_pattern_quals/3`: the argument must carry every
+qualifier the pattern names, and binds without them); a VARIABLE
+template used as a template argument was read as a type and instantiated
+as a class (`cpp_variable_template/1` in `cpp_targ_value`,
+`integral_constant<bool, __is_floating_point_impl<T>>`); and an OPERATOR
+member template could not be named at all -- `cpp_instance_name`
+concatenated `operator('()')` as if it were an atom and threw a type
+error (`cpp_instance_base/2` spells it `op.call`), which `__less<>`'s
+templated `operator()` needs. `std::vector<int>` now reaches 177 loads
+and instances (156 at 0.47, 43 at 0.45) and stops on an instance keyed
+by names that did not resolve, `__allocation_result.pointer.size_type`
+beside the good `__allocation_result.int_p.size_t`: a template
+instantiated where its arguments' class scope was not in hand, which is
+a name-resolution defect rather than a missing form, and the next thing
+to chase.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

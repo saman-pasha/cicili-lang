@@ -188,8 +188,26 @@ cpp_register_([extern_c(_, Js)|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
 cpp_register_([_|Is]) :- cpp_register_(Is).
 cpp_register_class(L, C, Bases, Ms0) :-                                                     % the traces fire only under '$cpp_trace'
     ( cpp_norm_members(Ms0, Ms) -> true ; cpp_refuse(L, members_not_normalized(C)) ),
+    cpp_nested_names(C, Ms),                                                                     % the NAMES first: a member of a nested type resolves before the nested class exists
     ( cpp_register_class_extras(C, Ms) -> true ; cpp_refuse(L, class_extras(C)) ),
-    ( cpp_in_class(C, cpp_register_class_(L, C, Bases, Ms)) -> true ; cpp_refuse(L, class_not_registered(C)) ).   % its own typedefs resolve its members' types
+    ( cpp_in_class(C, cpp_register_class_(L, C, Bases, Ms)) -> true ; cpp_refuse(L, class_not_registered(C)) ),   % its own typedefs resolve its members' types
+    cpp_nested_classes(L, C, Ms).                                                                % then the nested classes themselves, the enclosing one registered so its own name resolves inside them
+%% A NESTED CLASS is a type of the class that holds it (`Plain::Nested' outside, `Nested' within) and a class of its
+%% own under the mangled name `Enclosing.Nested'; the enclosing class's typedefs are in scope inside it, as C++ has it
+cpp_nested_name(nested(base(_, [class(_, N, _, Ms)])), N, Ms) :- atom(N), Ms \== none.
+cpp_nested_name(nested(base(_, [struct(N, Ms)])), N, Ms) :- atom(N), Ms \== none.
+cpp_nested_names(C, Ms) :-
+    forall( ( member(M, Ms), cpp_nested_name(M, N, _) ),
+            ( atomic_list_concat([C, '.', N], Name), nb_getval('$cpp_class_types', L0), nb_setval('$cpp_class_types', [C-N-base([], [typedef(Name)])|L0]) ) ).
+cpp_nested_classes(L, C, Ms) :- forall( ( member(M, Ms), cpp_nested_name(M, N, NMs) ), cpp_nested_class(L, C, N, NMs, M) ).
+cpp_nested_class(L, C, N, NMs, M) :-
+    atomic_list_concat([C, '.', N], Name),
+    (   cpp_class(Name, _) -> true
+    ;   ( M = nested(base(_, [class(K0, _, Bs0, _)])) -> K = K0, Bases = Bs0 ; K = struct, Bases = [] ),
+        cpp_enclosing_types(C, Name),
+        cpp_isolated(( cpp_register_class(L, Name, Bases, NMs), cpp_item(declare(L, base([], [class(K, Name, Bases, NMs)])), Items) )),
+        cpp_add_instance_items(Items) ).
+cpp_enclosing_types(C, Name) :- nb_getval('$cpp_class_types', L0), findall(Name-TN-TT, member(C-TN-TT, L0), New), append(New, L0, L1), nb_setval('$cpp_class_types', L1).
 cpp_register_class_(L, C, Bases, Ms) :-
     (   Bases = [] -> Base = none
     ;   Bases = [base(_, B0)] -> cpp_base_name(B0, Base)
@@ -884,12 +902,20 @@ cpp_call(_, tmpl(C, TArgs), As, E) :- cpp_targ_values(TArgs, TArgs1), cpp_targs_
 cpp_targs_settled([]).
 cpp_targs_settled([A|As]) :- ( cpp_is_type(A) -> true ; A = int(_) -> true ; A = bool(_) -> true ; A = tname(_) ), cpp_targs_settled(As).
 cpp_call(_, id(F), As, call(id(Name), As)) :- \+ cpp_local(F), cpp_template(F, _, function(_, _, _, _, _, _, _)), !, cpp_instantiate_function(F, [], As, Name).
+cpp_call(Ctx, id(N), As, E) :- Ctx \== none, \+ cpp_local(N), cpp_class_typedef(Ctx, N, T0),   % `__destroy_vector(*this)': a NESTED class named bare inside the class that holds it
+    catch(cpp_type(T0, T), error(not_lowered(_), _), fail), cpp_class_of_type(T, C1), !,
+    ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) ).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
 cpp_call(_, id(T), As, compound_lit(base([], [typedef(T)]), init(Items))) :- ccl_tag(T, _), !, findall(item([], A), member(A, As), Items).   % P{3, 4} of a plain struct: C's compound literal
+cpp_call(_, scoped(Path, N), As, E) :- atom(N), cpp_scope_class(Path, Enc), cpp_class_typedef(Enc, N, T0),   % `Plain::Nested(7)': a temporary of a NESTED class
+    catch(cpp_type(T0, T), error(not_lowered(_), _), fail), cpp_class_of_type(T, C1), !,
+    ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) ).
 cpp_call(_, scoped(_, C), As, E) :- atom(C), cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).   % std::string("x"): a temporary of the class
 cpp_call(_, id(F), As, call(id(F), As2)) :- !, cpp_fill_defaults(F, As, As1), cpp_ref_args(F, As1, As2).
 cpp_call(Ctx, F, As, call(F1, As)) :- cpp_expr(Ctx, F, F1).
 %% a temporary of the class: constructed in a statement expression, its value the last expression
+cpp_temporary(T, C, As, compound_lit(T, init(Items))) :- cpp_not_abstract(C), \+ cpp_has_ctors(C), !, findall(item([], A), member(A, As), Items).   % an AGGREGATE, `__allocation_result{p, n}': braced, no constructor
+cpp_temporary(T, C, [], compound_lit(T, init([]))) :- cpp_not_abstract(C), cpp_trivial_default(C), !.   % `__less<>()': nothing to construct, as a member and a local already had it
 cpp_temporary(T, C, As, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]), expr(0, call(id(Name), [addr(id(Tmp))|As1])), expr(0, id(Tmp))]))) :-
     cpp_not_abstract(C), length(As, N), ( cpp_ctor(C, As, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As0), cpp_ref_args_of(Name, As0, As1), ccl_gensym('$tmp', Tmp).
 %% an operator on a class-typed left operand: the class's member operator, else a free one declared, else the form as it is
@@ -956,6 +982,10 @@ cpp_targ_value(type(T0), T) :- !, cpp_type(T0, T).
 cpp_targ_value(base([], [typedef(scoped(Path, N))]), A) :- cpp_scope_class(Path, C), \+ cpp_class_typedef(C, N, _), !,   % X<T>::value read as a type: the class has no such type, so a value
     ( cpp_static_const(C, N, _) -> true ; cpp_static_member(C, N, _) -> true ; cpp_refuse(0, no_member_type(C, N)) ),   % ... unless it has no such MEMBER either: `typename _Up::category' on a class without one, which is the SFINAE that rejects the candidate
     cpp_targ_value(scoped(Path, N), A).
+cpp_targ_value(base(_, [typedef(X)]), A) :- cpp_template_id(X, N, Args0), cpp_variable_template(N), !,   % `integral_constant<bool, __is_floating_point_impl<T>>': read as a type, it is a VARIABLE template's value
+    cpp_targ_values(Args0, Args), cpp_instantiate_variable(N, Args, A).
+cpp_variable_template(N) :- atom(N), catch(cpp_template(N, _, declaration(_, _, _, [var(_, _, _)|_])), _, fail),
+    \+ ( cpp_template(N, _, I), cpp_template_class_def(I) ), !.
 cpp_targ_value(A0, A) :- cpp_is_type(A0), !, cpp_type(A0, A).
 cpp_targ_value(pack(X), pack(X)) :- !.
 cpp_targ_value(A0, A) :- cpp_expr(none, A0, A1), ( A1 = bool(_) -> A = A1 ; ccl_const_eval(A1, V) -> A = int(V) ; A = A1 ).
@@ -1064,7 +1094,11 @@ cpp_non_deduced(base(_, [decltype(_)]), _).
 cpp_match_later([], _, _).
 cpp_match_later([P-A|Ls], TPs, B) :- cpp_subst(P, B, P1), \+ ( member(tparam(_, Q, _), TPs), cpp_names_in(P1, Q) ),   % a parameter still free in it: no match
     catch(cpp_type(P1, T), error(not_lowered(_), _), fail), cpp_same_type(T, A), cpp_match_later(Ls, TPs, B).
-cpp_match_one(base(_, [typedef(P)]), A, TPs, B0, B) :- memberchk(tparam(type, P, _), TPs), !, ( memberchk(P-A0, B0) -> cpp_same_type(A0, A), B = B0 ; B = [P-A|B0] ).
+cpp_match_one(base(Q, [typedef(P)]), A, TPs, B0, B) :- memberchk(tparam(type, P, _), TPs), !,
+    cpp_pattern_quals(Q, A, A1),                                                     % `numeric_limits<const _Tp>' matches only a CONST argument, and binds _Tp to it WITHOUT the const -- the qualifiers were ignored, so it matched everything and the class derived from itself
+    ( memberchk(P-A0, B0) -> cpp_same_type(A0, A1), B = B0 ; B = [P-A1|B0] ).
+cpp_pattern_quals([], A, A) :- !.
+cpp_pattern_quals(Q, base(Q0, S), base(Q1, S)) :- forall(member(X, Q), memberchk(X, Q0)), findall(Y, ( member(Y, Q0), \+ memberchk(Y, Q) ), Q1).
 cpp_match_one(base(_, [typedef(P)]), tname(X), TPs, B0, B) :- memberchk(tparam(template, P, _), TPs), !, ( memberchk(P-A0, B0) -> A0 == tname(X), B = B0 ; B = [P-tname(X)|B0] ).
 cpp_match_one(base(_, [typedef(X)]), tname(X), _, B, B) :- !.
 cpp_match_one(id(P), A, TPs, B0, B) :- memberchk(tparam(K, P, _), TPs), \+ memberchk(K, [type, pack, template]), !, ( memberchk(P-A0, B0) -> cpp_same_value(A0, A), B = B0 ; B = [P-A|B0] ).
@@ -1263,7 +1297,10 @@ cpp_match_targs([P|Ps], [A|As], TPs, B0, B) :-
     cpp_match_targs(Ps, As, TPs, B1, B).
 cpp_decayed(T, T1) :- ( ccl_resolve_type(T, arr(_, E)) -> T1 = ptr([], E) ; T = base(_, S) -> T1 = base([], S) ; T1 = T ).
 %% the instance's name: the template's, then a key per argument
-cpp_instance_name(N, TPs, B, Name) :- findall(K, ( member(tparam(_, P, _), TPs), memberchk(P-A, B), cpp_type_key(A, K) ), Ks), atomic_list_concat([N|Ks], '.', Name).
+cpp_instance_name(N0, TPs, B, Name) :- cpp_instance_base(N0, N),
+    findall(K, ( member(tparam(_, P, _), TPs), memberchk(P-A, B), cpp_type_key(A, K) ), Ks), atomic_list_concat([N|Ks], '.', Name).
+cpp_instance_base(operator(Op), N) :- !, cpp_op_word(Op, W), atom_concat('op.', W, N).   % an OPERATOR member template: `__less<>::operator()' is a template of its own
+cpp_instance_base(N, N).
 cpp_type_key(pack([]), e) :- !.
 cpp_type_key(pack(L), K) :- !, findall(K1, ( member(A, L), cpp_type_key(A, K1) ), Ks), atomic_list_concat(Ks, '_', K).
 cpp_type_key(vpack(L), K) :- !, cpp_type_key(pack(L), K).

@@ -268,8 +268,19 @@ what runs today.
   become a value named after the class, so the wrong overload won.
   `std::vector<int>` reaches 156 loads and instances, up from 67,
   through the relocation algorithms, the exception guard, the wrap
-  iterator and the iterator traits, and stops on a nested class,
-  vector's own, which is not yet registered as a type. GREEN.
+  iterator and the iterator traits. GREEN.
+* **The seventeenth step DONE: nested classes.** A class declared inside
+  another is a type of the class that holds it and a class of its own,
+  reachable as `Plain::Nested` outside, as `Nested` within, and named
+  bare inside its own class, which is how libc++'s vector destroys
+  itself. A class with no constructors takes braced aggregate
+  initialization rather than a constructor call. Three older defects
+  came out with it: a specialization's pattern qualifiers were ignored,
+  so `numeric_limits<const T>` matched everything and the class derived
+  from itself; a variable template used as a template argument was
+  instantiated as a class; and an operator member template could not be
+  named at all. `std::vector<int>` reaches 177 loads and instances.
+  GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

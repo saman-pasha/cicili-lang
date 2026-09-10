@@ -308,8 +308,12 @@ it is done (see below); the checker and the lowering take the AST from here.
   the detection behind `iterator_traits` (an ellipsis
   ranked last, a member template with explicit arguments, a `decltype`
   as a scope, a static constant folded in its class's words, a missing
-  member refusing). `std::vector<int>` reaches 156 loads and instances
-  and stops on a nested class.
+  member refusing). THE SEVENTEENTH STEP: nested classes (a type of
+  the class that holds them and a class of their own), aggregate
+  initialization without a constructor, a specialization's pattern
+  qualifiers, a variable template as a template argument, an operator
+  member template's name. `std::vector<int>` reaches 177 loads and
+  instances.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in
