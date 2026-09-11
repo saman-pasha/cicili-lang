@@ -93,8 +93,55 @@ cpp_register_units(Units) :-
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
     cpp_reset('$cpp_lib'/1), cpp_reset('$cpp_libfn'/1), nb_setval('$cpp_in_lib', no),
+    cpp_reset('$cpp_fn'/4), nb_setval('$cpp_cnames', []), nb_setval('$cpp_fn_refusal', none),
     ( catch(nb_getval('$cpp_trace', _), _, fail) -> true ; nb_setval('$cpp_trace', no) ),
+    forall(member(unit(Is), Units), cpp_note_fns(Is)),                                 % the free functions FIRST: a name is overloaded or not before any call to it is read
     forall(member(unit(Is), Units), cpp_register_(Is)).
+
+%% ---- FREE FUNCTION OVERLOADS ----------------------------------------------------------------------
+%% C++ tells `int f(int)' from `double f(double)' by the arguments and gives each its own symbol; C has one
+%% name one function, which is what this compiler emitted -- so of libc++'s ten `__convert_to_integral'
+%% overloads only the first got a body and every call went to it, whatever it passed. Each DEFINITION of an
+%% overloaded name is mangled by its parameters' type keys, `F.int', `F.unsigned_long', as a method already
+%% was; a name with ONE definition keeps it, so every C function, every `main' and everything a linker must
+%% find by name is untouched, and so is a DECLARATION of an overload (we may name only what we define).
+%% The key is taken from the parameters AS WRITTEN, at the registration, the emission and the call alike.
+cpp_note_fns([]).
+cpp_note_fns([namespace(_, _, Js)|Is]) :- !, cpp_note_fns(Js), cpp_note_fns(Is).
+cpp_note_fns([extern_c(_, Js)|Is]) :- !, cpp_c_names(Js), cpp_note_fns(Js), cpp_note_fns(Is).      % extern "C": C linkage, never a mangled name
+cpp_note_fns([function(_, _, _, N, Ps, _, Body)|Is]) :- atom(N), !, cpp_fn_put(N, Ps, Body), cpp_note_fns(Is).
+cpp_note_fns([declaration(_, _, _, Vs)|Is]) :- !, forall(member(var(N, fn(_, Ps, _), _), Vs), ( atom(N) -> cpp_fn_put(N, Ps, none) ; true )), cpp_note_fns(Is).
+cpp_note_fns([_|Is]) :- cpp_note_fns(Is).
+cpp_fn_put(N, Ps, Body) :- ( Body == none -> D = no ; D = yes ), cpp_params_key(Ps, K),
+    ( '$cpp_fn'(N, K, _, D) -> true ; assertz('$cpp_fn'(N, K, Ps, D)) ).
+cpp_c_names([]).
+cpp_c_names([I|Is]) :- ( cpp_item_name(I, N) -> nb_getval('$cpp_cnames', Ns), nb_setval('$cpp_cnames', [N|Ns]) ; true ), cpp_c_names(Is).
+cpp_item_name(function(_, _, _, N, _, _, _), N) :- atom(N).
+cpp_item_name(declaration(_, _, _, [var(N, fn(_, _, _), _)|_]), N) :- atom(N).
+cpp_c_name(N) :- nb_getval('$cpp_cnames', Ns), memberchk(N, Ns).
+%% the name a free function is emitted and called under: its own, unless the name has two definitions of
+%% different parameters and this item is one of them
+cpp_fn_name(F, _, _, F) :- cpp_c_name(F), !.
+cpp_fn_name(F, Ps, yes, Name) :- cpp_fn_overloaded(F), !, cpp_params_key(Ps, K), atomic_list_concat([F, '.', K], Name).
+cpp_fn_name(F, _, _, F).
+cpp_fn_overloaded(F) :- '$cpp_fn'(F, K1, _, yes), '$cpp_fn'(F, K2, _, yes), K1 \== K2, !.
+%% the overload an argument list names: one whose parameters take it EXACTLY (C++ prefers such a non-template
+%% to any template), else the one whose parameters fit best (cpp_pick, the methods')
+cpp_fn_exact(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N), '$cpp_fn'(F, _, Ps, _), length(Ps, N), cpp_exact_params(Ps, As), !, cpp_fn_defined(F, Ps, D).
+cpp_fn_best(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N),
+    findall(Ps0, ( '$cpp_fn'(F, _, Ps0, _), cpp_arity_fits(Ps0, N) ), Cands), Cands \== [],
+    cpp_pick(Cands, As, Ps), cpp_fn_defined(F, Ps, D).
+cpp_fn_ready(F) :- atom(F), ( '$cpp_fn'(F, _, _, _) -> true ; cpp_hdr_load(F) -> true ; true ).      % a library header's items of the name, registered on the first ask
+cpp_fn_defined(F, Ps, D) :- ( '$cpp_fn'(F, _, Ps, yes) -> D = yes ; D = no ).
+cpp_exact_params([], []).
+cpp_exact_params([P|Ps], [A|As]) :- ( P = param(T, _) ; P = param(T, _, _) ), cpp_arg_exact(T, A), cpp_exact_params(Ps, As).
+cpp_arg_exact(PT, A) :- ccl_type_of(A, AT), AT \== unknown,
+    ccl_unref(PT, PT1), ccl_unref(AT, AT1), ccl_resolve_type(PT1, R1), ccl_resolve_type(AT1, R2),
+    cpp_bare_type(R1, B1), cpp_bare_type(R2, B2), B1 == B2.
+cpp_bare_type(base(_, S), base([], S)) :- !.
+cpp_bare_type(T, T).
+cpp_free_call(F, Ps, D, As, call(id(Name), As2)) :-
+    cpp_fn_name(F, Ps, D, Name), cpp_fill_defaults(Name, As, As1), cpp_ref_args(Name, As1, As2).
 cpp_register_([template(_, TPs, concept(_, N, E))|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept(TPs, E)|Cs]), cpp_register_(Is).   % C++20
 cpp_register_([concept(_, N, E)|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept([], E)|Cs]), cpp_register_(Is).
 cpp_register_([template(_, TPs, Item)|Is]) :- !,
@@ -130,7 +177,7 @@ cpp_index_name(dtor_def(_, C, _, _), C).
 %% a name the registries do not have: the header's items of that name, registered now (a class as a lazy one)
 cpp_hdr_load(N) :- atom(N), cpp_hdr_item(N, _), \+ ( nb_getval('$cpp_hdr_loaded', Ls), memberchk(N, Ls) ), !,
     cpp_spend(load(N)), nb_getval('$cpp_hdr_loaded', Ls0), nb_setval('$cpp_hdr_loaded', [N|Ls0]), assertz('$cpp_lib'(N)),
-    findall(I, cpp_hdr_item(N, I), Items), cpp_where(load(N), cpp_as_lib(yes, cpp_register_lazy(Items))).
+    findall(I, cpp_hdr_item(N, I), Items), cpp_note_fns(Items), cpp_where(load(N), cpp_as_lib(yes, cpp_register_lazy(Items))).
 %% THE LIBRARY'S FUNCTIONS ARE COMPILED AS C++ HAS THEM, NOT CHECKED: libc++'s bodies keep raw pointers by their own
 %% discipline (a vector's begin, end and capacity; a swap of two pointers through references), which the safe part
 %% would refuse at every line -- so a function that comes from a library header (an inline one, a lazy class's
@@ -144,9 +191,10 @@ cpp_library_function(Name) :- catch('$cpp_libfn'(Name), _, fail).
 cpp_register_lazy([]).
 cpp_register_lazy([declare(L, base(_, [class(K, C, Bases, Ms)]))|Is]) :- !, cpp_lazy_class(L, K, C, Bases, Ms), cpp_register_lazy(Is).
 cpp_register_lazy([declare(L, base(_, [struct(C, Ms)]))|Is]) :- !, cpp_lazy_class(L, struct, C, [], Ms), cpp_register_lazy(Is).
-cpp_register_lazy([function(L, Sto, Ret, N, Ps, V, Body)|Is]) :- atom(N), Body \== none, !,      % an inline function of the header: emitted, linkonce
-    ( cpp_instance_done(N) -> true
-    ; cpp_instance_note(N, hdr), cpp_isolated(cpp_item(function(L, Sto, Ret, N, Ps, V, Body), Items)), cpp_add_instance_items(Items) ),
+cpp_register_lazy([function(L, Sto, Ret, N, Ps, V, Body)|Is]) :- atom(N), Body \== none, !,      % an inline function of the header: emitted, linkonce, one per OVERLOAD
+    cpp_fn_name(N, Ps, yes, FName),
+    ( cpp_instance_done(FName) -> true
+    ; cpp_instance_note(FName, hdr), cpp_isolated(cpp_item(function(L, Sto, Ret, N, Ps, V, Body), Items)), cpp_add_instance_items(Items) ),
     cpp_register_lazy(Is).
 cpp_register_lazy([I|Is]) :- cpp_register_(I), cpp_register_lazy(Is).
 cpp_register_(I) :- \+ ( I == [] ; I = [_|_] ), !, cpp_register_([I]).
@@ -184,13 +232,18 @@ cpp_register_header([declare(L, base(_, [class(K, C, Bases, Ms)]))|Is]) :- !,
     ;   cpp_isolated(( cpp_register_class(L, C, Bases, Ms), cpp_item(declare(L, base([], [class(K, C, Bases, Ms)])), Items) )), cpp_add_instance_items(Items) ),
     cpp_register_header(Is).
 cpp_register_header([namespace(_, _, Js)|Is]) :- !, cpp_register_header(Js), cpp_register_header(Is).
-cpp_register_header([I|Is]) :- cpp_register_([I]), cpp_register_header(Is).
+cpp_register_header([I|Is]) :- cpp_note_fns([I]), cpp_register_([I]), cpp_register_header(Is).
 cpp_register_([]).
 cpp_register_([declare(L, base(_, [class(_, C, Bases, Ms)]))|Is]) :- !, cpp_register_class(L, C, Bases, Ms), cpp_register_(Is).
 cpp_register_([function(_, _, Ret, operator(Op), Ps, V, _)|Is]) :- !,
     cpp_free_operator(Op, Ps, Name), cpp_plain_params(Ps, Ps1), ccl_declare(Name, fn(Ret, Ps1, V)), cpp_note_defaults(Name, Ps),
     nb_getval('$cpp_free_ops', Os), nb_setval('$cpp_free_ops', [Name|Os]), cpp_register_(Is).
-cpp_register_([function(_, _, _, N, Ps, _, _)|Is]) :- atom(N), !, cpp_note_defaults(N, Ps), cpp_register_(Is).
+cpp_register_([function(_, _, Ret, N, Ps, V, Body)|Is]) :- atom(N), !,
+    cpp_fn_body_mark(Body, D), cpp_fn_name(N, Ps, D, Name), cpp_note_defaults(Name, Ps),
+    ( Name == N -> true ; ccl_declare(Name, fn(Ret, Ps, V)) ),                                     % an overload's own name is not in the table the reader built
+    cpp_register_(Is).
+cpp_fn_body_mark(none, no) :- !.
+cpp_fn_body_mark(_, yes).
 cpp_register_([dtor_def(_, C, _, _)|Is]) :- !, nb_getval('$cpp_dtor_defs', Ds), nb_setval('$cpp_dtor_defs', [C|Ds]), cpp_register_(Is).
 cpp_register_([namespace(_, _, Js)|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
 cpp_register_([extern_c(_, Js)|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
@@ -540,7 +593,8 @@ cpp_dtor_body(L, C, block(Body), block(Body1)) :-
 cpp_item(function(L, Sto, Ret, operator(Op), Ps, V, Body), [function(L, Sto, Ret, Name, Ps1, V, Body1)]) :- !,
     cpp_free_operator(Op, Ps, Name), cpp_plain_params(Ps, Ps1), cpp_method_body(none, Ret, Ps1, Body, Body1).
 cpp_item(function(_, _, _, N, Ps, _, _), []) :- atom(N), cpp_auto_params(Ps, 0, _, TPs), TPs \== [], !.   % an abbreviated template: instantiated on use
-cpp_item(function(L, Sto, Ret0, N, Ps, V, Body), [function(L, Sto, Ret, N, Ps1, V, Body1)]) :- !,
+cpp_item(function(L, Sto, Ret0, N, Ps, V, Body), [function(L, Sto, Ret, Name, Ps1, V, Body1)]) :- !,
+    cpp_fn_body_mark(Body, D), cpp_fn_name(N, Ps, D, Name),                                        % an overloaded name's definition carries its parameters' keys
     cpp_plain_params(Ps, Ps1), ( Ret0 = base(_, [auto]) -> cpp_lambda_ret(Ps1, Body, Ret) ; cpp_type(Ret0, Ret) ),   % C++14: auto f(...): the first return's type
     cpp_method_body(none, Ret, Ps1, Body, Body1).
 cpp_item(declaration(L, Sto, B, Vs), [declaration(L, Sto, B, Vs1)]) :- !, cpp_vars(none, Vs, Vs1).
@@ -937,7 +991,13 @@ cpp_call(_, tmpl(C, TArgs), As, E) :- cpp_targ_values(TArgs, TArgs1), cpp_targs_
 %% every argument a type or a constant: an expression that did not fold would name an instance by its spelling
 cpp_targs_settled([]).
 cpp_targs_settled([A|As]) :- ( cpp_is_type(A) -> true ; A = int(_) -> true ; A = bool(_) -> true ; A = tname(_) ), cpp_targs_settled(As).
-cpp_call(_, id(F), As, call(id(Name), As)) :- \+ cpp_local(F), cpp_template(F, _, Item), cpp_fn_item(Item, _), !, cpp_instantiate_function(F, [], As, Name).
+cpp_call(_, id(F), As, E) :- \+ cpp_local(F), cpp_fn_exact(F, As, Ps, D), !, cpp_free_call(F, Ps, D, As, E).   % an overload whose parameters take the arguments EXACTLY: C++ prefers such a non-template to any template
+cpp_call(_, id(F), As, E) :- \+ cpp_local(F), cpp_template(F, _, Item), cpp_fn_item(Item, _), !,
+    nb_setval('$cpp_fn_refusal', none),
+    (   catch(cpp_instantiate_function(F, [], As, Name), error(not_lowered(W), _), ( nb_setval('$cpp_fn_refusal', W), fail ))
+    ->  E = call(id(Name), As)
+    ;   cpp_fn_best(F, As, Ps, D) -> cpp_free_call(F, Ps, D, As, E)                                % no template held: the plain overloads of the name, ONE overload set with them
+    ;   nb_getval('$cpp_fn_refusal', W1), ( W1 == none -> cpp_refuse(0, no_matching_template(F)) ; cpp_refuse(0, W1) ) ).
 cpp_call(Ctx, id(N), As, E) :- Ctx \== none, \+ cpp_local(N), cpp_class_typedef(Ctx, N, T0),   % a class-scope TYPE named bare inside its class: `__destroy_vector(*this)' a nested class, `size_type(~0)' a cast
     catch(cpp_type(T0, T), error(not_lowered(_), _), fail), !,
     (   cpp_class_of_type(T, C1)
@@ -953,7 +1013,8 @@ cpp_call(_, scoped(Path, N), As, E) :- atom(N), cpp_scope_class(Path, Enc), cpp_
     catch(cpp_type(T0, T), error(not_lowered(_), _), fail), cpp_class_of_type(T, C1), !,
     ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) ).
 cpp_call(_, scoped(_, C), As, E) :- atom(C), cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).   % std::string("x"): a temporary of the class
-cpp_call(_, id(F), As, call(id(F), As2)) :- !, cpp_fill_defaults(F, As, As1), cpp_ref_args(F, As1, As2).
+cpp_call(_, id(F), As, E) :- !, ( cpp_fn_best(F, As, Ps, D) -> cpp_free_call(F, Ps, D, As, E)   % the overload the arguments fit best; a name with one definition keeps it, as C does
+    ;   cpp_fill_defaults(F, As, As1), cpp_ref_args(F, As1, As2), E = call(id(F), As2) ).
 cpp_call(Ctx, F, As, E) :- cpp_expr(Ctx, F, F1), ( cpp_temp_call(F1, As, E0) -> E = E0 ; E = call(F1, As) ).
 %% A TEMPORARY'S operator(), `__destroy_vector(*this)()', which is how libc++'s vector destroys itself: the callee
 %% is no function but an object, and the call goes INSIDE the block that built it, where that object has an address.

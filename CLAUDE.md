@@ -1568,6 +1568,47 @@ first definition of a name is emitted and every call goes to it), which
 is the next stretch. Seven gates GREEN (the C++ one at 773 MB, libc++'s
 at 1596).
 
+**M6's twenty-fifth step (0.56): FREE FUNCTION OVERLOADS, chosen by their
+arguments and mangled apart.** C++ tells `int f(int)` from `double
+f(double)` by the arguments and gives each its own symbol; C has one name
+one function, which is what this compiler emitted -- so of libc++'s ten
+`__convert_to_integral` overloads, one per integer type, only the FIRST
+got a body and every call went to it, whatever it passed (a `size_t`
+through the `int` one). Every free function is noted by name, by the key
+of its parameters AS WRITTEN and by whether it has a body
+(`'$cpp_fn'(Name, Key, Params, Defined)`), in a PRE-PASS over every unit's
+items before anything is registered -- and, for a library header, over
+every item of a name before any of them is (`cpp_note_fns/1` in
+`cpp_hdr_load`) -- so a name is known to be overloaded or not before any
+call to it is read. A name with TWO definitions of different parameters
+mangles each `F.<keys>` (`cpp_fn_name/4`), as a method already did; a name
+with ONE definition keeps it, so every C function, every `main` and
+everything a linker must find by name is untouched, and so is a
+DECLARATION of an overload (we may name only what we define) and anything
+inside `extern "C"` (`'$cpp_cnames'`). The same name is used where the
+function is DECLARED in the table, where it is EMITTED (`cpp_item`) and at
+the CALL (`cpp_free_call/5`), from the one predicate. THE CHOICE: an
+overload whose parameters take the arguments EXACTLY -- both resolved,
+their top-level qualifiers dropped, and equal (`cpp_arg_exact/2`) -- wins
+over any template, which is C++'s rule for a non-template that needs no
+conversion (`__convert_to_integral(__n)` with `__n` a `size_t` takes the
+`unsigned long` overload, where the two templates rightly refuse); else
+the templates as before; and where NO template holds, the plain overloads
+of the name, which are one overload set with them (`cpp_fn_best/4` over
+`cpp_pick`, the methods' own scoring). A library header's inline function
+is emitted once per OVERLOAD rather than once per name. Gated by
+`test/cpp/run/freeoverloads.cpp` (six `kind` overloads chosen by type and
+by arity, an exact `unsigned long` beating a template that would have
+taken it, a static declared before it is defined) and
+`test/cpp/run/aliastype.cpp` (the overloads a libc++ container is written
+on: an alias of a class template's instance as the parameter type, free
+and as a member). `std::vector<int> v; v.push_back(1); return (int)
+v.size();` passes `__convert_to_integral` and stops where
+`vector::__copy_assign_alloc(const vector &, false_type)` takes an ALIAS
+of a class template's instance as a parameter: a library header's typedef
+reaches the tables raw, and the passes rebuild them from the summary, so
+the name must carry its instance to the lowering. Seven gates GREEN.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

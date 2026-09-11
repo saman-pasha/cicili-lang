@@ -383,6 +383,17 @@ what runs today.
   this step, and now that the members defined out of their class carry
   their bodies the walk enters them and stops at a free function whose
   overloads must be chosen by their arguments. GREEN.
+* **The twenty-fifth step DONE: free function overloads.** C++ tells
+  `int f(int)` from `double f(double)` by the arguments and gives each its
+  own symbol, where C has one name one function: of libc++'s ten
+  `__convert_to_integral` overloads only the first got a body and every
+  call went to it, whatever it passed. Each definition of an overloaded
+  name now carries its parameters' types in its symbol, as a method
+  already did, and every call picks the overload its arguments fit; a name
+  with one definition keeps it, so C functions, `main` and everything a
+  linker must find by name are untouched. An overload that takes the
+  arguments exactly beats any template, as C++ has it, and where no
+  template holds the plain overloads are candidates beside them. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
