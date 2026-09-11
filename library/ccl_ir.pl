@@ -50,12 +50,13 @@ ccl_lowering_version(9).
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
     (   ccl_lang(cpp)                                                    % C++ (M6): classes and kin desugared to the C below, over that table,
-    ->  ccl_cpp_units(Units0, Units), ccl_scope_init, ir_note_units(Units), ir_cpp_prelude   % then the table again from what came out; new and delete are malloc and free
+    ->  ( ccl_cpp_units(Units0, Units) -> true ; ir_fail(phase(desugaring)) ),   % each phase says its own name when it merely FAILS, or the driver can only say `without saying why'
+        ccl_scope_init, ir_note_units(Units), ir_cpp_prelude              % then the table again from what came out; new and delete are malloc and free
     ;   Units = Units0 ),
-    ccl_check_noted(Units),                                             % the safe part first: a violation is a compile error
+    ( ccl_check_noted(Units) -> true ; ir_fail(phase(check)) ),          % the safe part first: a violation is a compile error
     nb_setval('$ir_fdefs', []), nb_setval('$ir_gdefs', []),
     ir_drain_functions(Drains), ccl_items_note(Drains),                 % one drain per struct with an own array (below)
-    ir_units(Units), ir_items(Drains),
+    ( ( ir_units(Units), ir_items(Drains) ) -> true ; ir_fail(phase(lowering)) ),
     ir_assemble(IR).
 
 %% C++ (M6): `new T' is malloc(sizeof(T)) and `delete p' free(p) -- declared

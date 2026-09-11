@@ -331,7 +331,12 @@ it is done (see below); the checker and the lowering take the AST from here.
   a library class already was -- the program's own templates stay eager,
   since the safe part must see their instances whole; with it a nested
   class seeing the enclosing class's inherited types. `std::vector<int>
-  v; v.push_back(1);` went from 177 instantiations to 83.
+  v; v.push_back(1);` went from 177 instantiations to 83. THE
+  TWENTY-SECOND STEP: an anonymous struct with default member
+  initializers arrives in C++'s class shape and its members are the
+  holder's just the same; and each phase of the compile names itself when
+  it fails. That program now passes the desugaring and the safe part
+  whole and stops in the lowering.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

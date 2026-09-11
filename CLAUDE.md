@@ -1453,6 +1453,21 @@ struct written plainly does not reach this one, whose members carry
 class. The gates' peaks fell with the laziness (the C++ gate 855 -> 615
 MB).
 
+**M6's twenty-second step (0.53): an anonymous struct in C++'s own
+shape, and a phase that says its name.** An anonymous struct whose
+members carry DEFAULT INITIALIZERS reaches the desugaring as
+`class(struct, anon, [], Ms)` and not the plain `struct(anon, Ms)` that
+`test/cpp/run/anon.cpp` covers, so its members were not flattened into
+the holder and `__vector_layout`'s `__alloc()` could not find `__alloc_`
+(`cpp_norm_members_` takes both shapes now) --
+`test/cpp/run/anoninit.cpp`. AND THE DIAGNOSTIC that found the next one:
+`ccl_ir_units` ran the desugaring, the check and the lowering as one
+conjunction, so any of them merely FAILING left the driver with nothing
+to say but `the check or the lowering failed without saying why`; each
+phase names itself now (`ir_fail(phase(desugaring | check | lowering))`).
+`std::vector<int> v; v.push_back(1);` stops in the LOWERING, around the
+declared-only `declval` instance that 0.51 taught the desugaring to make.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

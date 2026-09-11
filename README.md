@@ -336,6 +336,17 @@ what runs today.
   vector program went from 177 instantiations to 83, and the C++ gate's
   peak memory from 855 MB to 615. With it, a nested class sees the
   enclosing class's types including the inherited ones. GREEN.
+* **The twenty-second step DONE: an anonymous struct in C++'s own
+  shape.** One whose members carry default initializers reaches the
+  desugaring as a class and not the plain struct an earlier fixture
+  covers, so its members were never flattened into the holder and the
+  vector layout's accessor could not find the allocator it returns. Both
+  shapes are taken now. With it, each phase of the compile names itself
+  when it fails: the desugaring, the check and the lowering ran as one
+  conjunction, so any of them merely failing left nothing to report but
+  that something had. `std::vector<int> v; v.push_back(1);` now passes
+  the desugaring and the safe part whole, and stops in the lowering.
+  GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
