@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(13).
+ccl_lowering_version(14).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -63,7 +63,10 @@ ccl_ir_units(Units0, IR) :-
 %% here when the file did not, so the check consumes at a delete as at a free
 ir_cpp_prelude :-
     ( ccl_gdeclared(malloc, _) -> true ; ccl_gdeclare([malloc-fn(ptr([], base([], [void])), [param(base([], [unsigned, long]), size)], false)]) ),
-    ( ccl_gdeclared(free, _) -> true ; ccl_gdeclare([free-fn(base([], [void]), [param(ptr([], base([], [void])), p)], false)]) ).
+    ( ccl_gdeclared(free, _) -> true ; ccl_gdeclare([free-fn(base([], [void]), [param(ptr([], base([], [void])), p)], false)]) ),
+    ir_prelude_mem(memcpy), ir_prelude_mem(memmove), ir_prelude_mem(memset).      % what the memory builtins become (cpp_builtin_call), when the file declared none
+ir_prelude_mem(N) :- ( ccl_gdeclared(N, _) -> true
+    ; V = ptr([], base([], [void])), ccl_gdeclare([N-fn(V, [param(V, dst), param(V, src), param(base([], [unsigned, long]), n)], false)]) ).
 ir_note_units([]).
 ir_note_units([unit(Is)|Us]) :- ccl_items_note(Is), ir_note_units(Us).
 
@@ -725,7 +728,9 @@ ir_lval(E, Slot, T) :- ir_lval(E, Slot, T, _).
 ir_lval(id(N), Addr, T, LL) :- !, ( ir_lookup(N, loc(Addr0, T00)) -> true ; ir_fail(undeclared(N)) ), ir_ref_slot(Addr0, T00, Addr, T0), ccl_resolve_type(T0, T), ir_type(T, LL).
 ir_lval(scoped(_, N), Addr, T, LL) :- !, ir_lval(id(N), Addr, T, LL).
 ir_lval(call(F, Args), Addr, T, LL) :- !,                                 % C++: a call's reference result is a place
-    ir_call(F, Args, Addr, RT), ( ( RT = ref(_, T0) ; RT = rref(_, T0) ) -> ccl_resolve_type(T0, T), ir_type(T, LL) ; ir_fail(lvalue(call(F, Args))) ).
+    ir_call(F, Args, V, RT),
+    (   ( RT = ref(_, T0) ; RT = rref(_, T0) ) -> ccl_resolve_type(T0, T), ir_type(T, LL), Addr = V
+    ;   ccl_resolve_type(RT, T), ir_type(T, LL), ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_ins(['store ', LL, ' ', V, ', ptr ', Addr]) ).   % a PRVALUE used as a place, `end()[-1]' or `f().x': the temporary C++ materializes for it
 %% C++ (M6): a reference's slot holds the address of what it refers to, so a
 %% use of the name loads that address first and goes on as the referent
 ir_ref_slot(A0, T0, A, T) :- ( T0 = ref(_, T) ; T0 = rref(_, T) ), !, ir_fresh(A), ir_ins([A, ' = load ptr, ptr ', A0]).

@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(40).
+ccl_reader_version(41).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -786,7 +786,13 @@ ccl_auto_decl(L, N, E, R, D) :-
     (   ccl_type_of(E, T0), T0 \== unknown, \+ ccl_dependent_type(T0) -> ccl_infer_decl(L, N, E, D0), D0 = declaration(L, none, Base, [var(N, T1, E)]), ( R == ref -> T = ref([], T1) ; T = T1 ), D = declaration(L, none, Base, [var(N, T, E)])
     ;   ( R == ref -> T = ref([], base([], [auto])) ; T = base([], [auto]) ), D = declaration(L, none, base([], [auto]), [var(N, T, E)]) ),
     ccl_note_item(D).
-ccl_dependent_type(T) :- compound(T), ( T = scoped(_, _) -> true ; T =.. [_|As], member(A, As), ccl_dependent_type(A) ), !.
+%% A TYPE THE READER CANNOT SETTLE HERE, so `auto' stays and the desugaring deduces it where the call is
+%% instantiated: a qualified name (`__allocation_result<typename _Traits::pointer, ...>'), or -- INSIDE A TEMPLATE
+%% -- a name the tables do not know, which is another template's own parameter come from the declaration this type
+%% was read off. libc++'s `auto __guard = std::__make_exception_guard(...)' takes that function's result type,
+%% `__exception_guard<_Rollback>', whose _Rollback is free here: deduced, it keyed an instance by that free name.
+ccl_dependent_type(T) :- compound(T), ( T = scoped(_, _) -> true ; ccl_free_name(T) -> true ; T =.. [_|As], member(A, As), ccl_dependent_type(A) ), !.
+ccl_free_name(typedef(N)) :- atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0, \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _).
 
 ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto, Ret, Name, Params, Var, Body)) -->
     ccl_declarator(Env, Base, Name, Type0), { Type0 = fn(_, _, _) }, ccl_attrs, ccl_method_quals(_), ccl_tie(Type0, Type), { Type = fn(Ret, Params, Var) }, ccl_peek(p, '{'),   % C++'s const/override after the parameters; no cut here, a prototype falls through

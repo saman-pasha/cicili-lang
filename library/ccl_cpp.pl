@@ -136,9 +136,11 @@ cpp_fn_exact(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N), '$cpp_fn'(F, _, Ps
 cpp_fn_best(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N),
     findall(Ps0, ( '$cpp_fn'(F, _, Ps0, _, _), cpp_arity_fits(Ps0, N) ), Cands), Cands \== [],
     cpp_pick(Cands, As, Ps), cpp_fn_defined(F, Ps, D).
-cpp_fn_ready(F) :- atom(F), '$cpp_fn'(F, _, _, _, _), !.      % only a name already registered: a library header's items come through the template path, whose own load must not be
-%% forced (and swallowed) from here -- cpp_hdr_load marks a name loaded BEFORE it registers it, so a refusal
-%% swallowed here would leave the name marked and its templates unregistered ever after (std::swap linked to nothing)
+cpp_fn_ready(F) :- atom(F), '$cpp_fn'(F, _, _, _, _), !.
+cpp_fn_ready(F) :- atom(F), cpp_hdr_item(F, _), cpp_hdr_load(F), '$cpp_fn'(F, _, _, _, _), !.   % a LIBRARY header's functions of the name, registered on the first ask: `std::__throw_length_error'
+%% is defined inline in the header and emitted where it is called, so the name must be loaded here. A load that
+%% REFUSES throws through (it marks the name loaded before it registers it, so a refusal swallowed here would
+%% leave the name marked and its templates unregistered ever after -- std::swap linked to nothing for a turn).
 cpp_fn_defined(F, Ps, D) :- ( '$cpp_fn'(F, _, Ps, yes, _) -> D = yes ; D = no ).
 cpp_exact_params([], []).
 cpp_exact_params([P|Ps], [A|As]) :- ( P = param(T, _) ; P = param(T, _, _) ), cpp_arg_exact(T, A), cpp_exact_params(Ps, As).
@@ -155,7 +157,8 @@ cpp_free_call(F, Ps, D, As, call(id(Name), As2)) :-
 cpp_use_fn(F, Ps, Name) :-
     (   '$cpp_fn'(F, _, Ps, yes, lazy(function(L, Sto, Ret, N, Ps2, V, Body))), \+ cpp_instance_done(Name)
     ->  cpp_instance_note(Name, hdr),
-        cpp_as_lib(yes, ( cpp_isolated(cpp_item(function(L, Sto, Ret, N, Ps2, V, Body), Items)), cpp_add_instance_items(Items) ))
+        (   cpp_as_lib(yes, ( cpp_isolated(cpp_item(function(L, Sto, Ret, N, Ps2, V, Body), Items)), cpp_add_instance_items(Items) ))
+        ->  true ; cpp_refuse(0, function_not_emitted(Name)) )                          % never silently: the call would be emitted and the definition not, and the linker would say so
     ;   true ).
 cpp_register_([template(_, TPs, concept(_, N, E))|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept(TPs, E)|Cs]), cpp_register_(Is).   % C++20
 cpp_register_([concept(_, N, E)|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept([], E)|Cs]), cpp_register_(Is).
@@ -796,6 +799,19 @@ cpp_stmt(Ctx, case(L, E, S), case(L, E, S1)) :- !, cpp_stmt(Ctx, S, S1).
 cpp_stmt(Ctx, default(L, S), default(L, S1)) :- !, cpp_stmt(Ctx, S, S1).
 cpp_stmt(_, S, S).
 cpp_stmts(_, [], []).
+%% A TYPEDEF IN A BLOCK IS SUBSTITUTED INTO THE STATEMENTS THAT FOLLOW IT, as a template's parameter already is.
+%% libc++ writes `using _ValueType = typename iterator_traits<_ContiguousIterator>::value_type;' inside
+%% __uninitialized_allocator_relocate and names _ValueType in the lines below -- and the typedef TABLE is one per
+%% unit, so half a dozen functions each declaring their own `_ValueType' leave one entry, another function's, whose
+%% own parameter is free: `__libcpp_is_trivially_relocatable<_ValueType>' was then keyed by the unresolved NAME.
+%% Substituted away, the name is gone and every later use is the concrete type this instance resolved it to.
+cpp_stmts(Ctx, [typedef(L, Vs)|Ss], Ts) :- !,
+    cpp_where(stmt(typedef, L), cpp_vars(none, Vs, Vs1)), ccl_note_typedefs(Vs1),
+    cpp_block_typedefs(Vs1, B), ( B == [] -> Ss1 = Ss ; cpp_subst(Ss, B, Ss1) ),
+    cpp_stmts(Ctx, Ss1, Ts).
+cpp_block_typedefs([], []).
+cpp_block_typedefs([var(N, T, _)|Vs], [N-T|B]) :- atom(N), !, cpp_block_typedefs(Vs, B).
+cpp_block_typedefs([_|Vs], B) :- cpp_block_typedefs(Vs, B).
 cpp_stmts(Ctx, [S|Ss], [S1|Ts]) :- ( S =.. [F, L|_], integer(L) -> W = stmt(F, L) ; W = stmt ), cpp_where(W, cpp_stmt(Ctx, S, S1)), cpp_stmts(Ctx, Ss, Ts).
 cpp_opt_expr(_, none, none) :- !.
 cpp_opt_expr(Ctx, E, E1) :- cpp_expr(Ctx, E, E1).
@@ -809,7 +825,7 @@ cpp_decl_stmt(Ctx, L, Sto, B, Vs, S) :-
 cpp_decl_pieces(_, _, _, _, [], []).
 cpp_decl_pieces(Ctx, L, Sto, B, [var(N, base(Q, [auto]), I0)|Vs], Pieces) :- !,           % auto the reader could not infer: a lambda, a call of a method or a template
     cpp_where(auto(N), cpp_expr(Ctx, I0, I)), ( ccl_type_of(I, T0), T0 \== unknown -> cpp_trace(auto_type(N, I, T0)), cpp_decayed(T0, T1), ccl_add_quals(Q, T1, T) ; cpp_refuse(L, auto(N)) ),   % ANY deduced type, not only a plain one: `auto p = q - n' is a pointer, and required a base before
-    cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T, I)|Vs], Pieces).
+    cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T, '$cpp_walked'(I))|Vs], Pieces).
 cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T0, init(Items))|Vs], Pieces) :-
     cpp_type(T0, T), Sto \== static, Sto \== extern, cpp_class_of_type(T, C), cpp_implicit_ctor_needed(C), !,   % an aggregate of members that construct: each from its item
     ccl_declare(N, T), cpp_class(C, cls(_, Data, _, _, _, _)),
@@ -834,6 +850,7 @@ cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T0, I)|Vs], Pieces) :-
     cpp_decl_pieces(Ctx, L, Sto, B, Vs, P2).
 %% a type with no constructor direct-initialized, `_Tp __t(std::move(__x))', `int n{}', `S s(t)': the value itself, or
 %% the type's zero for an empty one
+cpp_plain_init('$cpp_walked'(X), _, '$cpp_walked'(X)) :- !.
 cpp_plain_init(ctor([X]), _, X) :- !.
 cpp_plain_init(ctor([]), T, Z) :- !, cpp_zero_of(T, Z).
 cpp_plain_init(init([item(_, X)]), T, X) :- \+ cpp_class_of_type(T, _), \+ ccl_resolve_type(T, arr(_, _)), !.
@@ -848,6 +865,11 @@ cpp_aggregate_inits([member(MT, M, _)|Ds], [E|Es], Obj, L, [S|Inits]) :-
     ->  ( cpp_ctor(MC, [E], CName) -> true ; cpp_refuse(L, member_not_constructed(M, MC, 1)) ), cpp_fill_defaults(CName, [E], Args), S = expr(L, call(id(CName), [addr(member(Obj, M))|Args]))
     ;   S = expr(L, assign('=', member(Obj, M), E)) ),
     cpp_aggregate_inits(Ds, Es, Obj, L, Inits).
+%% AN INITIALIZER ALREADY WALKED, marked by the `auto' clause above: the pieces must not walk it a second time --
+%% a statement expression that builds a temporary would have its declaration desugared again and the temporary
+%% constructed twice (`no_constructor(C, 0)' where the second walk found it bare), and a lambda would make a
+%% second closure class for nothing.
+cpp_ctor_args(_, '$cpp_walked'(E), _, [E]) :- !.
 cpp_ctor_args(_, none, _, []) :- !.
 cpp_ctor_args(Ctx, ctor(As), _, As1) :- !, cpp_exprs(Ctx, As, As1).
 cpp_ctor_args(Ctx, init(Items), _, As1) :- !, findall(E, member(item(_, E), Items), As), cpp_exprs(Ctx, As, As1).
@@ -877,12 +899,14 @@ cpp_copy_temp(C, A, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]
 cpp_exprs(_, [], []).
 cpp_exprs(Ctx, [E|Es], [E1|Fs]) :- cpp_expr(Ctx, E, E1), cpp_exprs(Ctx, Es, Fs).
 cpp_expr(Ctx, this, E) :- cpp_closure_this(Ctx, _), !, cpp_closure_object([], E).      % inside a lambda that captured it, `this' is the enclosing object's address
+cpp_expr(_, '$cpp_walked'(E), E) :- !.                                                  % walked already, by the `auto' deduction
 cpp_expr(_, this, id(this)) :- !.
 cpp_expr(_, E, E) :- \+ compound(E), !.
 cpp_expr(Ctx, id(N), E) :- !,
     (   cpp_local(N) -> E = id(N)
     ;   Ctx = self(C, SN), cpp_data_member(C, N, []) -> E = member(id(SN), N)                   % C++23: a capture, through the closure's explicit object parameter
     ;   Ctx \== none, cpp_data_member(Ctx, N, Hops) -> cpp_access(id(this), N, Hops, E)
+    ;   Ctx \== none, cpp_static_const(Ctx, N, V) -> E = V                                    % a static const with a constant, named bare inside its class: the constant, as `C::value' already folds
     ;   Ctx \== none, cpp_static_member(Ctx, N, Name) -> E = id(Name)
     ;   cpp_closure_this(Ctx, EC), cpp_data_member(EC, N, Hops) -> cpp_closure_member(N, Hops, E)   % a lambda's captured this: the enclosing object's member
     ;   cpp_closure_this(Ctx, EC), cpp_static_member(EC, N, Name) -> E = id(Name)
@@ -984,6 +1008,33 @@ cpp_builtin_call('__builtin_expect', [E, _], E).
 cpp_builtin_call('__builtin_assume_aligned', [P|_], P).
 cpp_builtin_call('__builtin_operator_new', [N|_], call(id(malloc), [N])).      % a size, and an alignment this compiler does not honour
 cpp_builtin_call('__builtin_operator_delete', [P|_], call(id(free), [P])).
+%% the memory builtins are the C library's functions, which the lowering declares when the file did not
+%% (ir_cpp_prelude): libc++ relocates a vector's elements with __builtin_memcpy
+cpp_builtin_call('__builtin_memcpy', As, call(id(memcpy), As)).
+cpp_builtin_call('__builtin_memmove', As, call(id(memmove), As)).
+cpp_builtin_call('__builtin_memset', As, call(id(memset), As)).
+cpp_builtin_call('__builtin_memcmp', As, call(id(memcmp), As)).
+cpp_builtin_call('__builtin_strlen', As, call(id(strlen), As)).
+%% what this compiler can only answer at run time, or need not answer at all: a constant test is FALSE (nothing
+%% here is folded past ccl_const_eval), an assumption and a prefetch are nothing, and an unreachable point is nothing
+cpp_builtin_call('__builtin_constant_p', [_], int(0)).
+cpp_builtin_call('__builtin_assume', [_], int(0)).
+cpp_builtin_call('__builtin_unreachable', [], int(0)).
+cpp_builtin_call('__builtin_prefetch', [_|_], int(0)).
+%% THE BIT COUNT, folded here where the argument folds: libc++ writes a type's `digits' as
+%% `__builtin_popcountg(~__make_unsigned_t<type>(0)) - is_signed', and numeric_limits<ptrdiff_t>::__max is built
+%% from it -- a static const that does not fold is emitted `extern' and the link finds nothing. cocolog's integers
+%% are 61-bit, so `~0' is -1 and the count is taken from the type's WIDTH: 64 - popcount(\ -1) = 64 - 0.
+cpp_builtin_call(N, [X], int(P)) :- cpp_popcount_name(N), cpp_popcount(X, P).
+cpp_popcount_name('__builtin_popcountg').
+cpp_popcount_name('__builtin_popcount').
+cpp_popcount_name('__builtin_popcountl').
+cpp_popcount_name('__builtin_popcountll').
+cpp_popcount(X, P) :- ccl_const_eval(X, V),
+    ( ccl_type_of(X, T), T \== unknown, ccl_size_of(T, S), S > 0 -> W is S * 8 ; W = 64 ),
+    ( V >= 0 -> cpp_bits(V, 0, P) ; V1 is \ V, cpp_bits(V1, 0, P0), P is W - P0 ).
+cpp_bits(0, P, P) :- !.
+cpp_bits(V, P0, P) :- P1 is P0 + (V /\ 1), V1 is V >> 1, cpp_bits(V1, P1, P).
 cpp_call(Ctx, member(X0, M), As, E) :- !,
     cpp_expr(Ctx, X0, X),
     (   cpp_class_of_type_of(X, C), length(As, N), cpp_method(C, M, As, Name, Hops)
@@ -1018,6 +1069,8 @@ cpp_call(_, scoped(Path, tmpl(F, TArgs)), As, E) :- \+ cpp_scope_class(Path, _),
 cpp_call(_, scoped(Path, F), As, E) :- atom(F), \+ cpp_scope_class(Path, _), \+ ( cpp_class(F, _), cpp_class_takes(F, As) ), !, cpp_call(none, id(F), As, E).   % std::swap(a, b): as the bare name would, never a member (a qualified name finds no method); a class of that name which cannot take the arguments is another namespace's
 cpp_call(_, id(F), As, call(id(Name), [Obj|As1])) :- cpp_local(F), cpp_class_of_type_of(id(F), C), cpp_method(C, operator('()'), As, Name, _), !, cpp_fill_defaults(Name, As, As1), cpp_object_arg(Name, addr(id(F)), Obj).   % a lambda, or any object with operator()
 cpp_call(_, tmpl(F, TArgs), As, call(id(Name), As)) :- cpp_template(F, _, Item), cpp_fn_item(Item, _), !, cpp_types(TArgs, TArgs1), cpp_instantiate_function(F, TArgs1, As, Name).   % a DECLARED-only one too: declval
+cpp_call(_, tmpl(N, TArgs), As, E) :- cpp_template(N, _, typedef(_, _)), !,                      % an ALIAS template called by its template-id: the type it names, cast or constructed
+    cpp_targ_values(TArgs, TArgs1), cpp_instantiate_type(N, TArgs1, T), cpp_type_call(T, As, E).
 cpp_call(_, tmpl(C, TArgs), As, E) :- cpp_targ_values(TArgs, TArgs1), cpp_targs_settled(TArgs1),   % `Guard<A, I>(a, i, j)': a temporary of a class TEMPLATE's instance, as a plain class's already was
     cpp_instantiate_type(C, TArgs1, T), cpp_class_of_type(T, C1), !, cpp_temporary(T, C1, As, E).
 %% every argument a type or a constant: an expression that did not fold would name an instance by its spelling
@@ -1031,16 +1084,15 @@ cpp_call(_, id(F), As, E) :- \+ cpp_local(F), cpp_template(F, _, Item), cpp_fn_i
     ;   cpp_fn_best(F, As, Ps, D) -> cpp_free_call(F, Ps, D, As, E)                                % no template held: the plain overloads of the name, ONE overload set with them
     ;   nb_getval('$cpp_fn_refusal', W1), ( W1 == none -> cpp_refuse(0, no_matching_template(F)) ; cpp_refuse(0, W1) ) ).
 cpp_call(Ctx, id(N), As, E) :- Ctx \== none, \+ cpp_local(N), cpp_class_typedef(Ctx, N, T0),   % a class-scope TYPE named bare inside its class: `__destroy_vector(*this)' a nested class, `size_type(~0)' a cast
-    catch(cpp_type(T0, T), error(not_lowered(_), _), fail), !,
-    (   cpp_class_of_type(T, C1)
-    ->  ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) )
-    ;   As = [X] -> E = cast(T, X)                                    % a typedef naming a scalar: a functional cast
-    ;   As == [] -> cpp_zero_of(T, E)
-    ;   fail ).
+    catch(cpp_type(T0, T), error(not_lowered(_), _), fail), !, cpp_type_call(T, As, E).
 %% the same for a typedef at FILE scope, which libc++ calls by its own name: `__destruct_at_end(p, false_type())'
 %% makes a temporary of integral_constant<bool, false> by its alias, and `size_t(n)' is the cast it looks like
 cpp_call(_, id(N), As, E) :- \+ cpp_local(N), \+ ccl_declared(N, fn(_, _, _)), ccl_typedef_of(N, T0),
-    catch(cpp_type(T0, T), error(not_lowered(_), _), fail), !,
+    catch(cpp_type(T0, T), error(not_lowered(_), _), fail), !, cpp_type_call(T, As, E).
+%% A TYPE'S NAME CALLED: a temporary of the class it names, an aggregate of the items, the cast it looks like, or
+%% its zero -- written once for the three names a type has here (a class-scope typedef, a file-scope one, and an
+%% ALIAS TEMPLATE's template-id, `__make_unsigned_t<type>(0)', which libc++ takes a type's digits through)
+cpp_type_call(T, As, E) :-
     (   cpp_class_of_type(T, C1)
     ->  ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) )
     ;   As = [X] -> E = cast(T, X)
@@ -1778,7 +1830,18 @@ cpp_builtin_type('__add_lvalue_reference', [A], ref([], T1)) :- !, cpp_trait_typ
 cpp_builtin_type('__add_rvalue_reference', [A], rref([], T1)) :- !, cpp_trait_type(A, T), ccl_unref(T, T1).
 cpp_builtin_type('__add_pointer', [A], ptr([], T1)) :- !, cpp_trait_type(A, T), ccl_unref(T, T1).
 cpp_builtin_type('__remove_pointer', [A], T1) :- !, cpp_trait_type(A, T), ( ccl_resolve_type(T, ptr(_, T1)) -> true ; T1 = T ).
+%% the signed and unsigned counterparts, which libc++ takes a type's DIGITS from
+%% (`__builtin_popcountg(~__make_unsigned_t<type>(0))'): the qualifiers kept, an enum through its underlying type
+cpp_builtin_type('__make_unsigned', [A], T1) :- !, cpp_trait_type(A, T), cpp_signedness(unsigned, T, T1).
+cpp_builtin_type('__make_signed', [A], T1) :- !, cpp_trait_type(A, T), cpp_signedness(signed, T, T1).
 cpp_builtin_type(N, _, _) :- cpp_refuse(0, trait_unknown(N)).
+cpp_signedness(W, T0, base(Q, S1)) :- ccl_resolve_type(T0, base(Q, S0)), cpp_int_spec(S0, S), !, cpp_sign_spec(W, S, S1).
+cpp_signedness(_, T, T).
+%% the integer a specifier list names, its own signedness dropped: [unsigned, long] and [long] are both long
+cpp_int_spec(S0, S) :- findall(X, ( member(X, S0), X \== signed, X \== unsigned ), S), S \== [], cpp_integer_spec(S).
+cpp_integer_spec(S) :- ( memberchk(char, S) ; memberchk(short, S) ; memberchk(int, S) ; memberchk(long, S) ; memberchk('_Bool', S) ).
+cpp_sign_spec(unsigned, S, [unsigned|S]).
+cpp_sign_spec(signed, S, [signed|S]).
 cpp_is_type(T) :- ( T = base(_, _) ; T = ptr(_, _) ; T = ref(_, _) ; T = rref(_, _) ; T = arr(_, _) ; T = fn(_, _, _) ), !.
 cpp_merge_quals(Q, base(Q2, S), base(Q3, S)) :- !, append(Q, Q2, Q3).
 cpp_merge_quals(_, A, A).

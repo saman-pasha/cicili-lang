@@ -416,6 +416,18 @@ what runs today.
   The result type is deduced from the first return desugared where the
   lambda stands, since a member has a type only once it is the access the
   desugaring makes of it. GREEN.
+* **The twenty-eighth step DONE: `std::vector<int>` compiles.** Eleven
+  forms between a free name and the object file: a type the reader cannot
+  settle stays `auto`, a typedef in a block is substituted into the lines
+  below it, an initializer is walked once, the memory builtins are the C
+  library's functions, the bit count and the C++ casts fold, a static const
+  named bare folds to its value, a type's name called is one rule for the
+  three names a type has, and a prvalue used as a place gets the temporary
+  C++ materializes for it. `std::vector<int> v; v.push_back(1); return
+  (int) v.size();` now compiles to an object file whose only unresolved
+  symbols are malloc, free, memcpy and libc++'s own verbose-abort hook --
+  which is C++-mangled in the shipped library, where this compiler emits
+  every name unmangled. That mangling is the next step. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

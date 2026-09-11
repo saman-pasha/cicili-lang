@@ -70,6 +70,7 @@ ccl_const_eval(pos(E), V) :- !, ccl_const_eval(E, V).
 ccl_const_eval(bitnot(E), V) :- !, ccl_const_eval(E, V0), V is \ V0.
 ccl_const_eval(not(E), V) :- !, ccl_const_eval(E, V0), ( V0 =:= 0 -> V = 1 ; V = 0 ).
 ccl_const_eval(cast(_, E), V) :- !, ccl_const_eval(E, V).
+ccl_const_eval(ccast(_, _, E), V) :- !, ccl_const_eval(E, V).      % C++'s own casts, a functional one among them: `type(~0)' folds as `(type) ~0' does
 ccl_const_eval(sizeof_type(T), V) :- !, ccl_size_of(T, V).
 ccl_const_eval(sizeof(E), V) :- !, ccl_type_of(E, T), ccl_size_of(T, V).
 ccl_const_eval(cond(C, A, B), V) :- !, ccl_const_eval(C, CV), ( CV =\= 0 -> ccl_const_eval(A, V) ; ccl_const_eval(B, V) ).

@@ -1747,6 +1747,60 @@ v.size();` now stops in `std::forward`'s instance, on an argument that
 still names a template parameter -- an instance keyed by an unresolved
 name, the defect 0.49 met from the other side.
 
+**M6's twenty-eighth step (0.60): eleven forms between the free name and
+the object file, and `std::vector<int>` COMPILED.** Following the probe
+from the instance keyed by an unresolved name to the link:
+(1) A TYPE THE READER CANNOT SETTLE stays `auto` -- 0.49 kept a qualified
+name; a name the tables do not know, INSIDE A TEMPLATE, is another
+template's own parameter come from the declaration the type was read off
+(`auto __guard = std::__make_exception_guard(...)` takes that function's
+result `__exception_guard<_Rollback>`), and deducing it keyed an instance
+by that free name (`ccl_free_name/1`, reader version 41).
+(2) A TYPEDEF IN A BLOCK IS SUBSTITUTED INTO THE STATEMENTS THAT FOLLOW,
+as a template's parameter is: the typedef TABLE is one per unit, and half
+a dozen libc++ functions each declare their own `_ValueType` -- one entry
+survived, another function's, whose parameter was free.
+(3) AN INITIALIZER IS WALKED ONCE: the `auto` clause desugared it to learn
+the type and handed the RESULT to the pieces, which desugared it again --
+a statement expression's temporary was declared twice (`no_constructor(C,
+0)` where the second walk found it bare) and a lambda made a second
+closure for nothing (`'$cpp_walked'/1`, the marker the pieces pass
+through).
+(4) THE MEMORY BUILTINS are the C library's functions (`__builtin_memcpy`
+and kin, declared by `ir_cpp_prelude` when the file did not), and
+`__builtin_constant_p` is FALSE, an assumption and a prefetch nothing.
+(5) THE BIT COUNT folds where its argument does (`__builtin_popcountg`),
+which is how libc++ writes a type's `digits`; cocolog's integers are
+61-bit, so `~0` is -1 and the count is taken from the type's WIDTH.
+(6) `__make_unsigned` and `__make_signed` answer (`cpp_signedness/3`).
+(7) A C++ CAST FOLDS (`ccl_const_eval(ccast(...))`), without which
+`type(~0)` stopped every constant behind it.
+(8) A STATIC CONST NAMED BARE inside its class folds to its value, as
+`C::value` already did -- `numeric_limits<ptrdiff_t>::__max` is built from
+three such constants, and a static that does not fold is emitted `extern`
+and the linker finds nothing.
+(9) A TYPE'S NAME CALLED is one predicate for the three names a type has
+(`cpp_type_call/3`): a class-scope typedef, a file-scope one, and an ALIAS
+TEMPLATE's template-id (`__make_unsigned_t<type>(0)`).
+(10) A PRVALUE USED AS A PLACE gets the temporary C++ materializes for it
+(`ir_lval(call(...))`, where only a reference result was taken): `end()[-1]`
+is vector's `back()`, and `f().x` is everyday C++.
+(11) A LIBRARY HEADER'S FUNCTIONS ARE LOADED ON THE FIRST ASK from the
+overload path too (`cpp_fn_ready/1`, whose load now throws through rather
+than swallowing a refusal), and a lazy emission that FAILS is a refusal
+(`function_not_emitted`), never a call with no definition behind it.
+WHERE IT STANDS: `std::vector<int> v; v.push_back(1); return (int)
+v.size();` compiles to an OBJECT FILE of 34 KB whose only unresolved
+symbols are `malloc`, `free`, `memcpy` and libc++'s own
+`std::__libcpp_verbose_abort` -- and that last one is C++-MANGLED in the
+shipped library (`__ZNSt3__122__libcpp_verbose_abortEPKcz`), where this
+compiler emits every name unmangled. ITANIUM NAME MANGLING FOR WHAT A
+LIBRARY HEADER ONLY DECLARES is the next stretch, and the last thing
+between the program and a binary that runs. Gated by
+`test/cpp/run/libcxxforms.cpp` (a block typedef per function, a prvalue as
+a place, an alias template called, a static const folding, the bit count),
+clang++'s numbers; seven gates GREEN.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
