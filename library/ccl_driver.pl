@@ -22,6 +22,7 @@ dr_drive(Inputs, Options) :-
     ccl_ensure_globals, nb_setval('$dr_errors', 0),
     ( memberchk(lang(cpp), Options) -> nb_setval('$ccl_lang_forced', cpp), nb_setval('$ccl_lang', cpp) ; nb_setval('$ccl_lang_forced', none) ),   % cicili++: everything C++
     ( memberchk(std(Std), Options) -> nb_setval('$ccl_std', Std) ; nb_setval('$ccl_std', 17) ),                                       % -std=c++20: the level libc++ keys on
+    ( memberchk(cstd(CStd), Options) -> nb_setval('$ccl_c_std', CStd) ; nb_setval('$ccl_c_std', 17) ),                                 % -std=c23: C's own level, the forms and __STDC_VERSION__
     forall(member(include(D), Options), assertz(ccl_include_dir(D))),
     ( memberchk(opt(O), Options) -> Flags = [O] ; Flags = ['-O0'] ),
     ( memberchk(verbose, Options) -> nb_setval('$dr_verbose', yes) ; nb_setval('$dr_verbose', no) ),
@@ -159,6 +160,7 @@ dr_report(F, E) :- once(dr_error(F, 0, [E])).
 dr_diag(_, syntax_error(cicili_ast(File, line(L), near(N))), _) :- !, dr_error(File, L, ['syntax error: could not read this item (gave up near line ', N, ')']).
 dr_diag(_, syntax_error(cicili_ast(File, lexical, line(L))), _) :- !, dr_error(File, L, ['lexical error']).
 dr_diag(F, cannot_infer(N, E), here(_, L)) :- !, dr_error(F, L, ['cannot infer the type of ', N, ' from ', E]).
+dr_diag(F, static_assert_failed(T), here(_, L)) :- !, ( T == '' -> dr_error(F, L, ['static assertion failed']) ; dr_error(F, L, ['static assertion failed: ', T]) ).
 dr_diag(F, no_member(What, T), here(_, L)) :- !, dr_error(F, L, ['no member ', What, ' in ', T]).
 dr_diag(F, macro_error(M, here(_, L)), _) :- !, dr_error(F, L, ['macro: ', M]).
 %% an error inside a macro: the call site, then where it went wrong in the macro

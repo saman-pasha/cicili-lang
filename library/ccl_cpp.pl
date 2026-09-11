@@ -131,7 +131,9 @@ cpp_fn_exact(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N), '$cpp_fn'(F, _, Ps
 cpp_fn_best(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N),
     findall(Ps0, ( '$cpp_fn'(F, _, Ps0, _), cpp_arity_fits(Ps0, N) ), Cands), Cands \== [],
     cpp_pick(Cands, As, Ps), cpp_fn_defined(F, Ps, D).
-cpp_fn_ready(F) :- atom(F), ( '$cpp_fn'(F, _, _, _) -> true ; cpp_hdr_load(F) -> true ; true ).      % a library header's items of the name, registered on the first ask
+cpp_fn_ready(F) :- atom(F), '$cpp_fn'(F, _, _, _), !.      % only a name already registered: a library header's items come through the template path, whose own load must not be
+%% forced (and swallowed) from here -- cpp_hdr_load marks a name loaded BEFORE it registers it, so a refusal
+%% swallowed here would leave the name marked and its templates unregistered ever after (std::swap linked to nothing)
 cpp_fn_defined(F, Ps, D) :- ( '$cpp_fn'(F, _, Ps, yes) -> D = yes ; D = no ).
 cpp_exact_params([], []).
 cpp_exact_params([P|Ps], [A|As]) :- ( P = param(T, _) ; P = param(T, _, _) ), cpp_arg_exact(T, A), cpp_exact_params(Ps, As).

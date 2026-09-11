@@ -394,6 +394,15 @@ what runs today.
   linker must find by name are untouched. An overload that takes the
   arguments exactly beats any template, as C++ has it, and where no
   template holds the plain overloads are candidates beside them. GREEN.
+* **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
+  preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
+  level added are read -- `bool`, `true`, `false` and `nullptr` as the
+  language's own, `constexpr` objects whose value folds where an array's
+  bound or a static assertion needs it, `enum E : unsigned char`,
+  `[[attributes]]`, `typeof` (resolved at last, by any pass), `auto`
+  deducing, and `static_assert` with or without a message, checked in C
+  where it folds. Both lexers read `0b1011` and the digit separator
+  `1'000'000`, the preprocessor's pp-number included. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

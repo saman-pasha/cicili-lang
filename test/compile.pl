@@ -26,10 +26,15 @@ build_all([], _, _).
 build_all([N|Ns], Dir, D) :- build_one(N, Dir, D), build_all(Ns, Dir, D).
 build_one(N, Dir, D) :-
     atomic_list_concat([Dir, '/', N, '.c'], Src), atomic_list_concat([D, '/', N, '.o'], Obj), atomic_list_concat([D, '/', N], Bin),
+    c_level(Dir, N),                                                             % NAME.std holds C's level for the fixtures that need one (-std=c23)
     (   catch(( cicili_ast(Src, A), cicili_ir([A], IR), cicili_compile(IR, Obj, ['-O1']), cicili_link([Obj], [], Bin) ), E, (write('FAIL '), write(N), write(': '), write(E), nl, fail))
     ->  write('built '), write(N), nl
     ;   true ).
 
+c_level(Dir, N) :- atomic_list_concat([Dir, '/', N, '.std'], F),
+    (   exists_file(F), read_file_to_codes(F, Cs), atom_codes(A, Cs), atom_number_prefix(A, V) -> nb_setval('$ccl_c_std', V)
+    ;   nb_setval('$ccl_c_std', 17) ).
+atom_number_prefix(A, V) :- atom_codes(A, Cs), findall(C, ( member(C, Cs), C >= 0'0, C =< 0'9 ), Ds), Ds \== [], number_codes(V, Ds).
 refuse_all([], _).
 refuse_all([N|Ns], Dir) :- refuse_one(N, Dir), refuse_all(Ns, Dir).
 refuse_one(N, Dir) :-

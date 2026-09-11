@@ -65,7 +65,12 @@ while [ $# -gt 0 ]; do
     -std=c++23|-std=gnu++23|-std=c++2b|-std=gnu++2b) opts="$opts std(23)," ;;
     -std=c++26|-std=gnu++26|-std=c++2c|-std=gnu++2c) opts="$opts std(26)," ;;
     -std=c++*|-std=gnu++*) echo "$me: error: unsupported C++ standard '$1' (C++17 and later)" >&2; exit 1 ;;
-    -g|-D*|-U*|-W*|-f*|-std=*|-pedantic) ;;   # accepted for clang's sake: C's -std, no debug info yet
+    -std=c23|-std=gnu23|-std=c2x|-std=gnu2x) opts="$opts cstd(23)," ;;          # C's level: C17 the baseline, C23 the forms below
+    -std=c17|-std=gnu17|-std=c18|-std=gnu18) opts="$opts cstd(17)," ;;
+    -std=c11|-std=gnu11) opts="$opts cstd(11)," ;;
+    -std=c99|-std=gnu99) opts="$opts cstd(99)," ;;
+    -std=c89|-std=c90|-std=gnu89|-std=gnu90|-std=iso9899:1990) echo "$me: error: unsupported C standard '$1' (C99 and later)" >&2; exit 1 ;;
+    -g|-D*|-U*|-W*|-f*|-std=*|-pedantic) ;;   # accepted for clang's sake, no debug info yet
     -*) echo "$me: error: unknown argument: '$1'" >&2; exit 1 ;;
     *) inputs="$inputs $(q "$1"),";;
   esac

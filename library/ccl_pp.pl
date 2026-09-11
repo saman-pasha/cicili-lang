@@ -103,10 +103,13 @@ pp_outer_macro(N, Ps, Cs) :-                                                    
     ;   pp_header_macro(N, Ps, Cs), pp_define(N, Ps, Cs) ).
 pp_predef_macro(N, obj, Cs) :-
     (   ccl_lang(cpp), ccl_std(S), pp_std_table(S, Tab), pp_predef(N, Tab, T) -> true   % the level's own value first (__cplusplus, __cpp_constexpr ...)
+    ;   ccl_lang(c), ccl_c_std(CS), pp_c_std_table(CS, CTab), pp_predef(N, CTab, T) -> true   % C's own level (-std=c23): __STDC_VERSION__ and what the forms answer
     ;   pp_predef(N, any, T) -> true
     ;   pp_arch(A), pp_predef(N, A, T) -> true
     ;   ccl_lang(cpp), pp_predef(N, cpp, T) ),
     atom_codes(T, Cs).
+%% C's levels, the newest first: what -std=c23 answers where C17's table would
+pp_c_std_table(S, c23) :- S >= 23.
 %% the tables a level sees beyond cpp's (C++17's): the newest first
 pp_std_table(S, cpp26) :- S >= 26.
 pp_std_table(S, cpp23) :- S >= 23.
@@ -765,6 +768,16 @@ pp_predef('__STDC_NO_THREADS__', any, '1').
 pp_predef('__STDC_UTF_16__', any, '1').
 pp_predef('__STDC_UTF_32__', any, '1').
 pp_predef('__STDC_VERSION__', any, '201710L').
+%% ---- C23 (-std=c23): the level's own macros, answered before C17's ------------------------------
+pp_predef('__STDC_VERSION__', c23, '202311L').
+pp_predef('__STDC_EMBED_NOT_FOUND__', c23, '0').
+pp_predef('__STDC_EMBED_FOUND__', c23, '1').
+pp_predef('__STDC_EMBED_EMPTY__', c23, '2').
+pp_predef('__STDC_VERSION_STDDEF_H__', c23, '202311L').
+pp_predef('__STDC_VERSION_STDINT_H__', c23, '202311L').
+pp_predef('__STDC_VERSION_STDARG_H__', c23, '202311L').
+pp_predef('__STDC_VERSION_STDBOOL_H__', c23, '202311L').
+pp_predef('__STDC_VERSION_LIMITS_H__', c23, '202311L').
 pp_predef('__STDC__', any, '1').
 pp_predef('__UINT16_C(c)', any, 'c').
 pp_predef('__UINT16_C_SUFFIX__', any, '').

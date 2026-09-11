@@ -44,6 +44,11 @@ sh(Cmd, Args) :- sh_line([Cmd|Args], Line), once(catch(proc_run(Line, 20000, _, 
 sh_line([], '').
 sh_line([A|As], L) :- sh_line(As, L0), atomic_list_concat(['\'', A, '\' ', L0], L).
 %% a sample's unit, read once per process
+%% a fixture read at C's own level (-std=c23), the read kept apart from the C17 one
+unit_c(Name, Std, U) :-
+    c(Name, P), atomic_list_concat(['$t_unit_c', Std, ':', P], K),
+    (   once(catch(nb_getval(K, U0), _, fail)) -> U = U0
+    ;   nb_setval('$ccl_c_std', Std), cicili_ast(P, U0), nb_setval('$ccl_c_std', 17), nb_setval(K, U0), U = U0 ).
 unit(Name, U) :-
     c(Name, P), atom_concat('$t_unit:', P, K),
     (   once(catch(nb_getval(K, U0), _, fail)) -> U = U0
@@ -350,6 +355,24 @@ lex_same(File, Mode, Lang) :-
     nb_setval('$ccl_hash', M0), nb_setval('$ccl_lang', L0),
     T1 == T2, R1 == R2, T1 = [_|_].
 
+k87 :- check('C23 (-std=c23): constexpr a constant that folds, enum : unsigned char, [[maybe_unused]], typeof, static_assert with and without a message, _Static_assert',
+    ( unit_c('run/c23.c', 23, unit(Is)),
+      member(declaration(_, none, base(Q, [int]), [var('K', _, int(7))]), Is), memberchk(const, Q),
+      member(declare(_, base(_, [enum('Small', [enum_base(base([], [unsigned, char])), enumerator('A', int(1)), enumerator('B', none)])])), Is),
+      member(static_assert(_, bin('==', id('K'), int(7)), str(_)), Is),
+      member(static_assert(_, bin('>', id('K'), int(0)), none), Is),
+      member(static_assert(_, bin('==', sizeof_type(_), int(4)), str(_)), Is),
+      member(typedef(_, [var(kint, base([], [typeof(id('K'))]), none)]), Is) )).
+k88 :- check('C23: bool/true/false and nullptr are the language\'s, auto deduces, an array bound folds from a constexpr, 0b101010 and 1\'000\'000 are numbers',
+    ( unit_c('run/c23.c', 23, unit(Is)), member(function(_, _, _, main, _, _, block(B)), Is),
+      member(declaration(_, none, base([], [bool]), [var(t, _, bool(true))]), B),
+      member(declaration(_, none, base([], [bool]), [var(f, _, bool(false))]), B),
+      member(declaration(_, none, _, [var(p, ptr([], base([], [int])), nullptr)]), B),
+      member(declaration(_, none, base([], [int]), [var(n, _, bin('+', id('K'), int(1)))]), B),
+      member(declaration(_, none, _, [var(arr, arr(id('K'), _), none)]), B),   % the bound folds where the size is taken, not at the read
+      member(expr(_, assign('=', index(id(arr), int(0)), int(42))), B),
+      member(declaration(_, none, _, [var(big, _, int(1000000))]), B),
+      member(declaration(_, none, _, [var(d, _, float(15.25))]), B) )).
 k86 :- check('macros.c: SQ(a[i]) expanded, CAT(tw, o) a name, NULL the cast, the #if group gone, #define kept as a directive item',
     ( unit('macros.c', unit(Is)), member(directive(6, '#define SQ(x) ((x) * (x))'), Is), \+ member(directive(_, '#  define BITS 32'), Is),
       member(declaration(21, none, _, [var(two, _, int(2))]), Is),
@@ -458,6 +481,8 @@ t_checks :-
     k85,
     section('the user\'s file through the preprocessor: its macros, and the headers\' macros'),
     k86,
+    k87,
+    k88,
     section('where it stops'),
     k69,
     k70,

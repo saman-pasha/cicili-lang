@@ -249,7 +249,7 @@
   ;; ccl_version(-Atom): THE VERSION. Every commit raises it (owner's rule),
   ;; one number per change; `cicili --version' prints it with LLVM's.
   (func ccl_p_version ((coco_engine * e) (size_t g)) (out int)
-        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.56")))
+        (return (coco_m_unify_atom e (coco_m_arg e g 0) "0.57")))
 
   ;; ccl_cocolog_version(-Atom): the engine's own version text, from the
   ;; running binary (coco_version_text is cocolog's, resolved at load like
@@ -289,6 +289,10 @@
         (if (>= i (-> x n)) (return -1))
         (return (cast int (cast u8 (nth i (-> x s))))))
   (static) (func ccl_lx_digit ((int c)) (out int) (return (and (>= c 48) (<= c 57))))
+  ;; C23's and C++14's 0b1011, and the digit separator 1'000'000 (39 is the apostrophe): the DCG's
+  ;; ccl_bin_digits//1 and ccl_digits//1 read them, and k84 compares the two lexers token for token
+  (static) (func ccl_lx_bin ((int c)) (out int)
+        (return (or (== c 48) (== c 49))))
   (static) (func ccl_lx_hex ((int c)) (out int)
         (return (or (ccl_lx_digit c) (or (and (>= c 97) (<= c 102)) (and (>= c 65) (<= c 70))))))
   (static) (func ccl_lx_hexval ((int c)) (out int)
@@ -324,6 +328,13 @@
         (let ((size_t k . 0))
           (set k from)
           (while (< k to) (ccl_lx_putc x (ccl_lx_at x k)) (set k (+ k 1)))))
+  ;; the same, a NUMBER's text: the digit separators dropped (39 is the apostrophe), since strtod reads none
+  (static) (func ccl_lx_puts_num ((ccl_lx * x) (size_t from) (size_t to))
+        (let ((size_t k . 0))
+          (set k from)
+          (while (< k to)
+            (if (!= (ccl_lx_at x k) 39) (ccl_lx_putc x (ccl_lx_at x k)))
+            (set k (+ k 1)))))
   ;; a code list from n bytes
   (static) (func ccl_lx_codes ((ccl_lx * x) (const char * p) (size_t n)) (out size_t)
         (let ((size_t * items . #'(cast (size_t *) (malloc (* (+ n 1) (sizeof size_t))))) (size_t lst . 0) (size_t k . 0))
@@ -500,7 +511,10 @@
           (if (not (ccl_lx_digit (ccl_lx_at x k))) (return 0))
           (ccl_lx_putc x 101)
           (if sign (ccl_lx_putc x sign))
-          (while (ccl_lx_digit (ccl_lx_at x k)) (ccl_lx_putc x (ccl_lx_at x k)) (set k (+ k 1)))
+          (while 1
+            (cond ((ccl_lx_digit (ccl_lx_at x k)) (block (ccl_lx_putc x (ccl_lx_at x k)) (set k (+ k 1))))
+                  ((and (== (ccl_lx_at x k) 39) (ccl_lx_digit (ccl_lx_at x (+ k 1)))) (set k (+ k 1)))   ; the separator, in an exponent too
+                  (#t break)))
           (return k)))
   (static) (func ccl_lx_emit_int ((ccl_lx * x) (u64 v) (size_t j) (i64 line))
         (let ((size_t k . 0))
@@ -520,31 +534,51 @@
           (if (and (== (ccl_lx_at x j) 48) (or (== c 120) (== c 88)))
               (block
                 (set j (+ j 2))
-                (while (ccl_lx_hex (ccl_lx_at x j))
-                  (set v (+ (* v 16) (cast u64 (ccl_lx_hexval (ccl_lx_at x j)))))
-                  (set j (+ j 1))
-                  (set k (+ k 1)))
+                (while 1
+                  (cond ((ccl_lx_hex (ccl_lx_at x j))
+                         (block (set v (+ (* v 16) (cast u64 (ccl_lx_hexval (ccl_lx_at x j)))))
+                                (set j (+ j 1))
+                                (set k (+ k 1))))
+                        ((and (== (ccl_lx_at x j) 39) (ccl_lx_hex (ccl_lx_at x (+ j 1)))) (set j (+ j 1)))
+                        (#t break)))
                 (if (== k 0) (return 0))
                 (ccl_lx_emit_int x v (ccl_lx_int_suffix x j) line)
                 (return 1)))
-          (while (ccl_lx_digit (ccl_lx_at x j)) (set j (+ j 1)))
+          (if (and (== (ccl_lx_at x j) 48) (or (== c 98) (== c 66)))
+              (block
+                (set j (+ j 2))
+                (while 1
+                  (cond ((ccl_lx_bin (ccl_lx_at x j))
+                         (block (set v (+ (* v 2) (cast u64 (- (ccl_lx_at x j) 48))))
+                                (set j (+ j 1))
+                                (set k (+ k 1))))
+                        ((and (== (ccl_lx_at x j) 39) (ccl_lx_bin (ccl_lx_at x (+ j 1)))) (set j (+ j 1)))
+                        (#t break)))
+                (if (== k 0) (return 0))
+                (ccl_lx_emit_int x v (ccl_lx_int_suffix x j) line)
+                (return 1)))
+          (while (or (ccl_lx_digit (ccl_lx_at x j))
+                     (and (== (ccl_lx_at x j) 39) (ccl_lx_digit (ccl_lx_at x (+ j 1)))))
+            (set j (+ j 1)))
           (set dend j)
           (if (== (ccl_lx_at x j) 46)
               (block
                 (set j (+ j 1))
                 (set fstart j)
-                (while (ccl_lx_digit (ccl_lx_at x j)) (set j (+ j 1)))
+                (while (or (ccl_lx_digit (ccl_lx_at x j))
+                           (and (== (ccl_lx_at x j) 39) (ccl_lx_digit (ccl_lx_at x (+ j 1)))))
+                  (set j (+ j 1)))
                 (set fend j)
                 (set (-> x bn) 0)
-                (ccl_lx_puts x i0 dend)
+                (ccl_lx_puts_num x i0 dend)
                 (ccl_lx_putc x 46)
-                (if (== fstart fend) (ccl_lx_putc x 48) (ccl_lx_puts x fstart fend))
+                (if (== fstart fend) (ccl_lx_putc x 48) (ccl_lx_puts_num x fstart fend))
                 (set k (ccl_lx_exponent x j))
                 (if (!= k 0)
                     (block (ccl_lx_emit_float x (ccl_lx_float_suffix x k) line) (return 1))))
               (block
                 (set (-> x bn) 0)
-                (ccl_lx_puts x i0 dend)
+                (ccl_lx_puts_num x i0 dend)
                 (ccl_lx_putc x 46)
                 (ccl_lx_putc x 48)
                 (set k (ccl_lx_exponent x j))
@@ -559,12 +593,12 @@
                     (block
                       (set v 0)
                       (set q i0)
-                      (while (< q dend) (set v (+ (* v 8) (cast u64 (- (ccl_lx_at x q) 48)))) (set q (+ q 1)))
+                      (while (< q dend) (if (!= (ccl_lx_at x q) 39) (set v (+ (* v 8) (cast u64 (- (ccl_lx_at x q) 48))))) (set q (+ q 1)))
                       (ccl_lx_emit_int x v (ccl_lx_int_suffix x dend) line)
                       (return 1)))))
           (set v 0)
           (set q i0)
-          (while (< q dend) (set v (+ (* v 10) (cast u64 (- (ccl_lx_at x q) 48)))) (set q (+ q 1)))
+          (while (< q dend) (if (!= (ccl_lx_at x q) 39) (set v (+ (* v 10) (cast u64 (- (ccl_lx_at x q) 48))))) (set q (+ q 1)))
           (ccl_lx_emit_int x v (ccl_lx_int_suffix x dend) line)
           (return 1)))
   ;; a pp-number, in the preprocessor's mode: digits, letters, dots, a sign after an exponent letter; as spelled
@@ -577,6 +611,7 @@
             (cond
               ((and (or (== c 101) (or (== c 69) (or (== c 112) (== c 80)))) (or (== d 43) (== d 45))) (set j (+ j 2)))
               ((or (ccl_lx_alnum c) (== c 46)) (set j (+ j 1)))
+              ((and (== c 39) (ccl_lx_alnum d)) (set j (+ j 2)))     ; C23's digit separator belongs to the pp-number
               (#t break)))
           (ccl_lx_tok x (-> x k_num) (ccl_lx_codes x (+ (-> x s) (-> x i)) (- j (-> x i))) line)
           (set (-> x i) j)))

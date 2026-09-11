@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(39).
+ccl_reader_version(40).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -177,6 +177,7 @@ ccl_utf8(U, [A, B, C|T], T) :- U < 65536, !, A is 224 + U // 4096, B is 128 + (U
 ccl_utf8(U, [A, B, C, D|T], T) :- A is 240 + U // 262144, B is 128 + (U // 4096) mod 64, C is 128 + (U // 64) mod 64, D is 128 + U mod 64.
 
 ccl_number(L, T) --> [0'0, X], { X =:= 0'x ; X =:= 0'X }, !, ccl_hex_digits(Ds), { Ds \== [], ccl_hex_value(Ds, 0, N) }, ccl_int_suffix(K), { T = tok(K, N, L) }.
+ccl_number(L, T) --> [0'0, X], { X =:= 0'b ; X =:= 0'B }, !, ccl_bin_digits(Ds), { Ds \== [], ccl_bin_value(Ds, 0, N) }, ccl_int_suffix(K), { T = tok(K, N, L) }.   % C23 and C++14: 0b1011
 ccl_number(L, T) --> ccl_digits(Is), { Is \== [] }, ccl_number_rest(Is, L, T).
 ccl_number_rest(Is, L, tok(float, F, L)) --> [0'.], ccl_digits(Fs), ccl_exponent(Es), !, ccl_float_suffix,
     { ( Fs == [] -> Fs1 = [0'0] ; Fs1 = Fs ), append(Is, [0'.|Fs1], A), append(A, Es, B), number_codes(F, B) }.
@@ -185,9 +186,14 @@ ccl_number_rest(Is, L, tok(float, F, L)) --> ccl_exponent(Es), { Es \== [] }, !,
 ccl_number_rest([0'0|Os], L, tok(K, N, L)) --> { Os \== [], ccl_octal_digits(Os) }, !, ccl_int_suffix(K), { ccl_octal_value(Os, 0, N) }.
 ccl_number_rest(Is, L, tok(K, N, L)) --> ccl_int_suffix(K), { number_codes(N, Is) }.
 ccl_digits([D|Ds]) --> [D], { ccl_digit(D) }, !, ccl_digits(Ds).
+ccl_digits([D|Ds]) --> [39, D], { ccl_digit(D) }, !, ccl_digits(Ds).       % the DIGIT SEPARATOR (C++14, C23): 1'000'000, only between digits -- 39 is the apostrophe, which cocolog reads badly as 0''
 ccl_digits([]) --> [].
 ccl_hex_digits([D|Ds]) --> [D], { ccl_hexdigit(D) }, !, ccl_hex_digits(Ds).
+ccl_hex_digits([D|Ds]) --> [39, D], { ccl_hexdigit(D) }, !, ccl_hex_digits(Ds).
 ccl_hex_digits([]) --> [].
+ccl_bin_digits([D|Ds]) --> [D], { ccl_bindigit(D) }, !, ccl_bin_digits(Ds).
+ccl_bin_digits([D|Ds]) --> [39, D], { ccl_bindigit(D) }, !, ccl_bin_digits(Ds).
+ccl_bin_digits([]) --> [].
 ccl_exponent([0'e|Es]) --> [E], { E =:= 0'e ; E =:= 0'E }, !, ccl_sign(S), ccl_digits(Ds), { Ds \== [], append(S, Ds, Es) }.
 ccl_exponent([]) --> [].
 ccl_sign([0'-]) --> [0'-], !.
@@ -211,6 +217,9 @@ ccl_hex_value([], N, N).
 ccl_hex_value([D|Ds], N0, N) :- ( ccl_digit(D) -> V is D - 0'0 ; D >= 0'a -> V is D - 0'a + 10 ; V is D - 0'A + 10 ), N1 is N0 * 16 + V, ccl_hex_value(Ds, N1, N).
 ccl_octal_digits([]).
 ccl_octal_digits([D|Ds]) :- D >= 0'0, D =< 0'7, ccl_octal_digits(Ds).
+ccl_bindigit(D) :- D >= 0'0, D =< 0'1.
+ccl_bin_value([], N, N).
+ccl_bin_value([D|Ds], N0, N) :- N1 is N0 * 2 + D - 0'0, ccl_bin_value(Ds, N1, N).
 ccl_octal_value([], N, N).
 ccl_octal_value([D|Ds], N0, N) :- N1 is N0 * 8 + D - 0'0, ccl_octal_value(Ds, N1, N).
 
@@ -219,6 +228,7 @@ ccl_alnums([C|Cs]) --> [C], { ccl_alnum(C) }, !, ccl_alnums(Cs).
 %% a pp-number: digits, letters, dots, and a sign after an exponent letter
 ccl_pp_number([E, S|Cs]) --> [E, S], { ( E =:= 0'e ; E =:= 0'E ; E =:= 0'p ; E =:= 0'P ), ( S =:= 0'+ ; S =:= 0'- ) }, !, ccl_pp_number(Cs).
 ccl_pp_number([C|Cs]) --> [C], { ( ccl_alnum(C) ; C =:= 0'. ) }, !, ccl_pp_number(Cs).
+ccl_pp_number([39, C|Cs]) --> [39, C], { ccl_alnum(C) }, !, ccl_pp_number(Cs).   % C23's digit separator is part of a pp-number, or the preprocessor reads `1'000' as a character literal
 ccl_pp_number([]) --> [].
 ccl_alnums([]) --> [].
 ccl_alpha(C) :- ( C >= 0'a, C =< 0'z ; C >= 0'A, C =< 0'Z ; C =:= 0'_ ).
@@ -237,6 +247,11 @@ ccl_c_keyword(K) :- memberchk(K, [auto, break, case, char, const, continue, defa
 %% `override' and `final' stay identifiers, contextual as in C++.
 ccl_lang(L) :- nb_getval('$ccl_lang', L).
 ccl_std_at_least(N) :- ccl_std(S), S >= N.                                          % the language level asked (-std=c++NN; 17 without)
+%% C's OWN level (-std=c23; C17 without), which is not C++'s: the numbers 17 and 23 are both languages'
+ccl_c_std(S) :- ( catch(nb_getval('$ccl_c_std', S0), _, fail) -> S = S0 ; S = 17 ).
+ccl_c23_ :- ccl_lang(c), ccl_c_std(S), S >= 23.
+ccl_c23 --> { ccl_c23_ }.
+ccl_c_or_cpp --> { ( ccl_c23_ -> true ; ccl_lang(cpp) ) }.                          % a form C23 took from C++: read in C++ at every level, in C from C23
 ccl_cpp --> { ccl_lang(cpp) }.
 ccl_cpp_keyword(K) :- memberchk(K, [bool, class, namespace, template, typename, this, new, delete, operator, using,
     public, private, protected, virtual, friend, true, false, nullptr, try, catch, throw, static_cast, dynamic_cast,
@@ -470,7 +485,14 @@ ccl_const_eval_in(bin(Op, A, B), Sofar, V) :- !, ccl_const_eval_in(A, Sofar, X),
 ccl_const_eval_in(cast(_, Ex), Sofar, V) :- !, ccl_const_eval_in(Ex, Sofar, V).
 ccl_const_eval_in(Ex, _, V) :- ccl_const_eval(Ex, V).
 
-ccl_note_item(declaration(_, _, Base, Ds)) :- !, ccl_note_tags(Base), ccl_declare_vars(Ds).
+ccl_note_item(declaration(_, _, Base, Ds)) :- !, ccl_note_tags(Base), ccl_note_constants(Base, Ds), ccl_declare_vars(Ds).
+%% C23's `constexpr int K = 7;' is a CONSTANT, not merely a const object: its name folds where an enumerator
+%% does -- an array's bound, a static_assert, a case label -- so it joins the same table ('$ccl_enums').
+%% The specifier rule above turns constexpr into const, which is what it also means to the passes.
+ccl_note_constants(base(Q, _), Ds) :- ccl_c23_, memberchk(const, Q), !,
+    forall( ( member(var(N, _, E), Ds), atom(N), E \== none, ccl_const_eval(E, V) ),
+            ( nb_getval('$ccl_enums', L), nb_setval('$ccl_enums', [N-V|L]) ) ).
+ccl_note_constants(_, _).
 ccl_note_item(typedef(_, Ds)) :- !, ccl_note_typedefs(Ds).
 ccl_note_item(declare(_, Base)) :- !, ccl_note_tags(Base).
 ccl_note_item(function(_, _, _, Name, _, _, _)) :- \+ atom(Name), !.
@@ -663,7 +685,8 @@ ccl_line_marker(T) :- sub_atom(T, 0, 2, _, '# '), sub_atom(T, 2, 1, _, D), atom_
 %% an #include is resolved and READ as the file is parsed (library(ccl_include)),
 %% so its typedef names are known to the rest of this file
 ccl_external(Env0, Env, I) --> ccl_cpp, ccl_gnu_attr, !, ccl_external(Env0, Env, I).                                    % [[noreturn]] before an item, dropped
-ccl_external(Env, Env, static_assert(L, E, M)) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(E, M).   % C++11: static_assert(e, "msg");
+ccl_external(Env, Env, static_assert(L, E, M)) --> ccl_c_or_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(L, E, M).   % C++11's and C23's: static_assert(e, "msg"), the message optional
+ccl_external(Env, Env, static_assert(L, E, M)) --> ccl_line(L), ccl_kw('_Static_assert'), !, ccl_static_assert(L, E, M).                    % C11's spelling
 ccl_external(Env0, Env, include(L, Spec, R)) --> [tok(pp, Text, L)], { ccl_include_spec(Text, Spec) }, !,
     { ccl_include(Spec, R), ccl_include_typedefs(R, Env0, Env), ccl_include_macros(R), ccl_include_scope(R) }.
 %% name { members }  at file scope is  typedef struct name { members } name;  (owner's rule)
@@ -713,7 +736,7 @@ ccl_note_fn_template(N) :- atom(N), N \== none, ( ccl_set_has('$ccl_ftmpls', N) 
 ccl_note_fn_template(_).
 ccl_fn_template(N) :- ccl_set_has('$ccl_ftmpls', N).
 ccl_external(Env, Env, concept(L, N, E)) --> ccl_cpp, ccl_line(L), ccl_kw(concept), !, ccl_id(N), { ccl_note_template(N) }, ccl_p('='), ccl_cond_expr(E), ccl_p(';').   % C++20: concept N = constraint
-ccl_external(Env, Env, D) --> ccl_cpp, ccl_line(L), ccl_kw(auto), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, none, D) }.
+ccl_external(Env, Env, D) --> ccl_c_or_cpp, ccl_line(L), ccl_kw(auto), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, none, D) }.   % C23: auto deduces, where C17 had a storage class
 %% C++17: a deduction guide, `Guard(Args...) -> Guard<Ts...>;' (nothing to lower: the reader reads it, the desugaring passes it over)
 ccl_external(Env, Env, deduction_guide(L, N, Ps, T)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_id(N), { ccl_known_template(N) }, ccl_p('('), ccl_params(Env, Ps, _), ccl_p(')'), ccl_p('->'), !,
     ccl_type_name(Env, T), ccl_p(';').
@@ -792,6 +815,12 @@ ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, ccl_kw(auto), !, ccl_spec
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_storage(K) }, !, ccl_specs(Env, Sc, [K|St0], Q0, S0, St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_qualifier(K) }, !, ccl_specs(Env, Sc, St0, [K|Q0], S0, St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_id(own), !, ccl_specs(Env, Sc, St0, [own|Q0], S0, St, Q, S).   % the safe part's owner
+%% C23 SPELLS AS KEYWORDS what C17 left to <stdbool.h> and the underscores; the lexer's keyword tables are
+%% the language's, not the level's (they are the native lexer's too, and k84 compares the two), so the level
+%% is read here instead: at -std=c23 these identifiers are the keywords C23 made them.
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(bool), !, ccl_specs(Env, Sc, St0, Q0, [bool|S0], St, Q, S).
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(constexpr), !, ccl_specs(Env, Sc, St0, [const|Q0], S0, St, Q, S).   % a constexpr OBJECT is a const one whose value folds (ccl_note_constants)
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(thread_local), !, ccl_specs(Env, Sc, [thread_local|St0], Q0, S0, St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_basic_type(K) }, !, ccl_specs(Env, Sc, St0, Q0, [K|S0], St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_struct_spec(Env, T), !, ccl_specs(Env, Sc, St0, Q0, [T|S0], St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_enum_spec(T), !, ccl_specs(Env, Sc, St0, Q0, [T|S0], St, Q, S).
@@ -935,14 +964,18 @@ ccl_gnu_word(W) :- memberchk(W, ['__attribute__', '__attribute', '__extension__'
     typeof, '_Nonnull', '_Nullable', '_Null_unspecified', '__nonnull', '__nullable', '__null_unspecified']).
 
 %% GNU's typeof(expr) or typeof(type), a type specifier; Cicili's `let' emits it
-ccl_typeof(typeof(X)) --> ccl_id(T), { memberchk(T, [typeof, '__typeof__', '__typeof']) }, ccl_p('('),
-    ( ccl_type_name([], X), ccl_peek(p, ')'), ! ; ccl_expr(X) ), ccl_p(')').
+ccl_typeof(typeof(X)) --> ccl_id(T), { memberchk(T, [typeof, typeof_unqual, '__typeof__', '__typeof']) }, ccl_p('('),   % C23 standardized typeof; typeof_unqual drops the qualifiers, which nothing here reads
+    ( ccl_type_name([], X), ccl_peek(p, ')'), { ccl_typeof_type(X) }, ! ; ccl_expr(X) ), ccl_p(')').
+%% `typeof(K)' of an OBJECT is its expression: a lone identifier the tables do not know as a type name is
+%% not one, and C's heuristics would have taken it for a typedef (C23 standardized typeof, so this matters now)
+ccl_typeof_type(X) :- \+ ( X = base(_, [typedef(N)]), atom(N), \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _) ).
 
 %% GNU's __attribute__((...)), __extension__ and friends: read and dropped,
 %% because Cicili's own emitted C carries them (cleanup, unused, ...)
 ccl_attrs --> ccl_gnu_attr, !, ccl_attrs.
 ccl_attrs --> [].
-ccl_gnu_attr --> ccl_cpp, ccl_p('['), ccl_p('['), !, ccl_skip_attr.
+ccl_gnu_attr --> ccl_c_or_cpp, ccl_p('['), ccl_p('['), !, ccl_skip_attr.                      % C23 took C++'s [[nodiscard]] and kin
+ccl_gnu_attr --> ccl_c23, ccl_id(alignas), !, ccl_p('('), ccl_balanced, ccl_p(')').
 ccl_gnu_attr --> ccl_cpp, ccl_kw(alignas), !, ccl_p('('), ccl_balanced, ccl_p(')').           % alignas(T), alignas(16): dropped, as the attributes are                         % C++'s [[nodiscard]] and kin, dropped
 ccl_skip_attr --> ccl_p(']'), ccl_p(']'), !.
 ccl_skip_attr --> [_], ccl_skip_attr.
@@ -983,7 +1016,7 @@ ccl_members(_, []) --> [].
 %% a body, `;', `= 0', `= default' or `= delete', its qualifiers (virtual,
 %% static, explicit, const, override, final, noexcept) in a list
 ccl_member_decl(Env, Ms) --> ccl_cpp, ccl_gnu_attr, !, ccl_member_decl(Env, Ms).                                                           % an attribute before any member, dropped
-ccl_member_decl(_, [static_assert(L, E, M)]) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(E, M).
+ccl_member_decl(_, [static_assert(L, E, M)]) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(L, E, M).
 ccl_member_decl(_, [access(A)]) --> ccl_cpp, ccl_kw(A), { memberchk(A, [public, private, protected]) }, ccl_p(':'), !.
 ccl_member_decl(Env, [friend(L, M)]) --> ccl_cpp, ccl_line(L), ccl_kw(friend), ccl_member_decl(Env, M), !.       % a friend function, declared or defined here; friend class X
 ccl_member_decl(_, [friend(L, [])]) --> ccl_cpp, ccl_line(L), ccl_kw(friend), !, ccl_skip_to_semi.
@@ -1047,7 +1080,7 @@ ccl_member_declarator(_, Base, member(Base, anon, Bits)) --> ccl_p(':'), ccl_con
 ccl_enum_spec(enum_class(N, Es)) --> ccl_cpp, ccl_kw(enum), ( ccl_kw(class), ! ; ccl_kw(struct) ), !, ccl_id(N), { ccl_add_env(N) },
     ccl_enum_base(B), ( ccl_p('{'), !, ccl_enumerators(Es0), ccl_p('}'), { ccl_scoped_base(B, B1), ccl_enum_members(B1, Es0, Es) } ; { Es = none } ).
 ccl_enum_spec(enum(N, Es)) --> ccl_kw(enum), ( ccl_id(N), { ( ccl_lang(cpp) -> ccl_add_env(N) ; true ) }, ! ; { N = anon } ),
-    ( ccl_cpp, ccl_enum_base(B), ! ; { B = none } ), ( ccl_p('{'), !, ccl_enumerators(Es0), ccl_p('}'), { ccl_enum_members(B, Es0, Es) } ; { Es = none } ).
+    ( ccl_c_or_cpp, ccl_enum_base(B), ! ; { B = none } ), ( ccl_p('{'), !, ccl_enumerators(Es0), ccl_p('}'), { ccl_enum_members(B, Es0, Es) } ; { Es = none } ).   % C23: `enum E : unsigned char'
 ccl_enum_base(T) --> ccl_p(':'), !, { Env = genv }, ccl_type_name(Env, T).   % `enum E : size_t': the UNDERLYING type, which decides the enum's size and its LLVM type
 ccl_enum_base(none) --> [].
 ccl_scoped_base(none, base([], [int])) :- !.                                % a scoped enum without one is an int, and is marked all the same
@@ -1073,7 +1106,15 @@ ccl_var_init_fn(_, Init) --> ccl_var_init(Init).
 ccl_fn_quals(T0) --> ccl_cpp, { T0 = fn(_, _, _) }, !, ccl_method_quals(_).                % a prototype's noexcept, throw(), attributes
 ccl_fn_quals(_) --> [].
 %% static_assert(e, "msg") and static_assert(e): an item, a member, a statement -- static_assert(L, E, Msg | none)
-ccl_static_assert(E, M) --> ccl_p('('), ccl_assign_expr(E), ( ccl_p(','), !, ccl_assign_expr(M) ; { M = none } ), ccl_p(')'), ccl_p(';').
+ccl_static_assert(L, E, M) --> ccl_p('('), ccl_assign_expr(E), ( ccl_p(','), !, ccl_assign_expr(M) ; { M = none } ), ccl_p(')'), ccl_p(';'), { ccl_assert_holds(L, E, M) }.
+%% A STATIC ASSERTION IS CHECKED WHERE IT FOLDS: the item was read and dropped by every pass, so a false one
+%% passed. What does not fold is not checked (a template's `is_x<T>::value' before its instantiation), and
+%% nothing here says it was -- the constants a C23 `constexpr' declares fold, and so do the enumerators.
+ccl_assert_holds(L, E, M) :- ccl_lang(c), ccl_const_eval(E, V), V =:= 0, !, ccl_here(F, _), ccl_assert_text(M, Text), throw(error(static_assert_failed(Text), here(F, L))).   % IN C ONLY: a C++ template may write `static_assert(false, ...)' in a branch no instantiation takes, which C++23 allows and this reader would refuse at the read
+ccl_assert_holds(_, _, _).
+ccl_assert_text(none, '') :- !.
+ccl_assert_text(str(Cs), T) :- !, atom_codes(T, Cs).
+ccl_assert_text(M, M).
 ccl_word(W) --> [tok(K, W, _)], { K == kw ; K == id }, !.
 ccl_var_init(Init) --> ccl_p('='), !, ccl_initializer(Init).
 ccl_var_init(ctor(As)) --> ccl_cpp, ccl_p('('), !, ccl_args(As), ccl_p(')').           % C++: T x(args), direct initialization
@@ -1178,7 +1219,9 @@ ccl_block_items(_, []) --> [].
 ccl_block_item(Env, Env, directive(L, Text)) --> [tok(pp, Text, L)], !.
 ccl_block_item(Env, Env, '$splice'(Ds)) --> ccl_line(L), ccl_p('{'), ccl_pattern(P), ccl_p('}'), ccl_p(':='), !, ccl_expr(E), ccl_p(';'), { ccl_destructure(L, P, E, Ds) }.
 ccl_block_item(Env, Env, D) --> ccl_line(L), ccl_id(N), ccl_p(':='), !, ccl_expr(E), ccl_tie_name(Y), ccl_p(';'), { ccl_infer_decl(L, N, E, Y, D), ccl_note_item(D) }.
-ccl_block_item(Env, Env, D) --> ccl_cpp, ccl_line(L), ccl_kw(auto), ( ccl_p('&'), { R = ref } ; { R = none } ), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, R, D) }.
+ccl_block_item(Env, Env, static_assert(L, E, M)) --> ccl_c_or_cpp, ccl_line(L), ccl_word(static_assert), ccl_peek(p, '('), !, ccl_static_assert(L, E, M).   % in a block as well as at file scope
+ccl_block_item(Env, Env, static_assert(L, E, M)) --> ccl_line(L), ccl_kw('_Static_assert'), !, ccl_static_assert(L, E, M).
+ccl_block_item(Env, Env, D) --> ccl_c_or_cpp, ccl_line(L), ccl_kw(auto), ( ccl_p('&'), { R = ref } ; { R = none } ), ccl_id(N), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_auto_decl(L, N, E, R, D) }.
 %% C++17: structured bindings, `auto [a, b] = e;' -- Cicili's pattern `{ a, b } := e' by another spelling, a declaration per
 %% name (a struct's members in order, an array's elements); `auto &[a, b]' binds references
 ccl_block_item(Env, Env, '$splice'(Ds)) --> ccl_cpp, ccl_line(L), ( ccl_kw(const) ; [] ), ccl_kw(auto), ( ccl_p('&&'), { Ref = yes } ; ccl_p('&'), { Ref = yes } ; { Ref = no } ),
@@ -1193,7 +1236,7 @@ ccl_block_item(Env, Env, declare(L, Base)) --> ccl_line(L), ccl_decl_specs(Env, 
 ccl_block_item(Env, Env, S) --> ccl_statement(Env, S).
 
 ccl_statement(Env, S) --> ccl_compound(Env, S), !.
-ccl_statement(_, static_assert(L, E, M)) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(E, M).
+ccl_statement(_, static_assert(L, E, M)) --> ccl_cpp, ccl_line(L), ccl_word(static_assert), !, ccl_static_assert(L, E, M).
 ccl_statement(Env, S) --> ccl_cpp, ccl_p('['), ccl_p('['), !, ccl_skip_attr, ccl_statement(Env, S).                    % C++20: [[likely]] on a statement, dropped
 ccl_statement(_, co_return(L, none)) --> ccl_cpp, ccl_line(L), ccl_kw(co_return), ccl_p(';'), !.                            % coroutines: read, refused later
 ccl_statement(_, co_return(L, E)) --> ccl_cpp, ccl_line(L), ccl_kw(co_return), !, ccl_expr(E), ccl_p(';').
@@ -1374,6 +1417,9 @@ ccl_primary_(str, S0, str(S))    --> !, [_], ccl_strings(S0, S).          % "a" 
 ccl_primary_(chr, C, chr(C))     --> !, [_].
 %% C++ primaries: this, true, false, nullptr, the casts, a functional cast of
 %% a basic type, a lambda, and a qualified or template name
+ccl_primary_(id, true, bool(true)) --> ccl_c23, !, [_].                                      % C23: the predefined constants, keywords there and identifiers to this lexer
+ccl_primary_(id, false, bool(false)) --> ccl_c23, !, [_].
+ccl_primary_(id, nullptr, nullptr) --> ccl_c23, !, [_].
 ccl_primary_(kw, this, this) --> ccl_cpp, !, ccl_kw(this).
 ccl_primary_(kw, operator, id(operator(Op))) --> ccl_cpp, !, ccl_kw(operator), ccl_op_name(Op).                  % operator*() called by its name
 ccl_primary_(kw, true, bool(true)) --> ccl_cpp, !, ccl_kw(true).

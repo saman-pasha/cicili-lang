@@ -92,7 +92,7 @@ sh proof/run.sh
 
 **`bin/cicili` takes clang's arguments** (owner's rule: no new flags to
 learn): `-c -S -emit-llvm -fsyntax-only -o -O0..-Oz -I -l -L -shared -v
---version -ast-dump`; `-g -D -W -f -std` are accepted and ignored for now.
+--version -ast-dump`; `-g -D -W -f` are accepted and ignored for now, and `-std` names the level of both languages (below).
 It builds one Prolog options list and runs `ccl_drive/2` in one cocolog
 process over `~/.cicili/KB` (`$CICILI_KB`, or `--no-kb` for `--local`); the run ends
 `cicili: ok` or `cicili: N error(s)`, which the shell turns into the exit
@@ -372,6 +372,50 @@ and the lowering), `dr_items_deps` (the IR signature). The driver reads
 `.cpp .cc .cxx .C` through `dr_c`, skips the check and the lowering under
 `-fsyntax-only` in cpp mode (M6's), and `ccl_link` uses `c++`. `cicili++`
 runs `--no-kb`: see the findings.
+
+**C23 (`-std=c23`), the C side's own level (0.57).** C's level is not C++'s
+-- 17 and 23 are both languages' -- so it is a global of its own,
+`'$ccl_c_std'` (`cstd(N)` in the driver's options, `-std=c23|gnu23|c2x|gnu2x`;
+c17, c11 and c99 accepted, c89 and c90 refused), read by `ccl_c_std/1` and
+asked in the grammar as `ccl_c23//0` (and `ccl_c_or_cpp//0` for a form C23
+took from C++, read in C++ at every level). THE PREPROCESSOR answers the
+level's macros first (`pp_c_std_table(S, c23)` before C17's table, as the
+C++ levels already had it): `__STDC_VERSION__` is 202311L there and
+201710L without, beside the `__STDC_*_H__` and `__STDC_EMBED_*` facts.
+**THE FORMS ARE READ AT THE LEVEL, not lexed at it:** the keyword tables
+are the LANGUAGE's, not the level's, and they are the native lexer's too
+(k84 compares the two token for token), so C23's new keywords arrive as
+the identifiers C17 has and the grammar takes them at `-std=c23` --
+`bool` a type specifier, `true`, `false` and `nullptr` primaries,
+`constexpr` an object's `const`, `thread_local` a storage word,
+`alignas(...)` an attribute, `typeof_unqual` beside `typeof`. A C23
+`constexpr` object is a CONSTANT: its name joins the enumerators' table
+(`ccl_note_constants/2`, the same `'$ccl_enums'`), so an array's bound and
+a static assertion fold it. `static_assert(e)` and `static_assert(e,
+"msg")` are read in C as C++ already read them (`_Static_assert` too, C11's
+spelling), at file scope and in a block, and A STATIC ASSERTION IS NOW
+CHECKED where it folds -- IN C ONLY, since a C++ template may write
+`static_assert(false, ...)` in a branch no instantiation takes, which
+C++23 allows and a reader-time check would refuse. `[[attributes]]`, an
+enum's underlying type (`enum E : unsigned char`) and `auto` deducing are
+C++'s rules read in C from C23 (`ccl_c_or_cpp`). AND `typeof` IS RESOLVED:
+nothing resolved it before (`ccl_resolve_base([typeof(X)], ...)`, a type
+taken as it is and an expression through `ccl_type_of`), so a `typeof`
+reached the lowering as a specifier it could not take; `typeof(K)` of an
+OBJECT is its expression, where C's heuristics took a lone identifier for
+a typedef name. **BOTH LEXERS** read C23's binary literal `0b1011` (which
+is C++14's too) and the DIGIT SEPARATOR `1'000'000` in every scan --
+decimal, hex, binary, a fraction and an exponent -- the native one
+dropping it from the value it accumulates and from the text it spells for
+`strtod` (`ccl_lx_puts_num`); the PP-NUMBER takes it as well
+(`ccl_pp_number//1`, `ccl_lx_pp_number`), without which the preprocessor
+read `1'000'` as a character literal and the line did not lex. Reader
+version 40. Gated by `test/c/run/c23.c` (built at the level: a fixture's
+`NAME.std` names it, as `NAME.flags` does in the C++ gate) and the
+reader's `k87` and `k88`, with the new numbers in `test/c/lexer.c` under
+`k84`. Not done: `#embed`, `_BitInt(N)`, `__VA_OPT__`, `#warning` printed,
+`__has_c_attribute`, `unreachable()`, `nullptr_t` as a type name, `%b`,
+the decimal floating types.
 
 **M6, the check and the lowering of the C++ forms, in steps; the first
 (0.32): C++ that is C with names.** A namespace FLATTENS to bare names
