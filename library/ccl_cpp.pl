@@ -93,7 +93,7 @@ cpp_register_units(Units) :-
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
     cpp_reset('$cpp_lib'/1), cpp_reset('$cpp_libfn'/1), nb_setval('$cpp_in_lib', no),
-    cpp_reset('$cpp_fn'/4), nb_setval('$cpp_cnames', []), nb_setval('$cpp_fn_refusal', none),
+    cpp_reset('$cpp_fn'/5), cpp_reset('$cpp_nested'/5), nb_setval('$cpp_nesting', []), nb_setval('$cpp_cnames', []), nb_setval('$cpp_fn_refusal', none),
     ( catch(nb_getval('$cpp_trace', _), _, fail) -> true ; nb_setval('$cpp_trace', no) ),
     forall(member(unit(Is), Units), cpp_note_fns(Is)),                                 % the free functions FIRST: a name is overloaded or not before any call to it is read
     forall(member(unit(Is), Units), cpp_register_(Is)).
@@ -109,11 +109,16 @@ cpp_register_units(Units) :-
 cpp_note_fns([]).
 cpp_note_fns([namespace(_, _, Js)|Is]) :- !, cpp_note_fns(Js), cpp_note_fns(Is).
 cpp_note_fns([extern_c(_, Js)|Is]) :- !, cpp_c_names(Js), cpp_note_fns(Js), cpp_note_fns(Is).      % extern "C": C linkage, never a mangled name
-cpp_note_fns([function(_, _, _, N, Ps, _, Body)|Is]) :- atom(N), !, cpp_fn_put(N, Ps, Body), cpp_note_fns(Is).
-cpp_note_fns([declaration(_, _, _, Vs)|Is]) :- !, forall(member(var(N, fn(_, Ps, _), _), Vs), ( atom(N) -> cpp_fn_put(N, Ps, none) ; true )), cpp_note_fns(Is).
+cpp_note_fns([function(_, _, _, N, Ps, _, Body)|Is]) :- atom(N), !, cpp_fn_put(N, Ps, Body, own), cpp_note_fns(Is).
+cpp_note_fns([declaration(_, _, _, Vs)|Is]) :- !, forall(member(var(N, fn(_, Ps, _), _), Vs), ( atom(N) -> cpp_fn_put(N, Ps, none, own) ; true )), cpp_note_fns(Is).
 cpp_note_fns([_|Is]) :- cpp_note_fns(Is).
-cpp_fn_put(N, Ps, Body) :- ( Body == none -> D = no ; D = yes ), cpp_params_key(Ps, K),
-    ( '$cpp_fn'(N, K, _, D) -> true ; assertz('$cpp_fn'(N, K, Ps, D)) ).
+%% a LIBRARY header's items of one name, before any of them is registered: its definitions kept whole, to emit on use
+cpp_note_hdr_fns([]).
+cpp_note_hdr_fns([function(L, Sto, Ret, N, Ps, V, Body)|Is]) :- atom(N), Body \== none, !,
+    cpp_fn_put(N, Ps, Body, lazy(function(L, Sto, Ret, N, Ps, V, Body))), cpp_note_hdr_fns(Is).
+cpp_note_hdr_fns([I|Is]) :- cpp_note_fns([I]), cpp_note_hdr_fns(Is).
+cpp_fn_put(N, Ps, Body, Origin) :- ( Body == none -> D = no ; D = yes ), cpp_params_key(Ps, K),
+    ( '$cpp_fn'(N, K, _, D, _) -> true ; assertz('$cpp_fn'(N, K, Ps, D, Origin)) ).
 cpp_c_names([]).
 cpp_c_names([I|Is]) :- ( cpp_item_name(I, N) -> nb_getval('$cpp_cnames', Ns), nb_setval('$cpp_cnames', [N|Ns]) ; true ), cpp_c_names(Is).
 cpp_item_name(function(_, _, _, N, _, _, _), N) :- atom(N).
@@ -124,17 +129,17 @@ cpp_c_name(N) :- nb_getval('$cpp_cnames', Ns), memberchk(N, Ns).
 cpp_fn_name(F, _, _, F) :- cpp_c_name(F), !.
 cpp_fn_name(F, Ps, yes, Name) :- cpp_fn_overloaded(F), !, cpp_params_key(Ps, K), atomic_list_concat([F, '.', K], Name).
 cpp_fn_name(F, _, _, F).
-cpp_fn_overloaded(F) :- '$cpp_fn'(F, K1, _, yes), '$cpp_fn'(F, K2, _, yes), K1 \== K2, !.
+cpp_fn_overloaded(F) :- '$cpp_fn'(F, K1, _, yes, _), '$cpp_fn'(F, K2, _, yes, _), K1 \== K2, !.
 %% the overload an argument list names: one whose parameters take it EXACTLY (C++ prefers such a non-template
 %% to any template), else the one whose parameters fit best (cpp_pick, the methods')
-cpp_fn_exact(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N), '$cpp_fn'(F, _, Ps, _), length(Ps, N), cpp_exact_params(Ps, As), !, cpp_fn_defined(F, Ps, D).
+cpp_fn_exact(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N), '$cpp_fn'(F, _, Ps, _, _), length(Ps, N), cpp_exact_params(Ps, As), !, cpp_fn_defined(F, Ps, D).
 cpp_fn_best(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N),
-    findall(Ps0, ( '$cpp_fn'(F, _, Ps0, _), cpp_arity_fits(Ps0, N) ), Cands), Cands \== [],
+    findall(Ps0, ( '$cpp_fn'(F, _, Ps0, _, _), cpp_arity_fits(Ps0, N) ), Cands), Cands \== [],
     cpp_pick(Cands, As, Ps), cpp_fn_defined(F, Ps, D).
-cpp_fn_ready(F) :- atom(F), '$cpp_fn'(F, _, _, _), !.      % only a name already registered: a library header's items come through the template path, whose own load must not be
+cpp_fn_ready(F) :- atom(F), '$cpp_fn'(F, _, _, _, _), !.      % only a name already registered: a library header's items come through the template path, whose own load must not be
 %% forced (and swallowed) from here -- cpp_hdr_load marks a name loaded BEFORE it registers it, so a refusal
 %% swallowed here would leave the name marked and its templates unregistered ever after (std::swap linked to nothing)
-cpp_fn_defined(F, Ps, D) :- ( '$cpp_fn'(F, _, Ps, yes) -> D = yes ; D = no ).
+cpp_fn_defined(F, Ps, D) :- ( '$cpp_fn'(F, _, Ps, yes, _) -> D = yes ; D = no ).
 cpp_exact_params([], []).
 cpp_exact_params([P|Ps], [A|As]) :- ( P = param(T, _) ; P = param(T, _, _) ), cpp_arg_exact(T, A), cpp_exact_params(Ps, As).
 cpp_arg_exact(PT, A) :- ccl_type_of(A, AT), AT \== unknown,
@@ -143,7 +148,15 @@ cpp_arg_exact(PT, A) :- ccl_type_of(A, AT), AT \== unknown,
 cpp_bare_type(base(_, S), base([], S)) :- !.
 cpp_bare_type(T, T).
 cpp_free_call(F, Ps, D, As, call(id(Name), As2)) :-
-    cpp_fn_name(F, Ps, D, Name), cpp_fill_defaults(Name, As, As1), cpp_ref_args(Name, As1, As2).
+    cpp_fn_name(F, Ps, D, Name), cpp_use_fn(F, Ps, Name), cpp_fill_defaults(Name, As, As1), cpp_ref_args(Name, As1, As2).
+%% A LIBRARY HEADER'S FREE FUNCTION IS EMITTED WHERE IT IS CALLED, as its classes and its templates already are:
+%% libc++ writes ten `__convert_to_integral' overloads, one per integer type, and a program calls one -- the others
+%% would drag in what this compiler cannot lower (`__int128_t') for nothing.
+cpp_use_fn(F, Ps, Name) :-
+    (   '$cpp_fn'(F, _, Ps, yes, lazy(function(L, Sto, Ret, N, Ps2, V, Body))), \+ cpp_instance_done(Name)
+    ->  cpp_instance_note(Name, hdr),
+        cpp_as_lib(yes, ( cpp_isolated(cpp_item(function(L, Sto, Ret, N, Ps2, V, Body), Items)), cpp_add_instance_items(Items) ))
+    ;   true ).
 cpp_register_([template(_, TPs, concept(_, N, E))|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept(TPs, E)|Cs]), cpp_register_(Is).   % C++20
 cpp_register_([concept(_, N, E)|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept([], E)|Cs]), cpp_register_(Is).
 cpp_register_([template(_, TPs, Item)|Is]) :- !,
@@ -179,7 +192,7 @@ cpp_index_name(dtor_def(_, C, _, _), C).
 %% a name the registries do not have: the header's items of that name, registered now (a class as a lazy one)
 cpp_hdr_load(N) :- atom(N), cpp_hdr_item(N, _), \+ ( nb_getval('$cpp_hdr_loaded', Ls), memberchk(N, Ls) ), !,
     cpp_spend(load(N)), nb_getval('$cpp_hdr_loaded', Ls0), nb_setval('$cpp_hdr_loaded', [N|Ls0]), assertz('$cpp_lib'(N)),
-    findall(I, cpp_hdr_item(N, I), Items), cpp_note_fns(Items), cpp_where(load(N), cpp_as_lib(yes, cpp_register_lazy(Items))).
+    findall(I, cpp_hdr_item(N, I), Items), cpp_note_hdr_fns(Items), cpp_where(load(N), cpp_as_lib(yes, cpp_register_lazy(Items))).
 %% THE LIBRARY'S FUNCTIONS ARE COMPILED AS C++ HAS THEM, NOT CHECKED: libc++'s bodies keep raw pointers by their own
 %% discipline (a vector's begin, end and capacity; a swap of two pointers through references), which the safe part
 %% would refuse at every line -- so a function that comes from a library header (an inline one, a lazy class's
@@ -193,11 +206,8 @@ cpp_library_function(Name) :- catch('$cpp_libfn'(Name), _, fail).
 cpp_register_lazy([]).
 cpp_register_lazy([declare(L, base(_, [class(K, C, Bases, Ms)]))|Is]) :- !, cpp_lazy_class(L, K, C, Bases, Ms), cpp_register_lazy(Is).
 cpp_register_lazy([declare(L, base(_, [struct(C, Ms)]))|Is]) :- !, cpp_lazy_class(L, struct, C, [], Ms), cpp_register_lazy(Is).
-cpp_register_lazy([function(L, Sto, Ret, N, Ps, V, Body)|Is]) :- atom(N), Body \== none, !,      % an inline function of the header: emitted, linkonce, one per OVERLOAD
-    cpp_fn_name(N, Ps, yes, FName),
-    ( cpp_instance_done(FName) -> true
-    ; cpp_instance_note(FName, hdr), cpp_isolated(cpp_item(function(L, Sto, Ret, N, Ps, V, Body), Items)), cpp_add_instance_items(Items) ),
-    cpp_register_lazy(Is).
+cpp_register_lazy([function(L, Sto, Ret, N, Ps, V, Body)|Is]) :- atom(N), Body \== none, !,      % an inline function of the header: declared now, emitted (linkonce) where it is called
+    cpp_register_([function(L, Sto, Ret, N, Ps, V, Body)]), cpp_register_lazy(Is).
 cpp_register_lazy([I|Is]) :- cpp_register_(I), cpp_register_lazy(Is).
 cpp_register_(I) :- \+ ( I == [] ; I = [_|_] ), !, cpp_register_([I]).
 %% a lazy class: registered, its struct emitted, its members emitted as they are first used (the standard's rule for a
@@ -252,7 +262,7 @@ cpp_register_([extern_c(_, Js)|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
 cpp_register_([_|Is]) :- cpp_register_(Is).
 cpp_register_class(L, C, Bases, Ms0) :-                                                     % the traces fire only under '$cpp_trace'
     ( cpp_norm_members(Ms0, Ms) -> true ; cpp_refuse(L, members_not_normalized(C)) ),
-    cpp_nested_names(C, Ms),                                                                     % the NAMES first: a member of a nested type resolves before the nested class exists
+    cpp_nested_names(L, C, Ms),                                                                  % the NAMES first: a member of a nested type resolves before the nested class exists
     ( cpp_register_class_extras(C, Ms) -> true ; cpp_refuse(L, class_extras(C)) ),
     ( cpp_in_class(C, cpp_register_class_(L, C, Bases, Ms)) -> true ; cpp_refuse(L, class_not_registered(C)) ),   % its own typedefs resolve its members' types
     cpp_nested_classes(L, C, Ms).                                                                % then the nested classes themselves, the enclosing one registered so its own name resolves inside them
@@ -260,12 +270,20 @@ cpp_register_class(L, C, Bases, Ms0) :-                                         
 %% own under the mangled name `Enclosing.Nested'; the enclosing class's typedefs are in scope inside it, as C++ has it
 cpp_nested_name(nested(base(_, [class(_, N, _, Ms)])), N, Ms) :- atom(N), Ms \== none.
 cpp_nested_name(nested(base(_, [struct(N, Ms)])), N, Ms) :- atom(N), Ms \== none.
-cpp_nested_names(C, Ms) :-
+cpp_nested_names(L, C, Ms) :-
     forall( ( member(M, Ms), cpp_nested_name(M, N, _) ),
-            ( atomic_list_concat([C, '.', N], Name), nb_getval('$cpp_class_types', L0), nb_setval('$cpp_class_types', [C-N-base([], [typedef(Name)])|L0]) ) ).
+            ( atomic_list_concat([C, '.', N], Name), nb_getval('$cpp_class_types', L0), nb_setval('$cpp_class_types', [C-N-base([], [typedef(Name)])|L0]),
+              ( '$cpp_nested'(Name, _, _, _, _) -> true ; assertz('$cpp_nested'(Name, L, C, N, M)) ) ) ).
 cpp_nested_classes(L, C, Ms) :- forall( ( member(M, Ms), cpp_nested_name(M, N, NMs) ), cpp_nested_class(L, C, N, NMs, M) ).
+%% THE ENCLOSING CLASS'S OWN REGISTRATION CAN ASK FOR A NESTED CLASS: declaring vector's members resolves types that
+%% instantiate templates, whose bodies call vector's members, whose bodies name `_ConstructTransaction' -- all before
+%% cpp_nested_classes, which comes last so a nested class's own members see the enclosing one registered. So the name
+%% is recorded when the TYPE is (cpp_nested_names) and the class is registered on the first ask, once ('$cpp_nesting').
+cpp_nested_ready(Name) :- '$cpp_nested'(Name, L, C, N, M), \+ ( nb_getval('$cpp_nesting', Ns), memberchk(Name, Ns) ), !,
+    nb_getval('$cpp_nesting', Ns0), nb_setval('$cpp_nesting', [Name|Ns0]),
+    cpp_nested_name(M, N, NMs), cpp_nested_class(L, C, N, NMs, M).
 cpp_nested_class(L, C, N, NMs, M) :-
-    atomic_list_concat([C, '.', N], Name),
+    atomic_list_concat([C, '.', N], Name), cpp_trace(nested(Name)),
     (   cpp_class(Name, _) -> true
     ;   ( M = nested(base(_, [class(K0, _, Bs0, _)])) -> K = K0, Bases = Bs0 ; K = struct, Bases = [] ),
         cpp_encloses(Name, C),
@@ -428,6 +446,7 @@ cpp_object_arg(_, Addr, Addr).
 cpp_declare_statics([], _).
 cpp_declare_statics([N-T|Ss], C) :- atomic_list_concat([C, '.', N], Name), ccl_declare(Name, T), cpp_declare_statics(Ss, C).
 cpp_class(C, Cls) :- '$cpp_cls'(C, Cls), !.
+cpp_class(C, Cls) :- cpp_nested_ready(C), '$cpp_cls'(C, Cls), !.      % a NESTED class asked for while its enclosing one is still being registered
 cpp_class(C, Cls) :- cpp_hdr_load(C), '$cpp_cls'(C, Cls), !.
 %% the class a type names, and the one a pointer's or an array's element names
 cpp_class_of_type(T, C) :- ccl_resolve_type(T, T1), cpp_class_of_type_(T1, C).
@@ -558,7 +577,7 @@ cpp_items([I|Is], Out) :- cpp_item(I, Js), append(Js, Out1, Out), cpp_items(Is, 
 cpp_item(declare(L, base(Q, [class(_, C, _, _)])), Items) :- !,
     ( cpp_class(C, cls(Base, Data, Ms, Statics, Defaults, Slots)) -> true ; cpp_trace(item_no_class(C)), fail ),
     ( Base == none -> Data1 = Data ; Data1 = [member(base([], [typedef(Base)]), '$base', none)|Data] ),
-    ( cpp_static_decls(L, C, Statics, Fns0) -> true ; cpp_trace(item_statics(C)), fail ),
+    ( cpp_in_class(C, cpp_static_decls(L, C, Statics, Fns0)) -> true ; cpp_trace(item_statics(C)), fail ),   % IN ITS CLASS: a static's type is written in the class's own words, `static constexpr const type __max'
     ( cpp_is_lazy(C), Slots == [] -> Fns1 = []
     ; cpp_in_class(C, cpp_member_fns(Ms, C, Base, Defaults, Fns1)) -> true ; cpp_trace(item_member_fns(C)), fail ),   % a lazy class's members come as they are used
     ( \+ cpp_implicit_ctor_needed(C) -> Fns2 = [] ; cpp_implicit_ctor(L, C, Base, Defaults, Fns2) -> true ; cpp_trace(item_implicit_ctor(C)), fail ),
@@ -625,9 +644,13 @@ cpp_vars(Ctx, [var(N, T0, I)|Vs], [var(N, T, I1)|Ws]) :- cpp_type(T0, T), cpp_ex
 %% the class (`static constexpr bool value = __v;', integral_constant's), which is its own definition, linkonce as the
 %% class's functions are, since every unit that has the class has it
 cpp_static_decls(_, _, [], []).
-cpp_static_decls(L, C, [N-T|Ss], [D|Ds]) :- atomic_list_concat([C, '.', N], Name),
+cpp_static_decls(L, C, [N-T0|Ss], [D|Ds]) :- atomic_list_concat([C, '.', N], Name), cpp_resolved_type(T0, T),
     ( cpp_static_const(C, N, V) -> D = declaration(L, linkonce, T, [var(Name, T, V)]) ; D = declaration(L, extern, T, [var(Name, T, none)]) ),
     cpp_static_decls(L, C, Ss, Ds).
+%% a type resolved where it can be, left as it stands where it cannot: a member's, a static's -- written in the
+%% class's own words (`type', `pointer'), which nothing outside the class resolves, the global table's entry of
+%% that name being some other class's
+cpp_resolved_type(T0, T) :- ( catch(cpp_type(T0, T1), error(not_lowered(_), _), fail) -> T = T1 ; T = T0 ).
 %% the members that are functions
 cpp_member_fns([], _, _, _, []).
 cpp_member_fns([method(L, Qs, Ret, M, Ps, V, Body)|Ms], C, B, Ds, [F|Fs]) :- memberchk(explicit_this(N, T0), Qs), !,     % C++23: the object parameter as declared; the body has no implicit this
@@ -804,7 +827,7 @@ cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T0, I)|Vs], Pieces) :-
         ;   Args == [], cpp_trivial_default(C) -> Pieces = [declaration(L, Sto, B, [var(N, T, none)])|P1]        % nothing to construct
         ;   Args = [E], cpp_class_of_type_of(E, C), \+ cpp_dtor(C, _) -> Pieces = [declaration(L, Sto, B, [var(N, T, E)])|P1]   % the implicit copy, bitwise
         ;   cpp_refuse(L, no_constructor(C, NA)) )
-    ;   cpp_plain_init(I, T, I0), cpp_expr(Ctx, I0, I1), ccl_declare(N, T),
+    ;   cpp_trace(plain_init(N, T, I)), cpp_plain_init(I, T, I0), cpp_expr(Ctx, I0, I1), ccl_declare(N, T),
         ( cpp_class_of_type(T, C0), cpp_dtor(C0, _), cpp_lvalue(I1) -> cpp_refuse(L, copy_of_a_class_with_destructor(C0)) ; true ),   % two owners of one buffer
         Pieces = [declaration(L, Sto, B, [var(N, T, I1)])|P1] ),
     ( Sto \== static, Sto \== extern, cpp_class_of_type(T, C2), cpp_dtor(C2, DName) -> P1 = [defer(L, [], block([expr(L, call(id(DName), [addr(id(N))]))]))|P2] ; P1 = P2 ),
@@ -985,7 +1008,7 @@ cpp_static_object(id(N)) :- ccl_declared(N, T), \+ T = ref(_, _), \+ T = rref(_,
 cpp_static_object(member(X, _)) :- cpp_static_object(X).
 cpp_call(Ctx, scoped([std], move), [X], E) :- !, cpp_expr(Ctx, move(X), E).                     % std::move is Cicili's move: the fields go, the source is emptied; of an int, the int
 cpp_call(_, scoped(Path, tmpl(F, TArgs)), As, E) :- \+ cpp_scope_class(Path, _), !, cpp_call(none, tmpl(F, TArgs), As, E).        % std::swap<int>(a, b): the namespace flattens
-cpp_call(_, scoped(Path, F), As, E) :- atom(F), \+ cpp_scope_class(Path, _), \+ cpp_class(F, _), !, cpp_call(none, id(F), As, E).   % std::swap(a, b): as the bare name would, never a member (a qualified name finds no method)
+cpp_call(_, scoped(Path, F), As, E) :- atom(F), \+ cpp_scope_class(Path, _), \+ ( cpp_class(F, _), cpp_class_takes(F, As) ), !, cpp_call(none, id(F), As, E).   % std::swap(a, b): as the bare name would, never a member (a qualified name finds no method); a class of that name which cannot take the arguments is another namespace's
 cpp_call(_, id(F), As, call(id(Name), [Obj|As1])) :- cpp_local(F), cpp_class_of_type_of(id(F), C), cpp_method(C, operator('()'), As, Name, _), !, cpp_fill_defaults(Name, As, As1), cpp_object_arg(Name, addr(id(F)), Obj).   % a lambda, or any object with operator()
 cpp_call(_, tmpl(F, TArgs), As, call(id(Name), As)) :- cpp_template(F, _, Item), cpp_fn_item(Item, _), !, cpp_types(TArgs, TArgs1), cpp_instantiate_function(F, TArgs1, As, Name).   % a DECLARED-only one too: declval
 cpp_call(_, tmpl(C, TArgs), As, E) :- cpp_targ_values(TArgs, TArgs1), cpp_targs_settled(TArgs1),   % `Guard<A, I>(a, i, j)': a temporary of a class TEMPLATE's instance, as a plain class's already was
@@ -1007,14 +1030,22 @@ cpp_call(Ctx, id(N), As, E) :- Ctx \== none, \+ cpp_local(N), cpp_class_typedef(
     ;   As = [X] -> E = cast(T, X)                                    % a typedef naming a scalar: a functional cast
     ;   As == [] -> cpp_zero_of(T, E)
     ;   fail ).
-cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
-cpp_call(_, id(T), As, E) :- ccl_tag(T, Ms), !,
+cpp_call(_, id(C), As, E) :- cpp_class(C, _), cpp_class_takes(C, As), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
+%% A TAG'S OR A CLASS'S NAME CALLED WITH MORE ARGUMENTS THAN IT CAN TAKE IS NO TEMPORARY: namespaces flatten to
+%% bare names here, and libc++ has both `_Algorithm::__fill_n', an EMPTY tag struct used as a template argument,
+%% and `std::__fill_n(first, n, value)' -- so the call built an aggregate of three items for a type with no
+%% members. An empty tag takes a cast or nothing, an enum a cast, an aggregate at most one item per member; a
+%% class with constructors chooses among them as before.
+cpp_tag_takes(Ms, As) :- ( Ms == [] -> ( As == [] -> true ; As = [_] ) ; ccl_is_enum_tag(Ms) -> As = [_] ; length(As, K), length(Ms, N), K =< N ).
+cpp_class_takes(C, As) :- cpp_class(C, cls(_, Data, Ms, _, _, _)),
+    ( memberchk(ctor(_, _, _, _, _), Ms) -> true ; length(As, K), length(Data, N), K =< N ).
+cpp_call(_, id(T), As, E) :- ccl_tag(T, Ms), cpp_tag_takes(Ms, As), !,
     (   ( Ms == [] ; ccl_is_enum_tag(Ms) ), As = [X] -> E = cast(base([], [typedef(T)]), X)   % an ENUM's name: `__element_count(n)', `Color(2)' -- a cast, never a literal of members
     ;   findall(item([], A), member(A, As), Items), E = compound_lit(base([], [typedef(T)]), init(Items)) ).   % P{3, 4} of a plain struct: C's compound literal
 cpp_call(_, scoped(Path, N), As, E) :- atom(N), cpp_scope_class(Path, Enc), cpp_class_typedef(Enc, N, T0),   % `Plain::Nested(7)': a temporary of a NESTED class
     catch(cpp_type(T0, T), error(not_lowered(_), _), fail), cpp_class_of_type(T, C1), !,
     ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) ).
-cpp_call(_, scoped(_, C), As, E) :- atom(C), cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).   % std::string("x"): a temporary of the class
+cpp_call(_, scoped(_, C), As, E) :- atom(C), cpp_class(C, _), cpp_class_takes(C, As), !, cpp_temporary(base([], [typedef(C)]), C, As, E).   % std::string("x"): a temporary of the class
 cpp_call(_, id(F), As, E) :- !, ( cpp_fn_best(F, As, Ps, D) -> cpp_free_call(F, Ps, D, As, E)   % the overload the arguments fit best; a name with one definition keeps it, as C does
     ;   cpp_fill_defaults(F, As, As1), cpp_ref_args(F, As1, As2), E = call(id(F), As2) ).
 cpp_call(Ctx, F, As, E) :- cpp_expr(Ctx, F, F1), ( cpp_temp_call(F1, As, E0) -> E = E0 ; E = call(F1, As) ).
@@ -1124,6 +1155,8 @@ cpp_type(base(Q, [builtin_type(N, Args)]), T) :- !, cpp_builtin_type(N, Args, T0
 cpp_type(base(Q, [typedef(scoped(Path, N))]), base(Q, [typedef(N)])) :- atom(N), !,
     ( catch(nb_getval('$cpp_where', W), _, fail) -> true ; W = top ), cpp_trace(flatten(Path, N, in(W))).   % std::string: the namespace flattens (a class the resolver missed flattens too -- the trace tells)
 cpp_type(base(Q, [typedef(N)]), T) :- atom(N), cpp_class_ctx(C), cpp_class_typedef(C, N, T0, Def), !, cpp_in_class(Def, cpp_type(T0, T1)), cpp_merge_quals(Q, T1, T).   % value_type inside its class: class scope before namespace scope, as C++ looks names up; a base's typedef in the base's words
+cpp_type(base(Q, [typedef(N)]), T) :- atom(N), ccl_typedef_of(N, base(_, [typedef(X)])), cpp_template_id(X, _, _), !,   % `typedef integral_constant<bool, false> false_type', a LIBRARY header's alias
+    ( catch(cpp_type(base([], [typedef(X)]), T1), error(not_lowered(_), _), fail) -> cpp_merge_quals(Q, T1, T) ; T = base(Q, [typedef(N)]) ).   % of a template-id: the INSTANCE, not the name -- the passes rebuild the table from the summary, where the alias is raw, so a note behind the name does not survive to the lowering (the program's own typedef item is walked and does). Only an alias whose WHOLE definition is a template-id: a name like `type' is a class's, and the global table's entry for it is some other class's
 cpp_type(base(Q, S), base(Q, S)) :- !.
 cpp_type(ptr(Q, T0), ptr(Q, T)) :- !, cpp_type(T0, T).
 cpp_type(ref(Q, T0), ref(Q, T)) :- !, cpp_type(T0, T).
@@ -1172,16 +1205,23 @@ cpp_instantiate_class_(N, Args, Name) :-
     (   cpp_instance_done(Name) -> true
     ;   cpp_spend(instance(Name)), cpp_full_args(TPs, B, FullArgs), cpp_instance_note(Name, inst(N, FullArgs)),
         Self = N-base([], [typedef(Name)]),                                                                        % the injected class name: inside its body, `vector' is this instance
-        (   cpp_pick_spec(N, FullArgs, SB, SItem), cpp_template_defined(SItem) -> cpp_subst(SItem, [Self|SB], Item1)   % a specialization only where it HAS a body: a forward-declared one is not the definition
-        ;   cpp_template_defined(Item) -> cpp_subst(Item, [Self|B], Item1)
-        ;   cpp_refuse(0, template_without_body(N)) ),
-        ( cpp_instance_class(Item1, L, K, Bases, Ms0) -> true ; cpp_refuse(0, instance_without_body(N)) ), cpp_lib_origin(N, Lib),
-        cpp_member_defs(N, Name, FullArgs, Ms0, Ms),                                      % the members DEFINED out of the class: their bodies, substituted with this instance's arguments
-        cpp_lazy_instance(Lib, Name),                                                     % a LIBRARY template's instance is lazy, as a library class already is: its members come as they are used
-        (   cpp_as_lib(Lib, ( cpp_isolated(( cpp_register_class(L, Name, Bases, Ms),
-                                            ( cpp_item(declare(L, base([], [class(K, Name, Bases, Ms)])), Items) -> true ; cpp_refuse(L, instance_not_emitted(Name)) ) )),
-                              cpp_add_instance_items(Items) ))
-        ->  true ; cpp_refuse(0, instance_not_emitted(Name)) ) ).
+        (   cpp_pick_spec(N, FullArgs, SB, SItem), cpp_template_defined(SItem) -> cpp_subst(SItem, [Self|SB], Item1), cpp_instance_body(N, Name, FullArgs, Item1)   % a specialization only where it HAS a body: a forward-declared one is not the definition
+        ;   cpp_template_defined(Item) -> cpp_subst(Item, [Self|B], Item1), cpp_instance_body(N, Name, FullArgs, Item1)
+        ;   cpp_incomplete_instance(N, Name) ) ).
+%% A CLASS TEMPLATE DECLARED AND NEVER DEFINED is an INCOMPLETE TYPE, which C++ lets a template argument name:
+%% libc++ dispatches its algorithms on `__specialized_algorithm<_Algorithm::__fill_n, __single_iterator<_It>>',
+%% and `__single_iterator' is declared only -- a tag, never an object. The instance is its NAME and its arguments,
+%% which is what a specialization's pattern matches on; asking it for a member finds no class and refuses there.
+cpp_incomplete_instance(N, _) :- '$cpp_tmpl'(N, _, I), cpp_template_defined(I), !, cpp_refuse(0, template_without_body(N)).   % a body registered elsewhere and not taken: the old diagnostic
+cpp_incomplete_instance(_, Name) :- cpp_trace(incomplete(Name)).
+cpp_instance_body(N, Name, FullArgs, Item1) :-
+    ( cpp_instance_class(Item1, L, K, Bases, Ms0) -> true ; cpp_refuse(0, instance_without_body(N)) ), cpp_lib_origin(N, Lib),
+    cpp_member_defs(N, Name, FullArgs, Ms0, Ms),                                          % the members DEFINED out of the class: their bodies, substituted with this instance's arguments
+    cpp_lazy_instance(Lib, Name),                                                         % a LIBRARY template's instance is lazy, as a library class already is: its members come as they are used
+    (   cpp_as_lib(Lib, ( cpp_isolated(( cpp_register_class(L, Name, Bases, Ms),
+                                        ( cpp_item(declare(L, base([], [class(K, Name, Bases, Ms)])), Items) -> true ; cpp_refuse(L, instance_not_emitted(Name)) ) )),
+                          cpp_add_instance_items(Items) ))
+    ->  true ; cpp_refuse(0, instance_not_emitted(Name)) ).
 %% ---- A CLASS TEMPLATE'S MEMBER DEFINED OUT OF ITS CLASS ---------------------------------------------
 %% `template <class _Tp, class _Allocator> void __vector_layout<_Tp, _Allocator>::__set_bound_using_pointer(
 %%  pointer __p) noexcept { ... }' is how libc++ writes half of a container's members: the class's own member

@@ -394,6 +394,18 @@ what runs today.
   linker must find by name are untouched. An overload that takes the
   arguments exactly beats any template, as C++ has it, and where no
   template holds the plain overloads are candidates beside them. GREEN.
+* **The twenty-sixth step DONE: six defects between the overload set and
+  the lambda.** An alias of a class template's instance carries the
+  instance, not the name; a library header's free function is emitted
+  where it is called, as its classes and templates already were; a tag's
+  or a class's name called with more arguments than it can take is no
+  temporary, which is what told libc++'s empty `__fill_n` tag from its
+  function of the same name once namespaces flatten; a class template
+  declared and never defined is an incomplete type a template argument may
+  name; a nested class is registered on the first ask, since the enclosing
+  class's own registration can reach it; and a static member's type is
+  resolved in its class. With them, a call's value bound to a const
+  reference gets the temporary C++ materializes for it. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

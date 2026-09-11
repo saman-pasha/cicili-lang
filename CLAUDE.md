@@ -1653,6 +1653,59 @@ of a class template's instance as a parameter: a library header's typedef
 reaches the tables raw, and the passes rebuild them from the summary, so
 the name must carry its instance to the lowering. Seven gates GREEN.
 
+**M6's twenty-sixth step (0.58): six defects between the overload set and
+the lambda, and the cleanup that hid them.** Following the vector probe
+past `__convert_to_integral` turned up six, each its own rule: (1) an
+ALIAS of a class template's instance carries the INSTANCE, not the name
+(`typedef integral_constant<bool, false> false_type` taken as a parameter
+type, which is how libc++ writes `vector::__copy_assign_alloc(const vector
+&, false_type)`) -- the passes rebuild the tables from the summary, where
+a library header's alias is raw, so a note behind the name does not
+survive to the lowering, and only an alias whose WHOLE definition is a
+template-id is resolved, since a name like `type' is some class's and the
+global table's entry for it is another's; (2) A LIBRARY HEADER'S FREE
+FUNCTION IS EMITTED WHERE IT IS CALLED (`'$cpp_fn'`'s origin
+`lazy(Item)`, `cpp_use_fn/3`), as its classes and templates already were,
+since libc++'s ten `__convert_to_integral` overloads include two over
+`__int128_t` that nothing here lowers and a program calls one; (3) A TAG'S
+OR A CLASS'S NAME CALLED WITH MORE ARGUMENTS THAN IT CAN TAKE is no
+temporary (`cpp_tag_takes/2`, `cpp_class_takes/2`): namespaces flatten to
+bare names here and libc++ has both `_Algorithm::__fill_n`, an empty tag
+struct used as a template argument, and `std::__fill_n(first, n, value)`,
+so the call built an aggregate of three items for a type with no members;
+(4) A CLASS TEMPLATE DECLARED AND NEVER DEFINED is an INCOMPLETE TYPE a
+template argument may name (`cpp_incomplete_instance/2`: the instance is
+its name and its arguments, which is what a specialization's pattern
+matches on) -- `__single_iterator<_It>` is declared only, a tag for the
+algorithm dispatch; (5) THE ENCLOSING CLASS'S OWN REGISTRATION CAN ASK FOR
+A NESTED CLASS, since declaring vector's members resolves types that
+instantiate templates whose bodies call vector's members whose bodies name
+`_ConstructTransaction` -- all before `cpp_nested_classes`, which comes
+last so a nested class sees the enclosing one registered: the name is
+recorded when the TYPE is and the class is registered on the first ask
+(`'$cpp_nested'`, `cpp_nested_ready/1` in `cpp_class/2`); (6) a STATIC
+member's type is resolved IN ITS CLASS (`cpp_in_class` around
+`cpp_static_decls`, `cpp_resolved_type/2`), where `static constexpr const
+type __max` reached the lowering as the global table's `type`, which is
+some other class's. AND IN THE LOWERING: a call's VALUE bound to a const
+reference gets the temporary C++ materializes for it (`ir_ref_of`, where
+only a reference RESULT was taken and anything else refused), which
+`std::min<size_type>(a.max_size(), n)` needs; and `initializer(I)` names
+the TYPE that has no such member. Lowering version 12.
+THE CLEANUP THAT HID THEM: this work was written, then reverted when two
+fixtures failed in ways none of it explained -- a local with a plain
+initializer had no type at its call. The cause was a single edit of mine
+that removed a debugging trace: the replacement line put its `%` comment
+BEFORE the rest of the clause, so `cpp_expr(...), ccl_declare(N, T)` was
+commented out and no such local was ever declared. A comment inside a
+clause ends the LINE, so a line is never rewritten with one in the middle;
+and a regression that no change explains is a mis-edit until proved
+otherwise. Seven gates GREEN. `std::vector<int> v; v.push_back(1); return
+(int) v.size();` now stops in a LAMBDA inside one of vector's members,
+on `__emplace_back_assume_capacity` named there: a lambda in a member
+function must reach the enclosing class through the captured `this`, which
+this compiler refuses (`capture_this`) -- the next stretch.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

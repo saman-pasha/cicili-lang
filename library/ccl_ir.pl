@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(11).
+ccl_lowering_version(12).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -732,7 +732,9 @@ ir_ref_slot(A0, T0, A, T) :- ( T0 = ref(_, T) ; T0 = rref(_, T) ), !, ir_fresh(A
 ir_ref_slot(A, T, A, T).
 %% what a reference is bound to: an lvalue's address, or a call's reference result as it is
 ir_ref_of(E, P) :- ir_lvalue_form(E), !, ir_lval(E, P, _, _).
-ir_ref_of(call(F, Args), P) :- !, ir_call(F, Args, P, RT), ( ( RT = ref(_, _) ; RT = rref(_, _) ) -> true ; ir_fail(reference_to_value(call(F, Args))) ).
+ir_ref_of(call(F, Args), P) :- !, ir_call(F, Args, V, RT),
+    (   ( RT = ref(_, _) ; RT = rref(_, _) ) -> P = V                                     % a reference RESULT is the address already
+    ;   ccl_resolve_type(RT, T), ir_type(T, LL), ir_fresh(P), ir_alloca_typed(P, T), ir_ins(['store ', LL, ' ', V, ', ptr ', P]) ).   % a call's VALUE bound to a const reference, `std::min<size_type>(a.max_size(), n)': the temporary C++ materializes for it
 ir_ref_of(E, P) :- ir_expr(E, V, T, LL), !,                                % a PRVALUE bound to a const reference: C++ materializes a temporary, and a reference needs an address
     ir_fresh(P), ir_alloca_typed(P, T), ir_ins(['store ', LL, ' ', V, ', ptr ', P]).
 ir_ref_of(E, _) :- ir_fail(reference_to_value(E)).
@@ -781,7 +783,7 @@ ir_init_items([item(Ds, V)|Is], Addr, T, I) :-
 ir_init_slot(Addr, arr(_, El), I, Ds, V) :- !,
     ir_type(El, LL), ir_fresh(P), ir_ins([P, ' = getelementptr inbounds ', LL, ', ptr ', Addr, ', i64 ', I]), ir_init_sub(P, El, Ds, V).
 ir_init_slot(Addr, ST, I, Ds, V) :-
-    ccl_members_of(ST, Ms), I1 is I + 1, ( ccl_nth(I1, Ms, member(MT, N, _)) -> true ; ir_fail(initializer(I)) ),
+    ( ccl_members_of(ST, Ms) -> true ; Ms = [] ), I1 is I + 1, ( ccl_nth(I1, Ms, member(MT, N, _)) -> true ; ir_fail(initializer(I, ST)) ),   % which TYPE has no such member: `initializer(0)' alone named nothing
     ir_member_slot(Addr, ST, N, Slot, MT), ir_init_sub(Slot, MT, Ds, V).
 ir_init_sub(P, T, [], V) :- !, ( V = init(_) -> ir_init(P, T, V) ; ir_init(P, T, V) ).
 ir_init_sub(P, T, Ds, V) :- ir_init_items([item(Ds, V)], P, T, 0).
