@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(9).
+ccl_lowering_version(10).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -162,6 +162,7 @@ ir_base(S, i8) :- ( memberchk(char, S) ; memberchk('_Bool', S) ; memberchk(bool,
 ir_base(S, i16) :- memberchk(short, S), !.
 ir_base(S, i64) :- memberchk(long, S), !.
 ir_base(S, i32) :- ( memberchk(int, S) ; memberchk(unsigned, S) ; memberchk(signed, S) ), !.
+ir_base([enum(_, [enum_base(T)|_])], LL) :- !, ir_type(T, LL).   % `enum E : size_t' is an i64, and a conversion to size_t is none
 ir_base([enum(_, _)], i32) :- !.
 ir_base([enum_class(_, _)], i32) :- !.
 ir_base([class(_, N, _, _)], _) :- !, ir_fail(class(N)).                 % M6's next step

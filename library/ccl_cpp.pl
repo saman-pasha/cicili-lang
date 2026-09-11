@@ -87,7 +87,7 @@ cpp_instance_note(Name, What) :- assertz('$cpp_inst'(Name, What)).
 
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
-    cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1),
+    cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_mdef'/5),
     nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0),
     nb_setval('$cpp_concepts', []),
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
@@ -98,7 +98,8 @@ cpp_register_units(Units) :-
 cpp_register_([template(_, TPs, concept(_, N, E))|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept(TPs, E)|Cs]), cpp_register_(Is).   % C++20
 cpp_register_([concept(_, N, E)|Is]) :- !, nb_getval('$cpp_concepts', Cs), nb_setval('$cpp_concepts', [N-concept([], E)|Cs]), cpp_register_(Is).
 cpp_register_([template(_, TPs, Item)|Is]) :- !,
-    (   cpp_spec_name(Item, N, Pattern) -> cpp_spec_put(N, TPs, Pattern, Item)                                                     % a partial or full specialization, by its pattern
+    (   cpp_mdef_item(Item, C, Pattern, Member) -> cpp_mdef_put(C, TPs, Pattern, Member)                                           % a member DEFINED out of its class, by the class's name
+    ;   cpp_spec_name(Item, N, Pattern) -> cpp_spec_put(N, TPs, Pattern, Item)                                                     % a partial or full specialization, by its pattern
     ;   cpp_template_name(Item, N) -> cpp_template_put(N, TPs, Item)
     ;   true ),
     cpp_register_(Is).
@@ -120,7 +121,7 @@ cpp_index_items([]).
 cpp_index_items([namespace(_, _, Js)|Is]) :- !, cpp_index_items(Js), cpp_index_items(Is).
 cpp_index_items([extern_c(_, Js)|Is]) :- !, cpp_index_items(Js), cpp_index_items(Is).
 cpp_index_items([I|Is]) :- ( cpp_index_name(I, N) -> assertz('$cpp_hdr'(N, I)) ; true ), cpp_index_items(Is).
-cpp_index_name(template(_, _, I), N) :- !, ( cpp_spec_name(I, N, _) -> true ; cpp_template_name(I, N) ).
+cpp_index_name(template(_, _, I), N) :- !, ( cpp_mdef_item(I, N, _, _) -> true ; cpp_spec_name(I, N, _) -> true ; cpp_template_name(I, N) ).
 cpp_index_name(declare(_, base(_, [class(_, N, _, Ms)])), N) :- atom(N), Ms \== none.   % a forward declaration declares nothing to register: the DEFINITION carries the name (the struct clause below always said so)
 cpp_index_name(declare(_, base(_, [struct(N, Ms)])), N) :- atom(N), Ms \== none.
 cpp_index_name(function(_, _, _, N, _, _, B), N) :- atom(N), B \== none.
@@ -287,7 +288,7 @@ cpp_scope_walk([], C, C) :- C \== none.
 cpp_scope_walk([S|Ss], none, C) :- !, ( cpp_path_class(S, C1) -> cpp_scope_walk(Ss, C1, C) ; cpp_scope_walk(Ss, none, C) ).   % a namespace's segment names no class: skipped
 cpp_scope_walk([S|Ss], Cx, C) :- ( cpp_in_class(Cx, cpp_path_class(S, C1)) -> cpp_scope_walk(Ss, C1, C) ; cpp_scope_walk(Ss, Cx, C) ).
 cpp_path_class(P, P) :- atom(P), cpp_class(P, _), !.
-cpp_path_class(P, P) :- atom(P), ccl_tag(P, Ms), Ms \== none, \+ Ms = [enumerator(_, _)|_], !.   % a plain struct is a scope too: `NoPtr::pointer' is refused (no_member_type), never a namespace's bare name; an enum's name is not (Color::Green is its enumerator)
+cpp_path_class(P, P) :- atom(P), ccl_tag(P, Ms), Ms \== none, \+ ccl_is_enum_tag(Ms), !.   % a plain struct is a scope too: `NoPtr::pointer' is refused (no_member_type), never a namespace's bare name; an enum's name is not (Color::Green is its enumerator)
 cpp_path_class(P, C) :- atom(P), cpp_class_ctx(Cx), cpp_class_typedef(Cx, P, T0, Def), !, cpp_in_class(Def, cpp_type(T0, T)), cpp_class_of_type(T, C).   % __alloc_traits::pointer inside its class
 cpp_path_class(decltype(E), C) :- !, ( cpp_class_ctx(Cx) -> true ; Cx = none ),   % `decltype(__test<_Tp>(...))::value': the expression's own class is the scope
     cpp_expr(Cx, E, E1), ccl_type_of(E1, T), T \== unknown, cpp_class_of_type(T, C).
@@ -946,14 +947,27 @@ cpp_call(Ctx, id(N), As, E) :- Ctx \== none, \+ cpp_local(N), cpp_class_typedef(
     ;   fail ).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
 cpp_call(_, id(T), As, E) :- ccl_tag(T, Ms), !,
-    (   Ms == [], As = [X] -> E = cast(base([], [typedef(T)]), X)    % a tag with NO members takes no initializer: `__element_count(n)', an empty scoped enum, is a cast
+    (   ( Ms == [] ; ccl_is_enum_tag(Ms) ), As = [X] -> E = cast(base([], [typedef(T)]), X)   % an ENUM's name: `__element_count(n)', `Color(2)' -- a cast, never a literal of members
     ;   findall(item([], A), member(A, As), Items), E = compound_lit(base([], [typedef(T)]), init(Items)) ).   % P{3, 4} of a plain struct: C's compound literal
 cpp_call(_, scoped(Path, N), As, E) :- atom(N), cpp_scope_class(Path, Enc), cpp_class_typedef(Enc, N, T0),   % `Plain::Nested(7)': a temporary of a NESTED class
     catch(cpp_type(T0, T), error(not_lowered(_), _), fail), cpp_class_of_type(T, C1), !,
     ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) ).
 cpp_call(_, scoped(_, C), As, E) :- atom(C), cpp_class(C, _), !, cpp_temporary(base([], [typedef(C)]), C, As, E).   % std::string("x"): a temporary of the class
 cpp_call(_, id(F), As, call(id(F), As2)) :- !, cpp_fill_defaults(F, As, As1), cpp_ref_args(F, As1, As2).
-cpp_call(Ctx, F, As, call(F1, As)) :- cpp_expr(Ctx, F, F1).
+cpp_call(Ctx, F, As, E) :- cpp_expr(Ctx, F, F1), ( cpp_temp_call(F1, As, E0) -> E = E0 ; E = call(F1, As) ).
+%% A TEMPORARY'S operator(), `__destroy_vector(*this)()', which is how libc++'s vector destroys itself: the callee
+%% is no function but an object, and the call goes INSIDE the block that built it, where that object has an address.
+cpp_temp_call(stmt_expr(block(Ss)), As, stmt_expr(block(Ss1))) :- !,
+    cpp_class_of_type_of(stmt_expr(block(Ss)), C), cpp_method(C, operator('()'), As, Name, Hops),
+    append(Pre, [expr(L, Last)], Ss), cpp_hops(Last, Hops, B), cpp_object_arg(Name, addr(B), Obj),
+    cpp_fill_defaults(Name, As, As1), cpp_ref_args_of(Name, As1, As2),
+    append(Pre, [expr(L, call(id(Name), [Obj|As2]))], Ss1).
+cpp_temp_call(X, As, call(id(Name), [Obj|As2])) :- cpp_addressable(X),                         % `(*p)(a)', `fs[i](a)' of an object: its own address, no temporary
+    cpp_class_of_type_of(X, C), cpp_method(C, operator('()'), As, Name, Hops),
+    cpp_hops(X, Hops, B), cpp_object_arg(Name, addr(B), Obj),
+    cpp_fill_defaults(Name, As, As1), cpp_ref_args_of(Name, As1, As2).
+cpp_addressable(deref(_)).
+cpp_addressable(index(_, _)).
 %% a temporary of the class: constructed in a statement expression, its value the last expression
 cpp_temporary(T, C, As, compound_lit(T, init(Items))) :- cpp_not_abstract(C), \+ cpp_has_ctors(C), !, findall(item([], A), member(A, As), Items).   % an AGGREGATE, `__allocation_result{p, n}': braced, no constructor
 cpp_temporary(T, C, [], compound_lit(T, init([]))) :- cpp_not_abstract(C), cpp_trivial_default(C), !.   % `__less<>()': nothing to construct, as a member and a local already had it
@@ -1098,12 +1112,45 @@ cpp_instantiate_class_(N, Args, Name) :-
         (   cpp_pick_spec(N, FullArgs, SB, SItem), cpp_template_defined(SItem) -> cpp_subst(SItem, [Self|SB], Item1)   % a specialization only where it HAS a body: a forward-declared one is not the definition
         ;   cpp_template_defined(Item) -> cpp_subst(Item, [Self|B], Item1)
         ;   cpp_refuse(0, template_without_body(N)) ),
-        ( cpp_instance_class(Item1, L, K, Bases, Ms) -> true ; cpp_refuse(0, instance_without_body(N)) ), cpp_lib_origin(N, Lib),
+        ( cpp_instance_class(Item1, L, K, Bases, Ms0) -> true ; cpp_refuse(0, instance_without_body(N)) ), cpp_lib_origin(N, Lib),
+        cpp_member_defs(N, Name, FullArgs, Ms0, Ms),                                      % the members DEFINED out of the class: their bodies, substituted with this instance's arguments
         cpp_lazy_instance(Lib, Name),                                                     % a LIBRARY template's instance is lazy, as a library class already is: its members come as they are used
         (   cpp_as_lib(Lib, ( cpp_isolated(( cpp_register_class(L, Name, Bases, Ms),
                                             ( cpp_item(declare(L, base([], [class(K, Name, Bases, Ms)])), Items) -> true ; cpp_refuse(L, instance_not_emitted(Name)) ) )),
                               cpp_add_instance_items(Items) ))
         ->  true ; cpp_refuse(0, instance_not_emitted(Name)) ) ).
+%% ---- A CLASS TEMPLATE'S MEMBER DEFINED OUT OF ITS CLASS ---------------------------------------------
+%% `template <class _Tp, class _Allocator> void __vector_layout<_Tp, _Allocator>::__set_bound_using_pointer(
+%%  pointer __p) noexcept { ... }' is how libc++ writes half of a container's members: the class's own member
+%% is a DECLARATION. Such an item was dropped at registration, so an instance took its body from nowhere --
+%% a bodyless function, a `declare' in the IR, and the linker saying the symbol is undefined. Every one of them
+%% is kept by its CLASS's name ('$cpp_mdef'(Class, MemberKey, TParams, Pattern, Member)), and an instance takes
+%% the definition whose pattern matches its arguments and whose parameters key alike -- a MEMBER TEMPLATE among
+%% them (`template <class _Tp> template <class... _Args> ... vector<_Tp>::emplace_back(_Args &&...)'), whose own
+%% parameters shadow the class's and wait for the call.
+cpp_mdef_item(function(L, Sto, Ret, scoped(Path, M), Ps, V, Body), C, Pat, method(L, Qs, Ret, M, Ps, V, Body)) :-
+    Body \== none, cpp_mdef_class(Path, C, Pat), cpp_mdef_name(M), ( Sto == none -> Qs = [] ; Qs = [Sto] ).
+cpp_mdef_item(template(L, TPs, I), C, Pat, template(L, TPs, M)) :- cpp_mdef_item(I, C, Pat, M).
+cpp_mdef_item(ctor_def(L, C, Qs, Ps, Inits, Body), C, none, ctor(L, Qs, Ps, Inits, Body)) :- atom(C), Body \== none.
+cpp_mdef_item(dtor_def(L, C, Qs, Body), C, none, dtor(L, Qs, Body)) :- atom(C), Body \== none.
+cpp_mdef_class(Path, C, Pat) :- ccl_last(Path, S), ( S = tmpl(C, Pat) -> true ; atom(S), C = S, Pat = none ).
+cpp_mdef_name(M) :- ( atom(M) -> true ; M = operator(_) ).
+cpp_mdef_put(C, TPs, Pat, Member) :- cpp_member_shape(Member, K, _, _), assertz('$cpp_mdef'(C, K, TPs, Pat, Member)).
+%% a member's key, its parameters and its body, the member template's own wrapper looked through
+cpp_member_shape(template(_, _, M), K, Ps, B) :- !, cpp_member_shape(M, K, Ps, B).
+cpp_member_shape(method(_, _, _, M, Ps, _, B), M, Ps, B).
+cpp_member_shape(ctor(_, _, Ps, _, B), '$ctor', Ps, B).
+cpp_member_shape(dtor(_, _, B), '$dtor', [], B).
+cpp_member_defs(N, _, _, Ms, Ms) :- \+ '$cpp_mdef'(N, _, _, _, _), !.
+cpp_member_defs(N, Name, Args, Ms0, Ms) :- findall(M, ( member(M0, Ms0), cpp_member_def(N, Name, Args, M0, M) ), Ms).
+cpp_member_def(N, Name, Args, M0, M) :-
+    (   cpp_member_shape(M0, K, Ps, none), cpp_params_key(Ps, PK),
+        '$cpp_mdef'(N, K, TPs, Pat, Item), cpp_mdef_bind(Pat, Args, TPs, B),
+        cpp_subst(Item, [N-base([], [typedef(Name)])|B], M1), cpp_member_shape(M1, K, Ps1, B1), B1 \== none, cpp_params_key(Ps1, PK)
+    ->  M = M1
+    ;   M = M0 ).
+cpp_mdef_bind(none, Args, TPs, B) :- !, cpp_bind_targs(TPs, Args, B).       % a constructor's and a destructor's: the reader gives the class's bare name, so the parameters bind in order
+cpp_mdef_bind(Pat, Args, TPs, B) :- cpp_match_pattern(Pat, Args, TPs, [], B).
 cpp_instance_class(declare(L, base(_, [class(K, _, Bases, Ms)])), L, K, Bases, Ms) :- Ms \== none.
 cpp_instance_class(declare(L, base(_, [struct(_, Ms)])), L, struct, [], Ms) :- Ms \== none.
 %% the arguments in the parameters' order, a pack's spliced: what a specialization's pattern is matched against
@@ -1197,11 +1244,21 @@ cpp_fn_item(function(L, Sto, Ret, N, Ps, V, Body), function(L, Sto, Ret, N, Ps, 
 cpp_fn_item(declaration(L, Sto, _, [var(N, fn(Ret, Ps, V), none)]), function(L, Sto, Ret, N, Ps, V, none)) :- atom(N).
 cpp_holding_candidates([], _, _, _, _, []).
 cpp_holding_candidates([TPs-Fn|Cs], K, F, Explicit, As, Hs) :-
-    Fn = function(_, _, _, _, Ps, Var, _), nb_setval('$cpp_last_refusal', failed), nb_setval('$cpp_conversions', 0),
-    (   catch(cpp_signature_holds(F, TPs, Ps, Var, Explicit, As, B), error(not_lowered(W), _), cpp_note_refusal(W))   % SFINAE: a signature that does not hold is no candidate
+    Fn = function(_, _, Ret, _, Ps, Var, _), nb_setval('$cpp_last_refusal', failed), nb_setval('$cpp_conversions', 0),
+    (   catch(( cpp_signature_holds(F, TPs, Ps, Var, Explicit, As, B), cpp_result_holds(Ret, B) ), error(not_lowered(W), _), cpp_note_refusal(W))   % SFINAE: a signature that does not hold is no candidate
     ->  nb_getval('$cpp_conversions', Conv), cpp_trace(candidate(F, K, holds(Conv))), Hs = [h(K, TPs, Fn, B, Conv)|Hs1]
     ;   nb_getval('$cpp_last_refusal', W1), cpp_trace(candidate(F, K, refused(W1))), Hs = Hs1 ),
     K1 is K + 1, cpp_holding_candidates(Cs, K1, F, Explicit, As, Hs1).
+%% THE RESULT TYPE IS PART OF THE SIGNATURE, C++'s immediate context: `typename __sfinae_underlying_type<_Tp>::__promoted_type
+%% __convert_to_integral(_Tp)' is NO CANDIDATE for a _Tp that is no enum, since the trait's specialization for a non-enum has
+%% no such member -- and libc++ writes the overload that way on purpose. Only a DEPENDENT QUALIFIED NAME is resolved here
+%% (`typename X<T>::y'), the one shape written to fail: an auto or a decltype result is deduced later, from the body, and a
+%% plain type or a template-id costs an instantiation a refused candidate need not make.
+cpp_result_holds(Ret, B) :- cpp_subst(Ret, B, Ret1), ( cpp_sfinae_result(Ret1) -> cpp_type(Ret1, _) ; true ).
+cpp_sfinae_result(base(_, [typedef(scoped(_, _))])) :- !.
+cpp_sfinae_result(ptr(_, T)) :- cpp_sfinae_result(T).
+cpp_sfinae_result(ref(_, T)) :- cpp_sfinae_result(T).
+cpp_sfinae_result(rref(_, T)) :- cpp_sfinae_result(T).
 cpp_note_refusal(W) :- nb_setval('$cpp_last_refusal', W), nb_getval('$cpp_first_refusal', W0), ( W0 == none -> nb_setval('$cpp_first_refusal', W) ; true ), fail.
 %% an exact match beats one that converts (a derived object to a base's reference, a value to a class through a
 %% constructor): the candidates with the fewest conversions, then the most specialized of those

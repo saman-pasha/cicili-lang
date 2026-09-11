@@ -117,8 +117,8 @@ c16 :- check('Buf<int, 4> b, Map<char> m, std::vector<int> v, std::vector<std::v
       member(declaration(_, _, _, [var(buf8, base([], [typedef('Ints')]), none)]), B),
       member(declaration(_, _, _, [var(x, _, call(tmpl(max2, [base([], [int])]), [int(1), int(2)]))]), B),
       member(declaration(_, _, _, [var(y, _, call(id(max2), [int(3), int(4)]))]), B) )).
-c17 :- check('enum class Color : int { Red, Green = 3 }',
-    ( unit('control.cpp', unit(Is)), member(declare(_, base([], [enum_class('Color', [enumerator('Red', none), enumerator('Green', int(3))])])), Is) )).
+c17 :- check('enum class Color : int { Red, Green = 3 }: the UNDERLYING TYPE first among the members, which is what tells an empty scoped enum from a struct',
+    ( unit('control.cpp', unit(Is)), member(declare(_, base([], [enum_class('Color', [enum_base(base([], [int])), enumerator('Red', none), enumerator('Green', int(3))])])), Is) )).
 c18 :- check('for (int x : xs) and for (auto &x : xs) are for_each(L, Decl, Range, S)',
     ( fn_body('control.cpp', main, B), member(for_each(_, var(x, base([], [int]), none), id(xs), expr(_, assign('+=', id(t), id(x)))), B),
       member(for_each(_, var(x, ref([], base([], [auto])), none), id(xs), _), B) )).

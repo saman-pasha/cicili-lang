@@ -118,10 +118,16 @@ ccl_resolve_base([union(Tag, none)], Q, base(Q, [union(Tag, Ms)])) :- ccl_tag(Ta
 ccl_resolve_base(S, Q, base(Q, S)).
 %% what a C++ tag's name stands for, told by its members' shape: enumerators,
 %% plain members (a struct), or a class's (a constructor, a method, a label)
-ccl_tag_type(N, [enumerator(_, _)|_], Q, base(Q, [enum(N, Ms)])) :- !, ccl_tag(N, Ms).
+ccl_tag_type(N, Ms0, Q, base(Q, [enum(N, Ms)])) :- ccl_is_enum_tag(Ms0), !, ccl_tag(N, Ms).
 ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms2)])) :- member(M, Ms), M \= member(_, _, _), ccl_tag_struct(N, Ms2), !.   % the class desugared: its struct, noted beside the raw class
 ccl_tag_type(N, Ms, Q, base(Q, [class(class, N, [], Ms)])) :- member(M, Ms), M \= member(_, _, _), !.
 ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms)])).
+%% A TAG'S MEMBERS TELL AN ENUM FROM A STRUCT: its enumerators, or the underlying type kept before them
+%% (ccl_enum_members//3 in the reader) -- which is the only thing that tells `enum class C : size_t { }',
+%% libc++'s strong typedef for a count, from an empty struct. Asked wherever a tag's name is resolved,
+%% cast to, or taken as a scope.
+ccl_is_enum_tag([enumerator(_, _)|_]).
+ccl_is_enum_tag([enum_base(_)|_]).
 ccl_tag_struct(N, Ms) :- ccl_cached_named('$ccl_ts:', N, Ms, ( nb_getval('$ccl_tags', L), member(N-Ms, L), \+ ( member(M, Ms), M \= member(_, _, _) ) )).
 ccl_resolve_typedef(N, T) :- ccl_typedef_of(N, T0), ccl_resolve_type(T0, T).
 ccl_add_quals([], T, T) :- !.
@@ -253,6 +259,7 @@ ccl_size_align(arr(NE, E), N, A) :- !, ccl_size_align(E, EN, A), ( ccl_const_eva
 ccl_size_align(base(_, S), N, A) :- ccl_basic_size(S, N), !, A = N.
 ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N, A).
 ccl_size_align(base(_, [union(_, Ms)]), N, A) :- Ms \== none, !, ccl_union_layout(Ms, 0, 1, N, A).
+ccl_size_align(base(_, [enum(_, [enum_base(T)|_])]), N, A) :- !, ccl_size_align(T, N, A).   % `enum E : size_t' is eight bytes
 ccl_size_align(base(_, [enum(_, _)]), 4, 4) :- !.
 ccl_size_align(base(_, [enum_class(_, _)]), 4, 4) :- !.
 ccl_size_align(ref(_, _), 8, 8) :- !.                                            % C++: a reference is a pointer in memory

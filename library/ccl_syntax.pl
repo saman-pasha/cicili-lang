@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(37).
+ccl_reader_version(39).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -460,6 +460,7 @@ ccl_collect_members([_|Ms], G0, G, E0, E) :- ccl_collect_members(Ms, G0, G, E0, 
 %% met so far are kept in a closed list (never memberchk on the open accumulator:
 %% it would bind its tail)
 ccl_collect_enumerators([], _, _, E, E).
+ccl_collect_enumerators([enum_base(_)|Es], Next, Sofar, E0, E) :- !, ccl_collect_enumerators(Es, Next, Sofar, E0, E).
 ccl_collect_enumerators([enumerator(N, Ex)|Es], Next, Sofar, [N-V|E0], E) :-
     ( Ex == none -> V = Next ; ccl_const_eval_in(Ex, Sofar, V0) -> V = V0 ; V = Next ),
     Next1 is V + 1, ccl_collect_enumerators(Es, Next1, [N-V|Sofar], E0, E).
@@ -514,6 +515,7 @@ ccl_note_members([_|Ms]) :- ccl_note_members(Ms).
 %% Name-Value) for the lowering and for constant expressions
 ccl_declare_enumerators(Es) :- ccl_declare_enumerators(Es, 0).
 ccl_declare_enumerators([], _).
+ccl_declare_enumerators([enum_base(_)|Es], Next) :- !, ccl_declare_enumerators(Es, Next).
 ccl_declare_enumerators([enumerator(N, E)|Es], Next) :-
     ( E == none -> V = Next ; ccl_const_eval(E, V0) -> V = V0 ; V = Next ),
     ccl_declare(N, base([], [int])),
@@ -1042,10 +1044,19 @@ ccl_member_declarators(_, _, []) --> [].
 ccl_member_declarator(Env, Base, member(T, N, Bits)) --> ccl_declarator(Env, Base, N, T0), ccl_tie(T0, T), ( ccl_p(':'), !, ccl_cond_expr(Bits) ; { Bits = none } ).
 ccl_member_declarator(_, Base, member(Base, anon, Bits)) --> ccl_p(':'), ccl_cond_expr(Bits).
 
-ccl_enum_spec(enum_class(N, Es)) --> ccl_cpp, ccl_kw(enum), ( ccl_kw(class), ! ; ccl_kw(struct) ), !, ccl_id(N), { ccl_add_env(N) }, ccl_enum_base, ( ccl_p('{'), !, ccl_enumerators(Es), ccl_p('}') ; { Es = none } ).
-ccl_enum_spec(enum(N, Es)) --> ccl_kw(enum), ( ccl_id(N), { ( ccl_lang(cpp) -> ccl_add_env(N) ; true ) }, ! ; { N = anon } ), ( ccl_cpp, ccl_enum_base, ! ; [] ), ( ccl_p('{'), !, ccl_enumerators(Es), ccl_p('}') ; { Es = none } ).
-ccl_enum_base --> ccl_p(':'), !, { Env = genv }, ccl_type_name(Env, _).   % `enum E : int', the underlying type dropped
-ccl_enum_base --> [].
+ccl_enum_spec(enum_class(N, Es)) --> ccl_cpp, ccl_kw(enum), ( ccl_kw(class), ! ; ccl_kw(struct) ), !, ccl_id(N), { ccl_add_env(N) },
+    ccl_enum_base(B), ( ccl_p('{'), !, ccl_enumerators(Es0), ccl_p('}'), { ccl_scoped_base(B, B1), ccl_enum_members(B1, Es0, Es) } ; { Es = none } ).
+ccl_enum_spec(enum(N, Es)) --> ccl_kw(enum), ( ccl_id(N), { ( ccl_lang(cpp) -> ccl_add_env(N) ; true ) }, ! ; { N = anon } ),
+    ( ccl_cpp, ccl_enum_base(B), ! ; { B = none } ), ( ccl_p('{'), !, ccl_enumerators(Es0), ccl_p('}'), { ccl_enum_members(B, Es0, Es) } ; { Es = none } ).
+ccl_enum_base(T) --> ccl_p(':'), !, { Env = genv }, ccl_type_name(Env, T).   % `enum E : size_t': the UNDERLYING type, which decides the enum's size and its LLVM type
+ccl_enum_base(none) --> [].
+ccl_scoped_base(none, base([], [int])) :- !.                                % a scoped enum without one is an int, and is marked all the same
+ccl_scoped_base(T, T).
+%% An enum's members are its enumerators, its underlying type first as enum_base(T) where there is one to keep.
+%% The marker is what tells a SCOPED ENUM WITH NO ENUMERATORS -- libc++'s `enum class __element_count : size_t { }',
+%% a strong typedef for a count -- from an empty struct, whose members' shape it shares and whose bytes are not its.
+ccl_enum_members(none, Es, Es) :- !.
+ccl_enum_members(T, Es, [enum_base(T)|Es]).
 ccl_enumerators(Es) --> [tok(pp, _, _)], !, ccl_enumerators(Es).             % a #define among the enumerators
 ccl_enumerators([E|Es]) --> ccl_enumerator(E), ( ccl_p(','), !, ccl_enumerators(Es) ; { Es = [] } ).
 ccl_enumerators([]) --> [].
@@ -1092,7 +1103,10 @@ ccl_quals([own|Qs]) --> ccl_id(own), !, ccl_quals(Qs).
 ccl_quals(Qs) --> ccl_gnu_attr, !, ccl_quals(Qs).             % char * _Nonnull p, char * __restrict q
 ccl_quals([]) --> [].
 ccl_direct(Env, name(N)) --> ccl_cpp, ccl_kw(operator), !, ccl_op_name(Op), ( ccl_peek(p, '<'), ccl_targs(Env, As), { N = tmpl(operator(Op), As) } ; { N = operator(Op) } ).   % operator+, operator+<char, ...> (an explicit instantiation)
-ccl_direct(Env, name(Q)) --> ccl_cpp, ccl_qname(Env, type, Q), { compound(Q) }, ccl_declarator_id_end, !.   % Shape::area defined out of its class, vector<T>::vector, a specialization f<int>, v<T, U>
+ccl_direct(Env, name(Q)) --> ccl_cpp, { \+ ccl_in_block }, ccl_qname(Env, type, Q), { compound(Q) }, ccl_declarator_id_end, !.   % Shape::area defined out of its class, vector<T>::vector, a specialization f<int>, v<T, U>
+%% ... and NEVER inside a function body, where a qualified declarator-id declares nothing. A statement of the shape
+%% Alias :: name (args) read as a DECLARATION of a globally qualified name: the vexing parse, one scope deeper.
+ccl_in_block :- ccl_locals(L), L \== [].
 ccl_declarator_id_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, ['(', '=', ';', ',', '{', '[', ':']).   % not `(is_x<T>::value && y)': a cast's type-id has no name
 ccl_direct(_, name(N)) --> ccl_id(N), !.
 ccl_op_name(literal(Sfx)) --> [tok(str, [], _)], !, ccl_id(Sfx).                             % operator""sv: a literal operator
@@ -1348,7 +1362,14 @@ ccl_primary_(int, N, int(N))     --> !, [_].
 ccl_primary_(uint, N, uint(N))   --> !, [_].                              % 9u
 ccl_primary_(long, N, long(N))   --> !, [_].                              % 9L, 9LL
 ccl_primary_(ulong, N, ulong(N)) --> !, [_].                              % 9ul
-ccl_primary_(float, F, float(F)) --> !, [_].
+ccl_primary_(float, F, float(F1)) --> !, [_], { ccl_finite_float(F, F1) }.
+%% A LITERAL PAST A DOUBLE is the largest finite double: `__LDBL_MAX__', which every long double header
+%% writes and this compiler lowers as a double, read as an infinity -- and cocolog WRITES an infinity as
+%% `inf.0', which its own reader refuses, so the AST beside a summary would not consult and the header
+%% would be read again, silently, at every run. The preprocessor spells such a token back as `1e999'.
+ccl_finite_float(F, 1.7976931348623157e308) :- F > 1.7976931348623157e308, !.
+ccl_finite_float(F, -1.7976931348623157e308) :- F < -1.7976931348623157e308, !.
+ccl_finite_float(F, F).
 ccl_primary_(str, S0, str(S))    --> !, [_], ccl_strings(S0, S).          % "a" "b" is one string
 ccl_primary_(chr, C, chr(C))     --> !, [_].
 %% C++ primaries: this, true, false, nullptr, the casts, a functional cast of

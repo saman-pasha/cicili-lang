@@ -359,6 +359,30 @@ what runs today.
   the lowering names the item it cannot take and attaches that item to
   any error raised inside it, which turned an unlocated type error into
   the exact function that raised it. GREEN.
+* **The twenty-fourth step DONE: the members libc++ defines out of their
+  class.** A class template's member written `template <class T, class A>
+  void X<T, A>::f(...) { ... }` after the class -- half of a container's
+  members -- was dropped where templates are registered, so the instance
+  kept the declaration, the lowering made a prototype of it and the
+  linker named four undefined symbols. Every such definition is now kept
+  by its class's name, a member template and a constructor and a
+  destructor among them, and an instance takes the one whose arguments
+  and parameters agree. With it: a temporary called, `__destroy_vector(
+  *this)()`, which is how vector destroys itself, the call going inside
+  the block that builds the object so it has an address; a scoped enum's
+  underlying type, since `enum class C : size_t { }` is libc++'s strong
+  typedef for a count and, having no enumerators, had been taken for an
+  empty struct; a result type as part of a signature, so the overload
+  written to fail for a type that is no enum is no candidate; a
+  qualified name inside a nested class, which the reader had read as a
+  declaration (the vexing parse, one scope deeper); and a float literal
+  past a double, which cocolog writes as an infinity it cannot read back,
+  so the AST beside every summary went unread and each run flattened the
+  header again. `std::vector<int> v; v.push_back(1); return (int)
+  v.size();` reached an object file for the first time on the way through
+  this step, and now that the members defined out of their class carry
+  their bodies the walk enters them and stops at a free function whose
+  overloads must be chosen by their arguments. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

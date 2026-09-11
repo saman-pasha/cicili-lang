@@ -1492,6 +1492,82 @@ whose scope arrives as `[global]` rather than the enclosing class's
 typedef: the nested class reaches the enclosing class's TYPES now, and
 this says its qualified NAMES do not follow the same road.
 
+**M6's twenty-fourth step (0.55): a qualified name inside a nested class,
+a temporary called, an enum that is a strong typedef, and the members
+libc++ defines OUT of their class.** (1) THE VEXING PARSE, ONE SCOPE
+DEEPER: `traits::take(x);` as a statement inside a nested class's method
+read as a DECLARATION of a globally qualified name -- `ccl_direct`'s
+`name(Q)` clause takes a compound qualified name as a declarator-id, which
+is right at file scope (`Shape::area`, `vector<T>::vector`, a
+specialization `f<int>`) and never inside a function body, where such a
+declarator declares nothing: `\+ ccl_in_block` (`ccl_locals/1` non-empty)
+now says so. Reader version 38; `test/cpp/run/qualstmt.cpp`. (2) A
+TEMPORARY'S `operator()`: `__destroy_vector(*this)()` is how libc++'s
+vector destroys itself -- the callee is no function but an object built
+in the same expression, so the call goes INSIDE the block that builds it
+(`cpp_temp_call/3`, tried by the last `cpp_call` clause once the callee
+is desugared), where that object has an address; `(*p)(a)` and `fs[i](a)`
+take their own (`cpp_addressable/1`), no temporary. `test/cpp/run/tempcall.cpp`.
+(3) A SCOPED ENUM'S UNDERLYING TYPE: libc++ writes `enum class
+__element_count : size_t { }` as a strong typedef for a count, and the
+reader kept nothing of `: size_t` while an enum with NO enumerators has
+the members' shape of an empty struct -- so the tag resolved to
+`%struct.__element_count = type {}` and the cast back to a count came out
+as `sext` from a struct, which LLVM refused. An enum's members now carry
+`enum_base(T)` first (`ccl_enum_members//3`, a scoped enum without a
+written base marked `int` all the same), `ccl_is_enum_tag/1` is the ONE
+test for them (the type resolution `ccl_tag_type/4`, the functional cast
+`__element_count(n)`, the scope walk that must not take `Color::Green`
+for a class's member), and the size (`ccl_size_align`) and the LLVM type
+(`ir_base`) are the underlying type's. Reader version 39;
+`test/cpp/run/strongenum.cpp`. (4) A FLOAT LITERAL PAST A DOUBLE --
+`__LDBL_MAX__`, which every long double header writes and this compiler
+lowers as a double -- is the largest finite double (`ccl_finite_float/2`
+at the parser's one float-literal door, so both lexers agree): cocolog
+WRITES an infinity as `inf.0` and its own reader refuses that, so the AST
+beside a summary would not consult (`its clauses would not consult`, no
+line) and the header was flattened and read again at every run, fifty
+seconds against three. (5) A CLASS TEMPLATE'S MEMBER DEFINED OUT OF ITS
+CLASS, `template <class _Tp, class _Allocator> void __vector_layout<_Tp,
+_Allocator>::__set_bound_using_pointer(pointer __p) noexcept { ... }`,
+which is how libc++ writes half of a container's members: the item was
+DROPPED at registration (neither a specialization's name nor a
+template's), so the instance's member kept the class's declaration, the
+lowering made it a prototype and the linker said the symbol was undefined
+(`nm -u` named `__size`, `__capacity`, `__end_ptr`,
+`__set_bound_using_pointer`). Every such definition is kept by its
+CLASS's name (`'$cpp_mdef'(Class, Key, TParams, Pattern, Member)`,
+`cpp_mdef_item/4`: a method, a MEMBER TEMPLATE whose own parameters wait
+for the call, a constructor, a destructor -- the reader gives the last
+two the class's bare name, so their parameters bind in order), indexed
+under it (`cpp_index_name`, which is also what `ccl_ast_write` writes
+by), and an instance takes the definition whose pattern matches its
+arguments (`cpp_match_pattern`) and whose parameters key alike
+(`cpp_member_defs/5`, before the instance's class is registered).
+`test/cpp/run/outofclass.cpp`. (6) THE RESULT TYPE IS PART OF THE
+SIGNATURE, C++'s immediate context: `typename
+__sfinae_underlying_type<_Tp>::__promoted_type __convert_to_integral(_Tp)`
+is no candidate for a `_Tp` that is no enum, and the refusal its
+resolution raises must make it none -- before, the candidate was chosen
+on its parameters alone and the refusal came out as an error
+(`cpp_result_holds/2` inside the candidate's own catch; only a DEPENDENT
+QUALIFIED name is resolved there, the one shape written to fail, since an
+`auto` or a `decltype` result is deduced later from the body and a plain
+type or a template-id would cost a refused candidate an instantiation).
+WHERE `std::vector<int> v; v.push_back(1); return (int) v.size();`
+STANDS: with (1) to (4) it passed the desugaring, the safe part and the
+LOWERING whole and made an object file of 9816 bytes -- the first time
+the program reached one -- whose link named seven undefined symbols, the
+four layout accessors and two vector members defined out of their class
+among them; with (5) those bodies are found, and the walk that now enters
+them stops in the DESUGARING at `__convert_to_integral(__n)`, where every
+template overload of the name is refused, rightly, and the plain
+overloads beside them are not candidates at all: a free function's
+OVERLOADS are neither chosen by their arguments nor mangled apart (the
+first definition of a name is emitted and every call goes to it), which
+is the next stretch. Seven gates GREEN (the C++ one at 773 MB, libc++'s
+at 1596).
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -2050,6 +2126,16 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `test/cpp.sh` run `--local`, a run reads its headers again (about two
   seconds each, flattened), and the C++ cache is a summary cache still to
   design. To raise with cocolog's owner beside compaction.
+* **cocolog WRITES a float infinity as `inf.0`, and its own reader refuses
+  to read that back** (`ensure_loaded/1` says only `its clauses would not
+  consult`, no line): one such float in a header's AST file cost the whole
+  file, so every run flattened and read the header again, fifty seconds
+  against three. A literal past a double (`__LDBL_MAX__`, and the `1e999`
+  the preprocessor spells an infinite token back as) is the largest finite
+  double at the parser's one float-literal door, `ccl_finite_float/2`.
+  cocolog's `write/1` keeps 14 significant digits of a float besides
+  (`1.0842021724855e-19` for LDBL_EPSILON), so a double does not round-trip
+  through a written term exactly; nothing here depends on that yet.
 * **cocolog's `term_to_atom(-T, +A)` fails past some tens of KB of atom**
   (`type_error(atom, …)` on a 37 KB line): a summary file keeps a term per
   LINE, its dependencies one each, never a list of hundreds in one term.
