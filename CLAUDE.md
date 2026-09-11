@@ -1386,6 +1386,47 @@ picked. The isolated shapes all work (a negated variable template, a
 `test/cpp/run/` fixtures), so what is left is that two-parameter
 detection, and it is the next thing.
 
+**M6's twentieth step (0.51): the detection trait, and the allocator
+through.** `__has_max_size_v<_Alloc, class = void>`, whose specialization
+is matched by `decltype((void) declval<_Alloc &>().max_size())`, decides
+which `allocator_traits::max_size` libc++ uses. It asked four things,
+each a defect: a function template DECLARED and never defined
+(`template <class T> T &&declval();`) must still instantiate, for its
+TYPE is all a decltype wants (`cpp_fn_item/2` normalizes a declaration
+item into a function with no body, the call clauses take it, and the
+instance is emitted as a DECLARATION) -- without it the call fell to the
+class-template clause and refused `instance_without_body(declval)`; a
+member call on a type that HAS members but not that one REFUSES
+(`cpp_call`'s member clause), which is the rejection a detection needs,
+where it had been left alone and `(void) <unknown>` was void either way,
+so the trait was true for everything; a member of a REFERENCE is a member
+of what it refers to (`cpp_class_of_type` unrefs), since `declval<C &>()`
+names one; and a member template's signature is checked IN ITS OWN CLASS
+(`cpp_in_class` around `cpp_signature_holds` in `cpp_try_member`), since
+`const allocator_type &` is written in the traits class's words and read
+in the caller's -- it refused `argument_mismatch`.
+`test/cpp/run/detect3.cpp` (found, not found, and through a `const`).
+AND WHAT THE ALLOCATOR NEEDED BEHIND IT: `::operator new` and `delete`
+written out are the malloc and free the lowering already has
+(`cpp_operator_new/3`, any arity); a tag with NO members takes no
+initializer, so `__element_count(n)` -- an empty scoped `enum class` --
+is a CAST (the enum-ness of an empty enum is not in the tag table, and
+the members decide); and a class-scope typedef naming a scalar is a
+functional cast, `size_type(~0)`, beside the nested-class case that
+clause already had. TWO OF THOSE CUT TOO WIDE, and the gate
+said so: unreffing inside `cpp_class_of_type` made a REFERENCE-typed
+type count as its class, and the rules that turn on the value category
+(`return_of_a_class_with_destructor` and kin) then fired on returns of
+references -- six fixtures failed, and the unref belongs in
+`cpp_class_of_type_of`, the class an EXPRESSION has, never in the
+type-level test; and making a declaration a candidate let the
+DECLARATION of `std::swap` win over its definition, which linked to
+nothing, so a declaration is a candidate only when nothing is defined
+(`cpp_defined_first/2`, before the specialization ordering). `std::vector<int> v; v.push_back(1);` now compiles
+`allocator<int>`'s `allocate` and `max_size` whole and stops in
+`__swap_allocator`, on an `integral_constant<bool, false>` that reaches
+the lowering without being instantiated.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

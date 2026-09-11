@@ -322,8 +322,12 @@ it is done (see below); the checker and the lowering take the AST from here.
   as it ships; with it a temporary materialised for a value bound to a
   const reference, the compiler's builtins answered, a variable template
   evaluated where the reader could not tell it from a type, and a bool
-  argument keyed by its number. `std::vector<int> v; v.push_back(1);`
-  reaches `allocator_traits::max_size`.
+  argument keyed by its number. THE TWENTIETH STEP: the detection trait
+  behind `allocator_traits::max_size` (a declared-only function template
+  instantiating for its type, a member call refusing where the member is
+  absent, a member of a reference, a member template checked in its own
+  class), and the allocator compiled whole. `std::vector<int> v;
+  v.push_back(1);` stops in `__swap_allocator`.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

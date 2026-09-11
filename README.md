@@ -310,6 +310,20 @@ what runs today.
   false; and a bool template argument keyed by its spelling, so `true`
   and `1` named two instances of one thing. `std::vector<int> v;
   v.push_back(1);` now reaches `allocator_traits::max_size`. GREEN.
+* **The twentieth step DONE: the detection trait, and the allocator
+  through.** The trait that decides which `max_size` libc++ uses is a
+  variable template of two parameters whose specialization is matched by
+  a `decltype` of a member call. It asked four things, each a defect: a
+  function template that is declared and never defined must still
+  instantiate, because its type is all a `decltype` wants; a member call
+  on a type that has members but not that one must refuse, which is the
+  rejection a detection needs, and without it the trait was true for
+  everything; a member of a reference is a member of what it refers to;
+  and a member template's signature is checked in its own class, since
+  its parameters are written in that class's words. With the allocation
+  operators written out, an empty scoped enum taken as a cast, and a
+  functional cast to a class-scope typedef, `allocator<int>` now compiles
+  whole. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
