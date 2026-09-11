@@ -406,6 +406,16 @@ what runs today.
   class's own registration can reach it; and a static member's type is
   resolved in its class. With them, a call's value bound to a const
   reference gets the temporary C++ materializes for it. GREEN.
+* **The twenty-seventh step DONE: a lambda capturing `this`.** Refused by
+  name since lambdas were added, and libc++'s `vector::emplace_back` writes
+  one. The closure keeps the enclosing object as a reference member, which
+  is what a `[&x]` capture already is, and inside its call operator the
+  enclosing class is reached through it: a member named bare, a method
+  called, a static, and `this` written out. A default capture takes it
+  where the body names anything of the class, a member template included.
+  The result type is deduced from the first return desugared where the
+  lambda stands, since a member has a type only once it is the access the
+  desugaring makes of it. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

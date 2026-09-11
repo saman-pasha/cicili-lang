@@ -88,7 +88,7 @@ cpp_instance_note(Name, What) :- assertz('$cpp_inst'(Name, What)).
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
     cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_mdef'/5),
-    nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0),
+    nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0), nb_setval('$cpp_closure_this', []),
     nb_setval('$cpp_concepts', []),
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
@@ -876,6 +876,7 @@ cpp_copy_temp(C, A, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]
 %% ---- expressions, bottom up ----------------------------------------------------------
 cpp_exprs(_, [], []).
 cpp_exprs(Ctx, [E|Es], [E1|Fs]) :- cpp_expr(Ctx, E, E1), cpp_exprs(Ctx, Es, Fs).
+cpp_expr(Ctx, this, E) :- cpp_closure_this(Ctx, _), !, cpp_closure_object([], E).      % inside a lambda that captured it, `this' is the enclosing object's address
 cpp_expr(_, this, id(this)) :- !.
 cpp_expr(_, E, E) :- \+ compound(E), !.
 cpp_expr(Ctx, id(N), E) :- !,
@@ -883,6 +884,8 @@ cpp_expr(Ctx, id(N), E) :- !,
     ;   Ctx = self(C, SN), cpp_data_member(C, N, []) -> E = member(id(SN), N)                   % C++23: a capture, through the closure's explicit object parameter
     ;   Ctx \== none, cpp_data_member(Ctx, N, Hops) -> cpp_access(id(this), N, Hops, E)
     ;   Ctx \== none, cpp_static_member(Ctx, N, Name) -> E = id(Name)
+    ;   cpp_closure_this(Ctx, EC), cpp_data_member(EC, N, Hops) -> cpp_closure_member(N, Hops, E)   % a lambda's captured this: the enclosing object's member
+    ;   cpp_closure_this(Ctx, EC), cpp_static_member(EC, N, Name) -> E = id(Name)
     ;   E = id(N) ).
 cpp_expr(_, scoped(Path, N), E) :- cpp_scope_class(Path, C), !,
     (   cpp_static_const(C, N, V) -> E = V                                                        % C::value, a static const with a constant: the constant
@@ -1001,6 +1004,10 @@ cpp_call(Ctx, id(M), As, E) :- Ctx \== none, \+ cpp_local(M), length(As, N), cpp
     cpp_fill_defaults(Name, As, As1),
     (   cpp_slot(Ctx, M, N, Slot) -> cpp_dispatch(id(this), Ctx, Slot, As1, E)
     ;   ( Hops == [] -> P = id(this) ; cpp_hops(deref(id(this)), Hops, B), P = addr(B) ), cpp_object_arg(Name, P, Obj), E = call(id(Name), [Obj|As1]) ).
+cpp_call(Ctx, id(M), As, E) :- cpp_closure_this(Ctx, EC), \+ cpp_local(M), length(As, N), cpp_method(EC, M, As, Name, Hops), !,   % a lambda's captured this: the enclosing class's method
+    cpp_fill_defaults(Name, As, As1), cpp_closure_object(Hops, P),
+    (   cpp_slot(EC, M, N, Slot) -> cpp_dispatch(P, EC, Slot, As1, E)
+    ;   cpp_object_arg(Name, P, Obj), E = call(id(Name), [Obj|As1]) ).
 %% p->$vptr->slot(p, args), the pointer to the table found through the base sub-objects
 cpp_dispatch(P, C, Slot, As, call(arrow(Vptr, Slot), [P|As])) :- cpp_data_member(C, '$vptr', Hops), cpp_access(P, '$vptr', Hops, Vptr).
 %% a value whose dynamic type is its static one: a named object, or a member of one; not a reference
@@ -1028,6 +1035,15 @@ cpp_call(Ctx, id(N), As, E) :- Ctx \== none, \+ cpp_local(N), cpp_class_typedef(
     (   cpp_class_of_type(T, C1)
     ->  ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) )
     ;   As = [X] -> E = cast(T, X)                                    % a typedef naming a scalar: a functional cast
+    ;   As == [] -> cpp_zero_of(T, E)
+    ;   fail ).
+%% the same for a typedef at FILE scope, which libc++ calls by its own name: `__destruct_at_end(p, false_type())'
+%% makes a temporary of integral_constant<bool, false> by its alias, and `size_t(n)' is the cast it looks like
+cpp_call(_, id(N), As, E) :- \+ cpp_local(N), \+ ccl_declared(N, fn(_, _, _)), ccl_typedef_of(N, T0),
+    catch(cpp_type(T0, T), error(not_lowered(_), _), fail), !,
+    (   cpp_class_of_type(T, C1)
+    ->  ( cpp_has_ctors(C1) -> cpp_temporary(T, C1, As, E) ; findall(item([], A), member(A, As), Items), E = compound_lit(T, init(Items)) )
+    ;   As = [X] -> E = cast(T, X)
     ;   As == [] -> cpp_zero_of(T, E)
     ;   fail ).
 cpp_call(_, id(C), As, E) :- cpp_class(C, _), cpp_class_takes(C, As), !, cpp_temporary(base([], [typedef(C)]), C, As, E).
@@ -1769,7 +1785,6 @@ cpp_merge_quals(_, A, A).
 
 %% ---- lambdas: a class of the captures, operator() the body ----------------------------------
 cpp_lambda(Ctx, Caps, Ps0, Ret0, Body, compound_lit(T, init(Items))) :-
-    ( memberchk(cap(this), Caps) -> cpp_refuse(0, capture_this) ; true ),
     ( Ps0 = [param(this(ST0), SN)|Ps1] -> true ; Ps1 = Ps0, SN = none ),                                         % C++23: an explicit object parameter: the closure itself, `this auto self'
     ( ( memberchk(tparams(_), Caps) ; member(P, Ps1), ( P = param(PT, _) ; P = param(PT, _, _) ), cpp_auto_in(PT, 0, _, _) ) -> cpp_refuse(0, generic_lambda) ; true ),   % C++20: a template lambda, a member template of the closure
     cpp_plain_params(Ps1, Ps),
@@ -1777,12 +1792,38 @@ cpp_lambda(Ctx, Caps, Ps0, Ret0, Body, compound_lit(T, init(Items))) :-
     T = base([], [typedef(Name)]),
     ( SN == none -> Self = [], SelfPs = Ps ; cpp_self_type(ST0, Name, ST), Self = [param(this(ST), SN)], SelfPs = [param(ST, SN)|Ps] ),
     cpp_captures(Caps, SelfPs, Body, Captures),
-    ( Ret0 == none -> cpp_lambda_ret(SelfPs, Body, Ret) ; cpp_type(Ret0, Ret) ),
-    findall(member(MT, N, none), ( member(N-How, Captures), ( How = val(CT) -> MT = CT ; How = ref(CT), MT = ref([], CT) ) ), Ms0),
-    findall(item([], V), ( member(N-How, Captures), ( How = val(_) -> V0 = id(N) ; V0 = addr(id(N)) ), cpp_expr(Ctx, V0, V) ), Items),
+    ( Ret0 == none -> cpp_lambda_ret(Ctx, SelfPs, Body, Ret) ; cpp_type(Ret0, Ret) ),   % IN THE ENCLOSING CONTEXT: a member named in the body is a call or an access of this, which has a type
+    findall(member(MT, N, none), ( member(N-How, Captures), ( How = val(CT) -> MT = CT ; How = ref(CT), MT = ref([], CT) ) ), Ms1),
+    findall(item([], V), ( member(N-How, Captures), ( How = val(_) -> V0 = id(N) ; V0 = addr(id(N)) ), cpp_expr(Ctx, V0, V) ), Items1),
+    (   cpp_captures_this(Ctx, Caps, Body, EC)                                                   % `[this]', and a default capture where the body names the enclosing class
+    ->  cpp_note_closure_this(Name, EC), Ms0 = [member(ref([], base([], [typedef(EC)])), '$this', none)|Ms1], Items = [item([], id(this))|Items1]   % a REFERENCE to the object, as a `[&x]' capture is: the lowering reads a reference member through, and the check counts it as one
+    ;   Ms0 = Ms1, Items = Items1 ),
     append(Self, Ps, MPs), append(Ms0, [method(0, [closure], Ret, operator('()'), MPs, false, Body)], Ms),
     cpp_isolated(( cpp_register_class(0, Name, [], Ms), cpp_item(declare(0, base([], [class(struct, Name, [], Ms)])), Its) )),
     cpp_add_instance_items(Its).
+%% A LAMBDA CAPTURES THIS where `[this]' says so, and under a DEFAULT capture where its body names anything of the
+%% enclosing class -- a data member, a static or a method, or `this' itself. The closure keeps the enclosing object's
+%% address in the member `'$this'', and inside its operator() a name of that class is reached through it, as C++'s
+%% closure reaches it: the capture is by REFERENCE to the object (C++ captures the pointer, never the object).
+cpp_captures_this(Ctx, Caps, _, Ctx) :- atom(Ctx), memberchk(cap(this), Caps), !.
+cpp_captures_this(Ctx, Caps, Body, Ctx) :- atom(Ctx), memberchk(cap(default, _), Caps), cpp_names_enclosing(Ctx, Body), !.
+cpp_names_enclosing(C, Body) :- cpp_ids(Body, Ids), member(N, Ids), cpp_has_member(C, N), !.
+cpp_names_enclosing(_, Body) :- cpp_mentions_this(Body), !.
+cpp_mentions_this(this) :- !.
+cpp_mentions_this(T) :- compound(T), T =.. [_|As], member(A, As), cpp_mentions_this(A), !.
+cpp_has_member(C, N) :- cpp_data_member(C, N, _), !.
+cpp_has_member(C, N) :- cpp_static_member(C, N, _), !.
+cpp_has_member(C, N) :- '$cpp_mt'(C, N, _, _), !.                                        % a MEMBER TEMPLATE, which libc++'s vector names from a lambda inside emplace_back
+cpp_has_member(C, N) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(M, Ms), cpp_member_named(M, N), !.
+cpp_has_member(C, N) :- cpp_class(C, cls(B, _, _, _, _, _)), B \== none, cpp_has_member(B, N).
+cpp_member_named(template(_, _, M), N) :- !, cpp_member_named(M, N).
+cpp_member_named(method(_, _, _, N, _, _, _), N).
+cpp_member_named(member(_, N, _), N).
+cpp_note_closure_this(Name, C) :- nb_getval('$cpp_closure_this', L), nb_setval('$cpp_closure_this', [Name-C|L]).
+cpp_closure_this(Ctx, C) :- atom(Ctx), nb_getval('$cpp_closure_this', L), memberchk(Ctx-C, L).
+cpp_this_of_closure(arrow(id(this), '$this')).                                           % the enclosing OBJECT, an lvalue through the reference member (the closure's own this is a pointer)
+cpp_closure_member(N, Hops, member(B, N)) :- cpp_this_of_closure(R), cpp_hops(R, Hops, B).
+cpp_closure_object(Hops, addr(B)) :- cpp_this_of_closure(R), cpp_hops(R, Hops, B).       % its address, which a method takes as `this'
 %% the closure's own type for `this auto self': by value, by reference (an rvalue reference read as one), or as named
 cpp_self_type(base(Q, [auto]), Name, base(Q, [typedef(Name)])) :- !.
 cpp_self_type(ref(Q, T0), Name, ref(Q, T)) :- !, cpp_self_type(T0, Name, T).
@@ -1810,9 +1851,16 @@ cpp_bound(_, []).
 cpp_bound_list([], []).
 cpp_bound_list([A|As], Ns) :- cpp_bound(A, N1), cpp_bound_list(As, N2), append(N1, N2, Ns).
 %% the result type when not written: the first return's, typed under the parameters
-cpp_lambda_ret(Ps, Body, Ret) :-
+cpp_lambda_ret(Ps, Body, Ret) :- cpp_lambda_ret(none, Ps, Body, Ret).
+%% the first return DESUGARED in the enclosing context and then typed, as a method's auto result already was
+%% (cpp_method_ret): the body of a lambda in a member function names the class's members, which have a type only
+%% once they are the calls and accesses the desugaring makes of them -- and here, where the lambda stands, the
+%% enclosing locals and `this' are still in scope
+cpp_lambda_ret(Ctx, Ps, Body, Ret) :-
     (   cpp_first_return(Body, E)
-    ->  ccl_scope_push, ccl_declare_params(Ps), ( ccl_type_of(E, T), T \== unknown -> Ret = T ; Ret = none ), ccl_scope_pop,
+    ->  ccl_scope_push, ccl_declare_params(Ps),
+        ( catch(cpp_expr(Ctx, E, E1), error(not_lowered(_), _), fail) -> true ; E1 = E ),
+        ( ccl_type_of(E1, T), T \== unknown -> Ret = T ; Ret = none ), ccl_scope_pop,
         ( Ret == none -> cpp_refuse(0, lambda_result_type) ; true )
     ;   Ret = base([], [void]) ).
 cpp_first_return(return(_, E), E) :- !.

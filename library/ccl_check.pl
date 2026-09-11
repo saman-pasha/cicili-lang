@@ -899,7 +899,8 @@ ck_init_slots_([item(Ds, V)|Is], T, Base, I, St0, St) :-
     ck_slot(T, Ds, I, SlotT, F, I1),
     ( ( Base == none ; F == none ) -> Key = none ; atomic_list_concat([Base, '.', F], Key) ),
     ck_slot_label(Base, F, Key, Name),
-    ck_init_slot(V, SlotT, Key, Name, St0, St1),
+    (   F == '$this' -> ck_expr(V, St0, St1)                                            % A CLOSURE'S CAPTURED OBJECT: `[this]' keeps the enclosing this, which outlives the
+    ;   ck_init_slot(V, SlotT, Key, Name, St0, St1) ),                                  % closure -- a lambda is scope-bound here, as a reference capture already is
     ck_init_slots_(Is, T, Base, I1, St1, St).
 ck_slot_label(_, _, Key, Key) :- Key \== none, !.
 ck_slot_label(Base, none, _, Name) :- Base \== none, !, atom_concat(Base, '[]', Name).

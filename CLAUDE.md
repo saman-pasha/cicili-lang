@@ -1706,6 +1706,47 @@ on `__emplace_back_assume_capacity` named there: a lambda in a member
 function must reach the enclosing class through the captured `this`, which
 this compiler refuses (`capture_this`) -- the next stretch.
 
+**M6's twenty-seventh step (0.59): A LAMBDA CAPTURING `this`.** It was
+refused by name (`capture_this`) since the fifth step, and libc++'s
+`vector::emplace_back` writes one: `std::__if_likely_else(size() !=
+capacity(), [&] { __emplace_back_assume_capacity(...); ++__end; }, ...)`.
+The closure keeps the enclosing object as a REFERENCE member, `'$this'`,
+which is what a `[&x]` capture already is -- the lowering reads a
+reference member through and the check counts it as one -- and its
+initializer is `this` itself; `'$cpp_closure_this'` records which closure
+holds whose class. Inside the closure's `operator()` the enclosing class
+is reached through it: a data member named bare is `this->$this.member`
+(`cpp_closure_member/3`), a method called bare takes
+`&this->$this` as its object (`cpp_closure_object/2`, the base's hops
+with it, a virtual one dispatched as ever), a static is its global, and
+`this` written out is `&this->$this`. A lambda captures it where `[this]`
+says so and, under a DEFAULT capture, where the body names anything of the
+enclosing class -- a data member, a static, a method, a MEMBER TEMPLATE
+(which is how vector's lambda names `__emplace_back_assume_capacity`) or
+`this` itself (`cpp_captures_this/4`, `cpp_has_member/2`). The closure's
+RESULT TYPE is deduced from the first return DESUGARED IN THE ENCLOSING
+CONTEXT (`cpp_lambda_ret/4`, as a method's `auto` result already was),
+since a member named in the body has a type only once it is the call or
+the access the desugaring makes of it -- and where the lambda stands, the
+enclosing locals and `this` are still in scope. THE CHECK takes the
+captured object as it takes a reference capture: the item of a `'$this'`
+slot is walked, not refused as a borrow stored where it cannot be followed
+(`ck_init_slots_`), the closure being scope-bound here. WITH IT, two more
+of libc++'s forms: a FILE-SCOPE TYPEDEF called by its own name is a
+temporary of the class it names or the cast it looks like
+(`false_type()`, `size_t(n)`), which only a class-scope typedef had; and
+`cpp_has_member/2` looks through a member template. Lowering version 13.
+Gated by `test/cpp/run/capturethis.cpp` (a member named bare, a method
+called, `this->` written out, a default capture taking it, a static),
+clang++'s numbers. Not done: a closure that ESCAPES its scope with a
+captured reference or `this` is not followed by the safe part (the hole a
+`[&x]` capture already had), `[*this]` (the object by value), a lambda
+capturing `this` inside a nested class's method reaching the enclosing
+enclosing one. `std::vector<int> v; v.push_back(1); return (int)
+v.size();` now stops in `std::forward`'s instance, on an argument that
+still names a template parameter -- an instance keyed by an unresolved
+name, the defect 0.49 met from the other side.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
