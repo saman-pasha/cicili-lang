@@ -459,6 +459,7 @@ cpp_required([_|Ps], N) :- cpp_required(Ps, N0), N is N0 + 1.
 
 %% ---- names ----------------------------------------------------------------------
 cpp_mangle(C, operator(Op), Ps, Name) :- !, cpp_op_word(Op, W), cpp_params_key(Ps, K), atomic_list_concat([C, '.op.', W, '.', K], Name).
+cpp_mangle(_, M, _, _) :- \+ atom(M), !, cpp_refuse(0, member_name(M)).   % never a raw type_error out of atomic_list_concat: say which name could not be mangled
 cpp_mangle(C, M, Ps, Name) :- cpp_params_key(Ps, K), atomic_list_concat([C, '.', M, '.', K], Name).
 %% the parameters' types, keyed (cpp_type_key): overloads by type get names of their own; none is `0'
 cpp_params_key([], '0') :- !.

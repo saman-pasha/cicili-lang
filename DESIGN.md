@@ -336,7 +336,11 @@ it is done (see below); the checker and the lowering take the AST from here.
   initializers arrives in C++'s class shape and its members are the
   holder's just the same; and each phase of the compile names itself when
   it fails. That program now passes the desugaring and the safe part
-  whole and stops in the lowering.
+  whole. THE TWENTY-THIRD STEP: a function item with no body is a
+  prototype; an EMPTY class has size one and one byte crosses a call
+  (with no leaves it had classified as no pieces at all); and the
+  lowering names the item it cannot take and carries it on any error
+  raised inside.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

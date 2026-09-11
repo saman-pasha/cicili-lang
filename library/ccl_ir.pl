@@ -70,7 +70,15 @@ ir_note_units([unit(Is)|Us]) :- ccl_items_note(Is), ir_note_units(Us).
 ir_units([]).
 ir_units([unit(Is)|Us]) :- ir_items(Is), ir_units(Us).
 ir_items([]).
-ir_items([I|Is]) :- ir_item(I), ir_items(Is).
+ir_items([I|Is]) :- ( catch(ir_item(I), E, ir_item_error(I, E)) -> true ; ir_item_name(I, W), ir_fail(item(W)) ), ir_items(Is).
+%% an error out of an item carries the ITEM with it, so a raw type_error says which one raised it
+ir_item_error(_, error(not_lowered(X), Y)) :- !, throw(error(not_lowered(X), Y)).
+ir_item_error(I, E) :- ir_item_name(I, W), ir_fail(item(W, raised(E))).
+%% which item the lowering could not take, when it merely FAILS: its shape and its name, not the whole term
+ir_item_name(function(_, _, _, N, _, _, B), function(N, BS)) :- !, ( B == none -> BS = none ; compound(B) -> functor(B, BF, BA), BS = BF/BA ; BS = B ).
+ir_item_name(declaration(_, _, _, [var(N, _, _)|_]), declaration(N)) :- !.
+ir_item_name(declare(_, base(_, [S])), declare(W)) :- !, ( S =.. [K, N|_] -> W = K/N ; W = S ).
+ir_item_name(I, W) :- ( compound(I) -> functor(I, F, A), W = F/A ; W = I ).
 
 %% ---- state -----------------------------------------------------------------------
 ir_reset :-
@@ -286,6 +294,7 @@ ir_abi_nocache(T, Abi) :-
     ;   Abi = scalar ).
 ir_is_aggregate(base(_, [struct(_, Ms)])) :- Ms \== none.
 ir_is_aggregate(base(_, [union(_, Ms)])) :- Ms \== none.
+ir_abi_(_, _, _, 0, _, direct([piece(i8, 0)])) :- !.   % an EMPTY class (an allocator, a comparator, a tag): C++ gives it size one, and one byte crosses a call -- with no leaves it classified as no pieces at all, which has no type
 ir_abi_(sysv, T, LL, N, A, Abi) :- ( N > 16 -> Abi = memory(LL, A) ; ir_leaves(T, 0, Ls), ir_eightbytes(Ls, N, 0, Ps), Abi = direct(Ps) ).
 ir_abi_(aapcs, T, LL, N, A, Abi) :-
     (   N > 16 -> Abi = indirect(LL, A)
@@ -327,6 +336,7 @@ ir_hfa([leaf(_, FT)|Ls], K, FT) :- memberchk(FT, [float, double]), ir_all_leaves
 ir_all_leaves([], _).
 ir_all_leaves([leaf(_, C)|Ls], C) :- ir_all_leaves(Ls, C).
 %% the LLVM type a direct struct is passed or returned as
+ir_pieces_type([], i8) :- !.
 ir_pieces_type([piece(P, _)], P) :- !.
 ir_pieces_type([piece(P1, _), piece(P2, _)], CL) :- atomic_list_concat(['{ ', P1, ', ', P2, ' }'], CL).
 ir_piece_lls([], []).
@@ -899,6 +909,7 @@ ir_item(declare(_, base(_, [class(_, N, _, _)]))) :- !, ir_fail(class(N)).
 ir_item(ctor(_, _, _, _, _)) :- !, ir_fail(constructor).
 ir_item(dtor(_, _, _)) :- !, ir_fail(destructor).
 ir_item(method(_, _, _, N, _, _, _)) :- !, ir_fail(method(N)).
+ir_item(function(_, _, _, Name, _, _, none)) :- atom(Name), !.                 % a PROTOTYPE: nothing to define, and its `declare' line comes from the externals a call names (declval and kin, declared and never defined)
 ir_item(function(_, Sto, Ret, Name, Params, Var, Body)) :- !,
     ir_function(Sto, Ret, Name, Params, Var, Body, Text),
     nb_getval('$ir_fdefs', Fs), nb_setval('$ir_fdefs', [Text|Fs]),

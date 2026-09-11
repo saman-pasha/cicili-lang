@@ -347,6 +347,18 @@ what runs today.
   that something had. `std::vector<int> v; v.push_back(1);` now passes
   the desugaring and the safe part whole, and stops in the lowering.
   GREEN.
+* **The twenty-third step DONE: what libc++ declares but never defines,
+  and the empty class.** A function item with no body is a prototype:
+  nothing to define, its declare line coming from the call that names it.
+  And `std::declval` is not bodyless after all, since libc++ gives it one
+  static assert and no return, so it falls off the end of a function
+  returning `allocator<int>` -- an empty class, which had no leaves and
+  so classified as a value with no type at all. C++ gives an empty class
+  size one and one byte crosses a call, which matters far beyond this
+  case: allocators, comparators and tag types are all empty. With them,
+  the lowering names the item it cannot take and attaches that item to
+  any error raised inside it, which turned an unlocated type error into
+  the exact function that raised it. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

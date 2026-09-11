@@ -1468,6 +1468,30 @@ phase names itself now (`ir_fail(phase(desugaring | check | lowering))`).
 `std::vector<int> v; v.push_back(1);` stops in the LOWERING, around the
 declared-only `declval` instance that 0.51 taught the desugaring to make.
 
+**M6's twenty-third step (0.54): the lowering of what libc++ declares
+but never defines, and the EMPTY CLASS.** A function item with NO BODY is
+a PROTOTYPE: nothing to define, its `declare` line coming from the
+externals a call names (`ir_item`'s first function clause) -- the
+lowering had only the defining clause and merely failed. And
+`std::declval` is not bodyless after all: libc++ gives it a body of one
+`static_assert` and no return, so the function falls off its end, which
+the lowering already closes with a zero of the return type -- but the
+return type is `allocator<int>`, an EMPTY class, and an empty aggregate
+has no leaves, so it classified as `direct([])`, pieces with no LLVM type
+at all. C++ gives an empty class size ONE and one byte crosses a call
+(`ir_abi_`'s first clause, `ir_pieces_type([], i8)`); empty classes are
+everywhere in C++ -- an allocator, a comparator, a tag. AND TWO
+DIAGNOSTICS, both of which earned themselves at once: `ir_items` names
+the ITEM it cannot take (`ir_item_name/2`: the function or declaration
+and its name, a body as its functor) and ATTACHES THE ITEM to any error
+raised inside it (`ir_item_error/2`, a `not_lowered` passing through
+unchanged), which turned a bare `type_error(atomic, scoped([global],
+deallocate))` into the item that raised it. `std::vector<int> v; v.push_back(1);` now stops in
+`vector`'s NESTED `__destroy_vector`, on `__alloc_traits::deallocate(...)`
+whose scope arrives as `[global]` rather than the enclosing class's
+typedef: the nested class reaches the enclosing class's TYPES now, and
+this says its qualified NAMES do not follow the same road.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
