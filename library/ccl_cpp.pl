@@ -794,6 +794,8 @@ cpp_expr(_, scoped(Path, N), E) :- cpp_scope_class(Path, C), !,
     (   cpp_static_const(C, N, V) -> E = V                                                        % C::value, a static const with a constant: the constant
     ;   cpp_static_member(C, N, Name) -> E = id(Name)
     ;   atomic_list_concat([C, '.', N], Name), E = id(Name) ).
+cpp_expr(_, base(_, [typedef(X)]), E) :- cpp_template_id(X, N, Args0), cpp_variable_template(N), !,   % a variable template READ AS A TYPE in an expression: `!__has_max_size_v<const _Ap>' -- the reader cannot tell, and unevaluated it made the negation false
+    cpp_targ_values(Args0, Args), cpp_instantiate_variable(N, Args, E).
 cpp_expr(_, tmpl(N, Args0), E) :- cpp_template(N, _, declaration(_, _, _, _)), !,               % a variable template: its instance's value
     cpp_targ_values(Args0, Args), cpp_instantiate_variable(N, Args, E).
 cpp_expr(Ctx, call(F, As), E) :- !, cpp_where(args(F), cpp_exprs(Ctx, As, As1)), cpp_where(call(F), cpp_call(Ctx, F, As1, E0)), cpp_copies(E0, E).
@@ -869,6 +871,16 @@ cpp_call(Ctx, tmpl(M, TArgs), As, E) :- Ctx \== none, \+ cpp_local(M), cpp_types
 cpp_call(Ctx, scoped(Path, M), As, E) :- cpp_scope_class(Path, C), cpp_method(C, M, As, Name, _), !,   % X<T>::f(args), C::f(args): a static method (its this null)
     cpp_fill_defaults(Name, As, As1), cpp_object_arg(Name, nullptr, Obj), E = call(id(Name), [Obj|As1]).
 cpp_call(_, id(N), Args, V) :- ccl_builtin_trait(N), !, cpp_trait(N, Args, V).                 % __is_same(T, U): the compiler's trait, decided here
+cpp_call(_, id(N), As, E) :- cpp_builtin_call(N, As, E), !.                                   % the compiler's own builtins libc++ calls, answered as this compiler can
+%% nothing here is evaluated at compile time, so a run-time answer is the true one; `operator new' is the allocation
+%% the lowering already has (ir_cpp_prelude declares malloc and free), and an alignment request is dropped
+cpp_builtin_call('__builtin_is_constant_evaluated', [], bool(false)).
+cpp_builtin_call('__builtin_launder', [P], P).
+cpp_builtin_call('__builtin_addressof', [X], addr(X)).
+cpp_builtin_call('__builtin_expect', [E, _], E).
+cpp_builtin_call('__builtin_assume_aligned', [P|_], P).
+cpp_builtin_call('__builtin_operator_new', [N|_], call(id(malloc), [N])).      % a size, and an alignment this compiler does not honour
+cpp_builtin_call('__builtin_operator_delete', [P|_], call(id(free), [P])).
 cpp_call(Ctx, member(X0, M), As, E) :- !,
     cpp_expr(Ctx, X0, X),
     (   cpp_class_of_type_of(X, C), length(As, N), cpp_method(C, M, As, Name, Hops)
@@ -1325,7 +1337,8 @@ cpp_type_key(long(N), K) :- !, atom_concat(N, l, K).
 cpp_type_key(ulong(N), K) :- !, atom_concat(N, ul, K).
 cpp_type_key(neg(int(N)), K) :- !, atom_concat(m, N, K).
 cpp_type_key(chr(C), K) :- !, atom_concat(c, C, K).
-cpp_type_key(bool(B), B) :- !.
+cpp_type_key(bool(true), '1') :- !.      % a bool argument keys as its NUMBER, so `true' and `1' name one instance and not two
+cpp_type_key(bool(false), '0') :- !.
 cpp_type_key(id(X), X) :- !.
 cpp_type_key(X, K) :- term_to_atom(X, A), atom_codes(A, Cs), findall(C, ( member(C, Cs), ( C >= 0'a, C =< 0'z ; C >= 0'A, C =< 0'Z ; C >= 0'0, C =< 0'9 ) ), Ds), atom_codes(K, Ds).
 cpp_spec_key(typedef(X), X) :- atom(X), !.
@@ -1432,7 +1445,7 @@ cpp_member_template_call_(C, M, Explicit, As, Name) :-
 cpp_variadic_member(_-method(_, _, _, _, _, true, _)).
 cpp_try_member([], _, _, _, _) :- fail.
 cpp_try_member([TPs-method(L, Qs, Ret, M, Ps, V, Body)|Cs], C, Explicit, As, Name) :-
-    (   catch(cpp_signature_holds(M, TPs, Ps, V, Explicit, As, B), error(not_lowered(_), _), fail)
+    (   catch(cpp_signature_holds(M, TPs, Ps, V, Explicit, As, B), error(not_lowered(W), _), ( cpp_trace(member_refused(C, M, W)), fail ))
     ->  cpp_instance_name(M, TPs, B, MName), cpp_subst(method(L, Qs, Ret, M, Ps, V, Body), B, method(_, _, Ret1, _, Ps1, _, Body1)),
         cpp_mangle(C, MName, Ps1, Name),
         (   cpp_instance_done(Name) -> true

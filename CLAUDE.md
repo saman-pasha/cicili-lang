@@ -1348,6 +1348,44 @@ declared and whose `char` specialization the index does not hold -- which
 is the road to `<string>` and, behind it, the question of exceptions
 themselves.
 
+**M6's nineteenth step (0.50): EXCEPTIONS, by not having them.** libc++
+asks the COMPILER whether the language has them -- `#if
+defined(__cpp_exceptions) && __cpp_exceptions >= 199711L` decides its
+`_LIBCPP_HAS_EXCEPTIONS` -- so the two predefined macros
+(`__cpp_exceptions`, `__EXCEPTIONS`) are simply not predefined any more
+(`ccl_pp.pl`, commented with the reason). The library then compiles its
+OWN no-exceptions configuration, as it ships and as `-fno-exceptions`
+gives it: `<vector>`'s flattened text went from nine `throw`s and three
+`try` blocks to NONE, and a thrower aborts with a message instead. This
+is the honest configuration for a compiler whose safe part has no
+unwinding to offer, and a program that writes `throw` or `try` of its own
+is still refused by name. Reader version 37, since every summary was
+flattened with exceptions ON and must be read again. WHAT IT UNCOVERED,
+each a defect of its own: a PRVALUE bound to a `const` reference had no
+address, and C++ materializes a temporary -- `ir_ref_of` allocates one
+and stores the value (`v.push_back(1)`, the user's own line, was the
+first thing to reach it); the COMPILER'S OWN BUILTINS that libc++ calls
+are answered as this compiler can (`cpp_builtin_call/3`:
+`__builtin_is_constant_evaluated` is FALSE, since nothing here is
+evaluated at compile time; `__builtin_operator_new` and `delete` are the
+malloc and free the lowering already has, at any arity, an alignment
+request dropped; `__builtin_launder`, `__builtin_addressof`,
+`__builtin_expect`, `__builtin_assume_aligned`); a VARIABLE template read
+as a TYPE in an expression is evaluated (`!__has_max_size_v<const _Ap>`
+-- the reader cannot tell a type from a value there, and unevaluated the
+negation came out false); and a bool template argument KEYS AS ITS NUMBER
+(`cpp_type_key`), so `true` and `1` name one instance where they had
+named two -- the same duplicate-instance defect as 0.49's, from the other
+side. Lowering version 9. `std::vector<int> v; v.push_back(1);` now
+reaches `allocator_traits<allocator<int>>::max_size`, whose two overloads
+are chosen by `__has_max_size_v<const _Ap>` and its negation: a variable
+template of TWO parameters whose specialization is a `decltype` of a
+member call, where both conditions come out false and neither overload is
+picked. The isolated shapes all work (a negated variable template, a
+`const` argument, static member templates with `enable_if` defaults,
+`test/cpp/run/` fixtures), so what is left is that two-parameter
+detection, and it is the next thing.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

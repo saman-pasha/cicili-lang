@@ -292,6 +292,24 @@ what runs today.
   deduces it once the call is instantiated. `std::vector<int>` reaches
   182 loads and instances and now stops in the exception classes, which
   pull in the string. GREEN.
+* **The nineteenth step DONE: exceptions, by not having them.** libc++
+  asks the compiler whether the language has exceptions, so the macro a
+  compiler defines when it supports them is simply not predefined here.
+  The library then compiles its own no-exceptions configuration, as it
+  ships and as `-fno-exceptions` gives it: `<vector>`'s flattened text
+  went from nine `throw` statements and three `try` blocks to none, and
+  its throwers abort with a message. That is the honest configuration
+  for a compiler whose safe part has no unwinding to offer, and a
+  program that writes `throw` or `try` of its own is still refused by
+  name. Four defects came out with it: a value bound to a `const`
+  reference had no address, where C++ materialises a temporary; the
+  compiler builtins libc++ calls are answered as this compiler can,
+  `__builtin_is_constant_evaluated` being false since nothing here is
+  evaluated at compile time; a variable template written as a type
+  inside an expression was never evaluated, so a negated trait came out
+  false; and a bool template argument keyed by its spelling, so `true`
+  and `1` named two instances of one thing. `std::vector<int> v;
+  v.push_back(1);` now reaches `allocator_traits::max_size`. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

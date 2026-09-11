@@ -1001,7 +1001,12 @@ pp_predef('__aarch64__', arm64, '1').
 pp_predef('__arm64', arm64, '1').
 pp_predef('__arm64__', arm64, '1').
 pp_predef('__DEPRECATED', cpp, '1').
-pp_predef('__EXCEPTIONS', cpp, '1').
+%% NO EXCEPTIONS (owner's design: the safe part has no unwinding to offer, and DESIGN.md puts exceptions last if at
+%% all). libc++ asks the COMPILER: `#if defined(__cpp_exceptions) && __cpp_exceptions >= 199711L' decides its
+%% _LIBCPP_HAS_EXCEPTIONS, so leaving both undefined compiles the library's own no-exceptions configuration, as it
+%% ships and as -fno-exceptions gives it: a thrower aborts with a message instead of throwing, and its try blocks are
+%% not there. Neither macro is predefined, and a program that writes `throw' or `try' is still refused by name.
+%% pp_predef('__EXCEPTIONS', cpp, '1').
 pp_predef('__GLIBCXX_BITSIZE_INT_N_0', cpp, '128').
 pp_predef('__GLIBCXX_TYPE_INT_N_0', cpp, '__int128').
 pp_predef('__GNUC_GNU_INLINE__', cpp, '1').
@@ -1028,7 +1033,7 @@ pp_predef('__cpp_delegating_constructors', cpp, '200604L').
 pp_predef('__cpp_deleted_function', cpp, '202403L').
 pp_predef('__cpp_digit_separators', cpp, '201309L').
 pp_predef('__cpp_enumerator_attributes', cpp, '201411L').
-pp_predef('__cpp_exceptions', cpp, '199711L').
+%% pp_predef('__cpp_exceptions', cpp, '199711L').   % see NO EXCEPTIONS above
 pp_predef('__cpp_fold_expressions', cpp, '201603L').
 pp_predef('__cpp_generic_lambdas', cpp, '201304L').
 pp_predef('__cpp_guaranteed_copy_elision', cpp, '201606L').

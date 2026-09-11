@@ -316,8 +316,14 @@ it is done (see below); the checker and the lowering take the AST from here.
   still carries a dependent name stays `auto` for the desugaring, since
   the symbol table holds a function template under its raw signature;
   with it, a scoped breadcrumb of what the desugaring is working on, so
-  a silent resolution says where it happened. `std::vector<int>` reaches
-  182 loads and instances and stops in the exception classes.
+  a silent resolution says where it happened. THE NINETEENTH STEP: exceptions, by not
+  having them -- the macro a compiler defines when it supports them is
+  not predefined, so libc++ compiles its own no-exceptions configuration
+  as it ships; with it a temporary materialised for a value bound to a
+  const reference, the compiler's builtins answered, a variable template
+  evaluated where the reader could not tell it from a type, and a bool
+  argument keyed by its number. `std::vector<int> v; v.push_back(1);`
+  reaches `allocator_traits::max_size`.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

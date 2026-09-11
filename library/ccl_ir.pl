@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(8).
+ccl_lowering_version(9).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -721,6 +721,8 @@ ir_ref_slot(A, T, A, T).
 %% what a reference is bound to: an lvalue's address, or a call's reference result as it is
 ir_ref_of(E, P) :- ir_lvalue_form(E), !, ir_lval(E, P, _, _).
 ir_ref_of(call(F, Args), P) :- !, ir_call(F, Args, P, RT), ( ( RT = ref(_, _) ; RT = rref(_, _) ) -> true ; ir_fail(reference_to_value(call(F, Args))) ).
+ir_ref_of(E, P) :- ir_expr(E, V, T, LL), !,                                % a PRVALUE bound to a const reference: C++ materializes a temporary, and a reference needs an address
+    ir_fresh(P), ir_alloca_typed(P, T), ir_ins(['store ', LL, ' ', V, ', ptr ', P]).
 ir_ref_of(E, _) :- ir_fail(reference_to_value(E)).
 ir_lvalue_form(id(_)).
 ir_lvalue_form(scoped(_, _)).
