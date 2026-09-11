@@ -326,8 +326,12 @@ it is done (see below); the checker and the lowering take the AST from here.
   behind `allocator_traits::max_size` (a declared-only function template
   instantiating for its type, a member call refusing where the member is
   absent, a member of a reference, a member template checked in its own
-  class), and the allocator compiled whole. `std::vector<int> v;
-  v.push_back(1);` stops in `__swap_allocator`.
+  class), and the allocator compiled whole. THE TWENTY-FIRST STEP: a LIBRARY
+  template's instance is lazy, its members emitted as they are named, as
+  a library class already was -- the program's own templates stay eager,
+  since the safe part must see their instances whole; with it a nested
+  class seeing the enclosing class's inherited types. `std::vector<int>
+  v; v.push_back(1);` went from 177 instantiations to 83.
   `try` is refused
   by name; exceptions come last, if at all, since the safe part has no
   unwinding to offer. What the steps leave: the forms named in

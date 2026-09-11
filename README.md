@@ -324,6 +324,18 @@ what runs today.
   operators written out, an empty scoped enum taken as a cast, and a
   functional cast to a class-scope typedef, `allocator<int>` now compiles
   whole. GREEN.
+* **The twenty-first step DONE: a library template's instance is lazy.**
+  An instance emitted every member function it had, so
+  `std::vector<int> v; v.push_back(1);` compiled vector's hundred members
+  and stopped at the first one this compiler could not take, reached
+  through a `swap` the program never calls. A library header's plain
+  class already emitted members only as they were named, and an instance
+  of a library template does the same now, which is what the standard
+  says a template instantiates. Your own templates stay eager, since
+  their instances are your code and the safe part must see all of it. The
+  vector program went from 177 instantiations to 83, and the C++ gate's
+  peak memory from 855 MB to 615. With it, a nested class sees the
+  enclosing class's types including the inherited ones. GREEN.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

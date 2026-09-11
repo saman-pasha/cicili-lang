@@ -1427,6 +1427,32 @@ nothing, so a declaration is a candidate only when nothing is defined
 `__swap_allocator`, on an `integral_constant<bool, false>` that reaches
 the lowering without being instantiated.
 
+**M6's twenty-first step (0.52): A LIBRARY TEMPLATE'S INSTANCE IS LAZY.**
+A class instance emitted EVERY member function it had, so
+`std::vector<int> v; v.push_back(1);` compiled vector's hundred members
+and stopped at the first one this compiler could not take --
+`__swap_allocator`, reached through a `swap` the program never calls. A
+library header's plain class already emitted members only as they were
+named (`'$cpp_lazy'`, `cpp_use_member/2`); an instance of a LIBRARY
+template does so too now (`cpp_lazy_instance/2` before `cpp_item`), which
+is what the standard says a template instantiates. The program's OWN
+templates stay eager: their instances are the program's code and the safe
+part must see all of it. It took the probe from 177 instantiations to 83,
+and every form still to be found is now one the program actually uses.
+WITH IT: a NESTED class sees the enclosing class's types INCLUDING the
+inherited ones -- `'$cpp_enclosing'` records which class holds a nested
+one and `cpp_class_typedef/4` falls back to it, where copying the
+enclosing class's direct entries missed `pointer` on
+`__split_buffer::_ConstructTransaction`, whose enclosing class gets it
+from its layout base. `std::vector<int> v; v.push_back(1);` now stops on
+`__vector_layout`'s `__alloc()`, an accessor emitted lazily whose
+`__alloc_` is a member of the class's ANONYMOUS STRUCT and is not found
+there: the flattening that `test/cpp/run/anon.cpp` proves works on a
+struct written plainly does not reach this one, whose members carry
+`[[no_unique_address]]` and default initializers and sit last in the
+class. The gates' peaks fell with the laziness (the C++ gate 855 -> 615
+MB).
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

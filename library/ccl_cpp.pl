@@ -90,7 +90,7 @@ cpp_register_units(Units) :-
     cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1),
     nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0),
     nb_setval('$cpp_concepts', []),
-    nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []),
+    nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
     cpp_reset('$cpp_lib'/1), cpp_reset('$cpp_libfn'/1), nb_setval('$cpp_in_lib', no),
     ( catch(nb_getval('$cpp_trace', _), _, fail) -> true ; nb_setval('$cpp_trace', no) ),
@@ -158,6 +158,14 @@ cpp_lazy_class(L, K, C, Bases, Ms) :-
       ( cpp_isolated(( cpp_register_class(L, C, Bases, Ms), cpp_item(declare(L, base([], [class(K, C, Bases, Ms)])), Items) )) -> true ; cpp_refuse(L, class_not_emitted(C)) ),
       cpp_add_instance_items(Items) ).
 cpp_is_lazy(C) :- nb_getval('$cpp_lazy', Lz), memberchk(C, Lz).
+%% A LIBRARY TEMPLATE'S INSTANCE IS LAZY. A class instance used to emit every member function it has, so
+%% `std::vector<int> v; v.push_back(1);' compiled vector's hundred members and stopped at the first one this compiler
+%% could not take -- `__swap_allocator', reached through a `swap' the program never calls. A library header's plain
+%% class already emitted members only as they were named (cpp_use_member); an instance of a library template does so
+%% too now, which is what the standard says a template instantiates. The program's OWN templates stay eager: their
+%% instances are the program's code and the safe part must see all of it.
+cpp_lazy_instance(yes, Name) :- \+ cpp_is_lazy(Name), !, nb_getval('$cpp_lazy', Lz), nb_setval('$cpp_lazy', [Name|Lz]).
+cpp_lazy_instance(_, _).
 %% a member of a lazy class, first used: its function emitted now
 cpp_use_member(C, Name) :-
     (   cpp_is_lazy(C), \+ cpp_instance_done(Name),
@@ -204,10 +212,12 @@ cpp_nested_class(L, C, N, NMs, M) :-
     atomic_list_concat([C, '.', N], Name),
     (   cpp_class(Name, _) -> true
     ;   ( M = nested(base(_, [class(K0, _, Bs0, _)])) -> K = K0, Bases = Bs0 ; K = struct, Bases = [] ),
-        cpp_enclosing_types(C, Name),
+        cpp_encloses(Name, C),
         cpp_isolated(( cpp_register_class(L, Name, Bases, NMs), cpp_item(declare(L, base([], [class(K, Name, Bases, NMs)])), Items) )),
         cpp_add_instance_items(Items) ).
-cpp_enclosing_types(C, Name) :- nb_getval('$cpp_class_types', L0), findall(Name-TN-TT, member(C-TN-TT, L0), New), append(New, L0, L1), nb_setval('$cpp_class_types', L1).
+%% which class holds a nested one: its typedefs are in scope inside, INCLUDING the ones it inherits, so the lookup
+%% goes to the enclosing class itself (which walks its own bases) rather than a copy of its direct entries
+cpp_encloses(Nested, C) :- nb_getval('$cpp_enclosing', L), ( memberchk(Nested-_, L) -> true ; nb_setval('$cpp_enclosing', [Nested-C|L]) ).
 cpp_register_class_(L, C, Bases, Ms) :-
     (   Bases = [] -> Base = none
     ;   Bases = [base(_, B0)] -> cpp_base_name(B0, Base)
@@ -249,6 +259,7 @@ cpp_class_typedef(C, N, T) :- cpp_class_typedef(C, N, T, _).
 %% its base's `__pointer<value_type, allocator_type>', value_type and allocator_type the base's
 cpp_class_typedef(C, N, T, C) :- nb_getval('$cpp_class_types', L), memberchk(C-N-T, L), !.
 cpp_class_typedef(C, N, T, Def) :- cpp_class(C, cls(B, _, _, _, _, _)), B \== none, cpp_class_typedef(B, N, T, Def).
+cpp_class_typedef(C, N, T, Def) :- nb_getval('$cpp_enclosing', L), memberchk(C-Enc, L), cpp_class_typedef(Enc, N, T, Def).   % a nested class sees the enclosing one's types, its inherited ones with them
 cpp_static_const(C, N, V) :- nb_getval('$cpp_static_inits', L), memberchk(C-N-E, L), !, cpp_fold_static(C, N, E, V).
 %% a static const's initializer: a constant as it stands, else DESUGARED in the class's own words -- a detection
 %% idiom reads `decltype(__test<_Tp>(nullptr, ...))::value', which is a constant only after the overload is picked.
@@ -1085,6 +1096,7 @@ cpp_instantiate_class_(N, Args, Name) :-
         ;   cpp_template_defined(Item) -> cpp_subst(Item, [Self|B], Item1)
         ;   cpp_refuse(0, template_without_body(N)) ),
         ( cpp_instance_class(Item1, L, K, Bases, Ms) -> true ; cpp_refuse(0, instance_without_body(N)) ), cpp_lib_origin(N, Lib),
+        cpp_lazy_instance(Lib, Name),                                                     % a LIBRARY template's instance is lazy, as a library class already is: its members come as they are used
         (   cpp_as_lib(Lib, ( cpp_isolated(( cpp_register_class(L, Name, Bases, Ms),
                                             ( cpp_item(declare(L, base([], [class(K, Name, Bases, Ms)])), Items) -> true ; cpp_refuse(L, instance_not_emitted(Name)) ) )),
                               cpp_add_instance_items(Items) ))
