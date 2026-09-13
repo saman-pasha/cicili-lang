@@ -448,6 +448,23 @@ what runs today.
   int and made a pointer of it. `std::vector<int>` and `std::vector<double>`
   now push, grow, subscript, iterate and destroy, with libc++'s numbers and
   no leaks; `test/cpp/run/stdvector.cpp`. GREEN.
+* **The thirtieth step DONE: a vector of the program's own class.** 0.61's
+  vector held ints -- scalars, nothing constructed in place and nothing
+  destroyed. `std::vector<Name>`, over a class with an `own` pointer, a
+  destructor and a move constructor, is where libc++'s container holds
+  objects the safe part owns. It asked three things: a **temporary must die
+  at the end of its full expression** (on the not-done list since classes
+  were added -- a local got the scope's defer and a temporary got nothing,
+  so every `v.push_back(Name("a"))` leaked a buffer), while a temporary
+  whose value initializes another object is **elided**, as C++17 guarantees,
+  since the object it builds is the parameter or the result; a parameter's
+  type must be read **through an alias** to see its value category, libc++
+  writing `push_back(const_reference)` beside `push_back(value_type &&)`;
+  and a **statement expression is a place**, so a reference binds to the
+  temporary rather than to a copy of it. With them a vector of the
+  program's own objects pushes by move, grows and relocates, subscripts,
+  is walked by a range-for and destroys them all -- clang++'s numbers, and
+  no leaks. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

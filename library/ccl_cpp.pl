@@ -88,7 +88,7 @@ cpp_instance_note(Name, What) :- assertz('$cpp_inst'(Name, What)).
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
     cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_mdef'/5),
-    nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0), nb_setval('$cpp_closure_this', []),
+    nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0), nb_setval('$cpp_closure_this', []), nb_setval('$cpp_temps', none),
     nb_setval('$cpp_concepts', []),
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
@@ -570,8 +570,14 @@ cpp_score([], _, 0) :- !.
 cpp_score(_, [], 0) :- !.
 cpp_score([P|Ps], [A|As], S) :- ( P = param(PT, _) ; P = param(PT, _, _) ), !, cpp_arg_fit(PT, A, S1), cpp_score(Ps, As, S2), S is S1 + S2.
 %% how an argument fits a parameter: the same class 3, both pointers 2, both arithmetic 2, unknown 1, else 0
-cpp_arg_fit(PT, A, 0) :- cpp_category_mismatch(PT, A), !.                                    % an rvalue reference binds no lvalue, a plain one no rvalue
-cpp_arg_fit(PT, A, S) :-
+%% THROUGH AN ALIAS TO ITS REFERENCE first: libc++ writes `push_back(const_reference)' beside
+%% `push_back(value_type &&)', and no value category can be read off the alias's own name -- the const lvalue
+%% overload won a temporary, which then had to be COPIED into it, and a class with an owner had two holders.
+cpp_arg_fit(PT0, A, S) :- cpp_param_ref(PT0, PT), cpp_arg_fit_(PT, A, S).
+cpp_param_ref(T0, T) :- \+ ( T0 = ref(_, _) ; T0 = rref(_, _) ), ccl_resolve_type(T0, R), ( R = ref(_, _) ; R = rref(_, _) ), !, T = R.
+cpp_param_ref(T, T).
+cpp_arg_fit_(PT, A, 0) :- cpp_category_mismatch(PT, A), !.                                    % an rvalue reference binds no lvalue, a plain one no rvalue
+cpp_arg_fit_(PT, A, S) :-
     (   ccl_type_of(A, AT), AT \== unknown
     ->  ccl_unref(PT, PT1), ccl_unref(AT, AT1),
         (   cpp_class_of_type(PT1, C), cpp_class_of_type(AT1, C) -> ( PT = rref(_, _), \+ cpp_lvalue(A) -> S = 4 ; S = 3 )   % an rvalue takes the move constructor first
@@ -837,27 +843,65 @@ cpp_param_defers([param(T, N)|Ps], Ds) :- atom(N), N \== this, cpp_class_of_type
 cpp_param_defers([_|Ps], Ds) :- cpp_param_defers(Ps, Ds).
 
 %% ---- statements, the scopes kept -------------------------------------------------
-cpp_stmt(Ctx, block(Is), block(Js)) :- !, ccl_scope_push, cpp_stmts(Ctx, Is, Js), ccl_scope_pop.
-cpp_stmt(Ctx, '$splice'(Is), '$splice'(Js)) :- !, cpp_stmts(Ctx, Is, Js).
-cpp_stmt(Ctx, declaration(L, Sto, B, Vs), S) :- !, cpp_decl_stmt(Ctx, L, Sto, B, Vs, S).
-cpp_stmt(Ctx, expr(L, E), expr(L, E1)) :- !, cpp_expr(Ctx, E, E1).
-cpp_stmt(_, using(_, enum(_)), empty) :- !.                                                    % C++20: the enumerators are in scope already (a namespace flattens)
-cpp_stmt(Ctx, defer(L, Vs, Body), defer(L, Vs, Body1)) :- !, cpp_stmt(Ctx, Body, Body1).
-cpp_stmt(Ctx, if_constexpr(L, C, T, E), Out) :- !,                                          % C++17: decided here when the condition is a constant, else a plain if
+%% A TEMPORARY DIES AT THE END OF ITS FULL EXPRESSION (C++'s rule), and the full expression here is the STATEMENT.
+%% A temporary of a class with a DESTRUCTOR is declared in a block wrapped around the statement and destroyed by a
+%% call after it -- `v.push_back(Tag(1))' constructed the temporary and left it alive for good, and a class holding
+%% an owner leaked one buffer per call.
+cpp_stmt(Ctx, S, Out) :-
+    ccl_global('$cpp_temps', Outer, none), nb_setval('$cpp_temps', []),
+    (   catch(cpp_stmt_(Ctx, S, S1), E, (nb_setval('$cpp_temps', Outer), throw(E)))
+    ->  nb_getval('$cpp_temps', Ts), nb_setval('$cpp_temps', Outer)
+    ;   nb_setval('$cpp_temps', Outer), fail ),
+    ( Ts == [] -> Out = S1 ; cpp_temp_scope(S, Ts, S1, Out) ).
+%% AN EXPRESSION OR A DECLARATION ends where its full expression ends, and the destructors are plain calls after
+%% it: C++'s point of destruction, exactly. ANY OTHER statement holds statements of its own, past which an early
+%% exit would walk, so its temporaries are destroyed by a DEFER at the end of a block wrapped around it -- which a
+%% `return' needs in any case, the defers running after its value is computed. The temporaries are newest first:
+%% declared in construction order, destroyed in the reverse, as C++ has it.
+cpp_temp_scope(S0, Ts, S, '$splice'(Js)) :- ( S0 = expr(_, _) ; S0 = declaration(_, _, _, _) ), !,
+    reverse(Ts, Order), cpp_temp_decls(Order, Ds), findall(C, (member(X, Ts), cpp_temp_dtor(X, C)), Cs),
+    ( S = '$splice'(Is) -> true ; Is = [S] ), append(Ds, Is, Js0), append(Js0, Cs, Js).
+cpp_temp_scope(_, Ts, S, block(Js)) :- reverse(Ts, Order), cpp_temp_decls(Order, Ds),
+    findall(defer(0, [], block([C])), (member(X, Order), cpp_temp_dtor(X, C)), Fs), append(Ds, Fs, Pre), append(Pre, [S], Js).
+cpp_temp_decls(Ts, Ds) :- findall(declaration(0, none, T, [var(N, T, none)]), member(tmp(N, T, _), Ts), Ds).
+%% A TEMPORARY WHOSE VALUE INITIALIZES ANOTHER OBJECT of its own class is ELIDED, as C++17 guarantees: the object
+%% it builds IS the by-value parameter or the result, and whoever holds it destroys it. Its declaration goes back
+%% inside its own block and the statement lets it be -- destroyed at both ends, `v.push(Name("gamma"))' freed one
+%% buffer twice and `return Counter(n)' counted a destruction that never happened.
+cpp_temp_elide(E0, E) :- E0 = stmt_expr(block(Is)), append(_, [expr(_, id(N))], Is),
+    nb_getval('$cpp_temps', Ts), cpp_temp_take(N, Ts, T, Ts1), !,
+    nb_setval('$cpp_temps', Ts1), E = stmt_expr(block([declaration(0, none, T, [var(N, T, none)])|Is])).
+cpp_temp_elide(E, E).
+cpp_temp_take(N, [tmp(N, T, _)|Ts], T, Ts) :- !.
+cpp_temp_take(N, [X|Ts], T, [X|Rs]) :- cpp_temp_take(N, Ts, T, Rs).
+cpp_temp_dtor(tmp(N, _, D), expr(0, call(id(D), [addr(id(N))]))).
+%% a loop's condition and step are evaluated at EVERY iteration, and one slot cannot hold a temporary per turn:
+%% refused by name rather than constructed over a live object
+cpp_opt_expr_once(_, _, none, none) :- !.
+cpp_opt_expr_once(Ctx, L, E, E1) :- cpp_expr_once(Ctx, L, E, E1).
+cpp_expr_once(Ctx, L, E, E1) :- nb_getval('$cpp_temps', B), cpp_expr(Ctx, E, E1),
+    nb_getval('$cpp_temps', A), ( A == B -> true ; cpp_refuse(L, temporary_in_a_loop_condition) ).
+cpp_stmt_(Ctx, block(Is), block(Js)) :- !, ccl_scope_push, cpp_stmts(Ctx, Is, Js), ccl_scope_pop.
+cpp_stmt_(Ctx, '$splice'(Is), '$splice'(Js)) :- !, cpp_stmts(Ctx, Is, Js).
+cpp_stmt_(Ctx, declaration(L, Sto, B, Vs), S) :- !, cpp_decl_stmt(Ctx, L, Sto, B, Vs, S).
+cpp_stmt_(Ctx, expr(L, E), expr(L, E1)) :- !, cpp_expr(Ctx, E, E1).
+cpp_stmt_(_, using(_, enum(_)), empty) :- !.                                                    % C++20: the enumerators are in scope already (a namespace flattens)
+cpp_stmt_(Ctx, defer(L, Vs, Body), defer(L, Vs, Body1)) :- !, cpp_stmt(Ctx, Body, Body1).
+cpp_stmt_(Ctx, if_constexpr(L, C, T, E), Out) :- !,                                          % C++17: decided here when the condition is a constant, else a plain if
     cpp_expr(Ctx, C, C1),
     (   cpp_const_bool(C1, V) -> ( V == true -> cpp_stmt(Ctx, T, Out) ; E == none -> Out = empty ; cpp_stmt(Ctx, E, Out) )
     ;   cpp_stmt(Ctx, T, T1), ( E == none -> E1 = none ; cpp_stmt(Ctx, E, E1) ), Out = if(L, C1, T1, E1) ).
-cpp_stmt(Ctx, if_consteval(_, Neg, T, E), Out) :- !,                                          % C++23: nothing runs at compile time here, so the run-time branch is kept
+cpp_stmt_(Ctx, if_consteval(_, Neg, T, E), Out) :- !,                                          % C++23: nothing runs at compile time here, so the run-time branch is kept
     ( Neg == yes -> Keep = T ; Keep = E ), ( Keep == none -> Out = empty ; cpp_stmt(Ctx, Keep, Out) ).
-cpp_stmt(_, co_return(L, _), _) :- !, cpp_refuse(L, coroutine).                               % C++20 coroutines: no runtime to suspend into
-cpp_stmt(Ctx, if(L, C, T, E), if(L, C1, T1, E1)) :- !, cpp_expr(Ctx, C, C1), cpp_stmt(Ctx, T, T1), ( E == none -> E1 = none ; cpp_stmt(Ctx, E, E1) ).
-cpp_stmt(Ctx, while(L, C, S), while(L, C1, S1)) :- !, cpp_expr(Ctx, C, C1), cpp_stmt(Ctx, S, S1).
-cpp_stmt(Ctx, do(L, S, C), do(L, S1, C1)) :- !, cpp_stmt(Ctx, S, S1), cpp_expr(Ctx, C, C1).
-cpp_stmt(Ctx, for(L, Init, C, Step, S), for(L, Init1, C1, Step1, S1)) :- !,
+cpp_stmt_(_, co_return(L, _), _) :- !, cpp_refuse(L, coroutine).                               % C++20 coroutines: no runtime to suspend into
+cpp_stmt_(Ctx, if(L, C, T, E), if(L, C1, T1, E1)) :- !, cpp_expr(Ctx, C, C1), cpp_stmt(Ctx, T, T1), ( E == none -> E1 = none ; cpp_stmt(Ctx, E, E1) ).
+cpp_stmt_(Ctx, while(L, C, S), while(L, C1, S1)) :- !, cpp_expr_once(Ctx, L, C, C1), cpp_stmt(Ctx, S, S1).
+cpp_stmt_(Ctx, do(L, S, C), do(L, S1, C1)) :- !, cpp_stmt(Ctx, S, S1), cpp_expr_once(Ctx, L, C, C1).
+cpp_stmt_(Ctx, for(L, Init, C, Step, S), for(L, Init1, C1, Step1, S1)) :- !,
     ccl_scope_push,
     ( Init = decl(B, Vs) -> cpp_vars(Ctx, Vs, Vs1), ccl_declare_vars(Vs1), Init1 = decl(B, Vs1) ; cpp_opt_expr(Ctx, Init, Init1) ),
-    cpp_opt_expr(Ctx, C, C1), cpp_opt_expr(Ctx, Step, Step1), cpp_stmt(Ctx, S, S1), ccl_scope_pop.
-cpp_stmt(Ctx, for_each(L, var(N, T0, I), R, S), Out) :- !,
+    cpp_opt_expr_once(Ctx, L, C, C1), cpp_opt_expr_once(Ctx, L, Step, Step1), cpp_stmt(Ctx, S, S1), ccl_scope_pop.
+cpp_stmt_(Ctx, for_each(L, var(N, T0, I), R, S), Out) :- !,
     cpp_type(T0, T), cpp_expr(Ctx, R, R1),
     (   cpp_class_of_type_of(R1, C), cpp_method(C, size, [], _, _), cpp_method(C, operator('[]'), [int(0)], IxName, _)   % a range-for over an object: by size() and []
     ->  ( cpp_lvalue(R1) -> true ; cpp_refuse(L, range_for_over_a_value(C)) ),
@@ -875,18 +919,18 @@ cpp_lvalue(member(_, _)).
 cpp_lvalue(arrow(_, _)).
 cpp_lvalue(deref(_)).
 cpp_lvalue(index(_, _)).
-cpp_stmt(Ctx, return(L, E), return(L, E2)) :- !, cpp_expr(Ctx, E, E1),
+cpp_stmt_(Ctx, return(L, E), return(L, E2)) :- !, cpp_expr(Ctx, E, E0), cpp_temp_elide(E0, E1),
     (   nb_getval('$cpp_ret', Ret), Ret \== none, cpp_class_of_type(Ret, C), cpp_dtor(C, _), cpp_lvalue(E1)   % by value, of a class with a destructor, an object that is destroyed here
     ->  (   ( cpp_copy_ctor(C, rref), Arg = move(E1) ; cpp_copy_ctor(C, ref), Arg = E1 )                     % C++'s implicit move out of a local, else its copy
         ->  T = base([], [typedef(C)]), cpp_ctor(C, [Arg], CName), ccl_gensym('$ret', Tmp),
             E2 = stmt_expr(block([declaration(L, none, T, [var(Tmp, T, none)]), expr(L, call(id(CName), [addr(id(Tmp)), E1])), expr(L, id(Tmp))]))
         ;   cpp_refuse(L, return_of_a_class_with_destructor(C)) )
     ;   E2 = E1 ).
-cpp_stmt(Ctx, label(L, N, S), label(L, N, S1)) :- !, cpp_stmt(Ctx, S, S1).
-cpp_stmt(Ctx, switch(L, E, S), switch(L, E1, S1)) :- !, cpp_expr(Ctx, E, E1), cpp_stmt(Ctx, S, S1).
-cpp_stmt(Ctx, case(L, E, S), case(L, E, S1)) :- !, cpp_stmt(Ctx, S, S1).
-cpp_stmt(Ctx, default(L, S), default(L, S1)) :- !, cpp_stmt(Ctx, S, S1).
-cpp_stmt(_, S, S).
+cpp_stmt_(Ctx, label(L, N, S), label(L, N, S1)) :- !, cpp_stmt(Ctx, S, S1).
+cpp_stmt_(Ctx, switch(L, E, S), switch(L, E1, S1)) :- !, cpp_expr(Ctx, E, E1), cpp_stmt(Ctx, S, S1).
+cpp_stmt_(Ctx, case(L, E, S), case(L, E, S1)) :- !, cpp_stmt(Ctx, S, S1).
+cpp_stmt_(Ctx, default(L, S), default(L, S1)) :- !, cpp_stmt(Ctx, S, S1).
+cpp_stmt_(_, S, S).
 cpp_stmts(_, [], []).
 %% A TYPEDEF IN A BLOCK IS SUBSTITUTED INTO THE STATEMENTS THAT FOLLOW IT, as a template's parameter already is.
 %% libc++ writes `using _ValueType = typename iterator_traits<_ContiguousIterator>::value_type;' inside
@@ -978,6 +1022,7 @@ cpp_copies_([P|Ps], [A|As], [A1|Bs]) :-
     ( P = param(PT, _) ; P = param(PT, _, _) ), !,
     (   cpp_class_of_type(PT, C), cpp_dtor(C, _), cpp_lvalue(A)
     ->  ( cpp_copy_ctor(C, ref) -> cpp_copy_temp(C, A, A1) ; cpp_refuse(0, class_with_destructor_by_value(C)) )
+    ;   cpp_class_of_type(PT, _) -> cpp_temp_elide(A, A1)                                     % a prvalue IS the parameter: elided
     ;   A1 = A ),
     cpp_copies_(Ps, As, Bs).
 cpp_copies_([_|Ps], [A|As], [A|Bs]) :- cpp_copies_(Ps, As, Bs).
@@ -1225,6 +1270,13 @@ cpp_addressable(index(_, _)).
 %% a temporary of the class: constructed in a statement expression, its value the last expression
 cpp_temporary(T, C, As, compound_lit(T, init(Items))) :- cpp_not_abstract(C), \+ cpp_has_ctors(C), !, findall(item([], A), member(A, As), Items).   % an AGGREGATE, `__allocation_result{p, n}': braced, no constructor
 cpp_temporary(T, C, [], compound_lit(T, init([]))) :- cpp_not_abstract(C), cpp_trivial_default(C), !.   % `__less<>()': nothing to construct, as a member and a local already had it
+%% A TEMPORARY OF A CLASS WITH A DESTRUCTOR is declared by the STATEMENT that holds it, never here: its slot and
+%% its defer belong to the full expression's scope (cpp_stmt), and only the construction stays in place, where the
+%% evaluation order puts it. Outside a statement walk ('$cpp_temps' unset) it is declared here as it always was.
+cpp_temporary(T, C, As, stmt_expr(block([expr(0, call(id(Name), [addr(id(Tmp))|As1])), expr(0, id(Tmp))]))) :-
+    cpp_not_abstract(C), cpp_dtor(C, Dtor), ccl_global('$cpp_temps', Ts, none), is_list(Ts), !,
+    length(As, N), ( cpp_ctor(C, As, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As0), cpp_ref_args_of(Name, As0, As1),
+    ccl_gensym('$tmp', Tmp), nb_setval('$cpp_temps', [tmp(Tmp, T, Dtor)|Ts]).
 cpp_temporary(T, C, As, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]), expr(0, call(id(Name), [addr(id(Tmp))|As1])), expr(0, id(Tmp))]))) :-
     cpp_not_abstract(C), length(As, N), ( cpp_ctor(C, As, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As0), cpp_ref_args_of(Name, As0, As1), ccl_gensym('$tmp', Tmp).
 %% an operator on a class-typed left operand: the class's member operator, else a free one declared, else the form as it is

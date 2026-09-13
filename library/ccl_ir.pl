@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(15).
+ccl_lowering_version(16).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -757,6 +757,7 @@ ir_lvalue_form(scoped(_, _)).
 ir_lvalue_form(index(_, _)).
 ir_lvalue_form(member(_, _)).
 ir_lvalue_form(arrow(_, _)).
+ir_lvalue_form(stmt_expr(block(Is))) :- append(_, [expr(_, E)], Is), ir_lvalue_form(E).   % a temporary: the block ends with its object
 ir_lvalue_form(deref(_)).
 ir_lval(deref(E), Addr, T, LL) :- !, ir_expr(E, Addr, PT, _), ir_elem(PT, T), ir_type(T, LL).
 ir_lval(index(A, I), Addr, T, LL) :- !,
@@ -775,6 +776,11 @@ ir_bind_ref(member(E, N), V) :- !, ir_lval(E, Base, BT, _), ccl_resolve_type(BT,
 ir_bind_into(Slot, V) :- ir_slot_addr(Slot, A), ir_ref_of(V, R), ir_ins(['store ptr ', R, ', ptr ', A]).
 ir_lval(ccast(_, T, E), S, T1, LL) :- !, ir_lval(cast(T, E), S, T1, LL).
 ir_lval(cast(T, E), P, RT, LL) :- ( T = ref(_, RT0) ; T = rref(_, RT0) ), !, ir_ref_of(E, P), ccl_resolve_type(RT0, RT), ir_type(RT, LL).   % the bind as a place
+%% A STATEMENT EXPRESSION IS A PLACE when the expression it ends with is one -- which is what every temporary this
+%% compiler builds is (`({ C $tmp; ctor(&$tmp); $tmp; })'), so a reference to it binds to the OBJECT. Materialized
+%% as a prvalue instead, the temporary was copied and a class holding an owner had two holders, one of them freed.
+ir_lval(stmt_expr(block(Is)), Slot, T, LL) :- !,
+    ir_env_push, append(Init, [expr(_, E)], Is), ir_stmts(Init), ir_lval(E, Slot, T, LL), ir_run_defers(1), ir_env_pop.
 ir_lval(compound_lit(T, Init), Addr, T, LL) :- !, ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_type(T, LL).
 ir_lval(E, _, _, _) :- ir_fail(lvalue(E)).
 %% an alloca for a value of a C type: a struct or a union aligned as C aligns it

@@ -1868,6 +1868,59 @@ gives both no arguments, and the value-initialized form is what is meant), a
 placement new of an aggregate with no arguments, `std::string` and the rest
 of the containers.
 
+**M6's thirtieth step (0.62): A VECTOR OF THE PROGRAM'S OWN CLASS.** 0.61's
+vector held ints: the elements were scalars, nothing was constructed in place
+and nothing destroyed. `std::vector<Name>`, over a class with an `own` pointer,
+a destructor and a move constructor, is where libc++'s container holds objects
+the safe part owns -- and it asked three things, the first of them older than
+libc++. (1) A TEMPORARY DIES AT THE END OF ITS FULL EXPRESSION. It was on
+0.34's not-done list ever since ("a temporary's destructor"): a local of a
+class with a destructor got the scope's defer and a temporary got nothing, so
+`v.push_back(Name("a"))` left the object alive for good and a class over an
+own pointer leaked one buffer per call. The full expression here is the
+STATEMENT, so `cpp_stmt/3` is a wrapper around the walk (`cpp_stmt_/3`, every
+old clause): it opens `'$cpp_temps'`, and `cpp_temporary` registers a
+temporary of a class with a destructor there instead of declaring it in its
+own block -- only the construction stays where the evaluation order puts it.
+An EXPRESSION or a DECLARATION statement then takes the declarations before it
+and plain destructor CALLS after it (`cpp_temp_scope`, spliced: C++'s point of
+destruction exactly, in construction order and destroyed in the reverse); ANY
+OTHER statement holds statements of its own, past which an early exit would
+walk, so its temporaries get a DEFER at the end of a block wrapped around it --
+which a `return` needs in any case, the defers running after its value is
+computed. A LOOP's condition and step are evaluated at every turn and one slot
+cannot hold a temporary per turn, so a temporary there is refused by name
+(`cpp_expr_once/4`, `temporary_in_a_loop_condition`). (2) AND A TEMPORARY WHOSE
+VALUE INITIALIZES ANOTHER OBJECT of its class is ELIDED, as C++17 guarantees:
+the object it builds IS the by-value parameter or the result, and whoever holds
+it destroys it (`cpp_temp_elide/2` at the two places that know -- a class-typed
+by-value parameter in `cpp_copies_`, and `return`). The gate found this one:
+destroyed at both ends, `v.push(Name("gamma"))` freed one buffer twice
+(bag.cpp aborted) and `return Counter(n)` counted a destruction that never
+happened (counter.cpp's numbers moved by one). (3) A PARAMETER'S TYPE IS READ
+THROUGH AN ALIAS to see its VALUE CATEGORY (`cpp_param_ref/2` at the head of
+`cpp_arg_fit`): libc++ writes `push_back(const_reference)` beside
+`push_back(value_type &&)`, and no category can be read off the alias's own
+name -- the const lvalue overload won every temporary, which then had to be
+copied into it, and a class with an owner had two holders. (4) A STATEMENT
+EXPRESSION IS A PLACE when it ends with one (`ir_lval(stmt_expr(...))`,
+`ir_lvalue_form`), which is what every temporary this compiler builds is
+(`({ C $tmp; ctor(&$tmp); $tmp; })`), so a reference binds to the OBJECT;
+materialized as a prvalue instead, the temporary was copied and the copy's
+owner was freed under the vector that had taken it. Lowering version 16. WHAT
+RUNS: `std::vector<Name>` pushes temporaries by move, grows its buffer three
+times relocating the objects, subscripts, calls their methods, is walked by a
+RANGE-FOR (`for (const Name &x : v)`, which the desugaring's rewrite over
+`size()` and `operator[]` already served) and destroys them all -- clang++'s
+numbers, `leaks` finds none, and a `std::vector<Tag>` counts its constructions
+and destructions to the same totals C++ gives. Gated by
+`test/cpp/run/stdvectorown.cpp`; seven gates GREEN. NOT DONE: a class with a
+COPY constructor rather than a move one in a vector (libc++ copies where it
+cannot move), `v.insert`, `v.erase`, `v.resize` (a placement new of a class
+with no arguments is refused by name), a temporary whose lifetime is extended
+by binding it to a named reference, a temporary in a loop's condition,
+`vector<vector<T>>`.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
