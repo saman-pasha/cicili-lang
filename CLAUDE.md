@@ -53,8 +53,8 @@ bin/cicili++             cicili for C++ (M5): the same, every input read as C++,
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
 test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME;
-                         test/cpp/run/stdcout.cpp, stdendl.cpp and stdcin.cpp are std::cout << "hello" << std::endl and std::cin >> n built
-                         against libc++ and run (a fixture's input is NAME.stdin)
+                         test/cpp/run/stdcout.cpp, stdendl.cpp, stdcin.cpp and stdgetline.cpp are std::cout << "hello" << std::endl, std::cin >> n
+                         and std::getline built against libc++ and run (a fixture's input is NAME.stdin)
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2700,6 +2700,56 @@ one 1407 MB, 103 checks; the libc++ one 1753 MB; the cold read of `<iostream>`
 `cin.get()', `cin.fail()' as a test, the manipulators (`std::hex', `setw'),
 formatted floating input past a plain double, `std::cin' tied flushing checked
 only through the lines printed.
+
+**M6's forty-fourth step (0.76): `std::getline` -- six forms in libc++'s own
+body.** `std::getline(cin, line)' is a hidden template compiled from the header
+(`getline(basic_istream<C, T> &, basic_string<C, T, A> &, C)': a sentry, the
+buffer's `gptr()' and `egptr()' span, `char_traits::find' over it, an append,
+a lambda that bumps the stream), and the member `cin.getline(buf, n)' the
+shipped `basic_istream<char>::getline(char *, streamsize, char)' (0.75's
+rule). Following the template's body: (1) `auto' UNDER A REFERENCE OR A POINTER
+is deduced from the initializer (`cpp_auto_deduce`: `auto &__buffer =
+*__is.rdbuf()' the referent's type, nothing decayed; `const auto *__first =
+__buffer.gptr()' the pointee's, the qualifiers kept; `cpp_has_auto` finds the
+`auto' under the layers) -- only a plain `auto' was, and everything read
+through the reference local could not be typed; (2) A REFUSAL INSIDE A HELD
+CANDIDATE'S BODY IS THE CALL'S (`instance_refused(Name, W)' out of
+`cpp_instantiate_function__`; the template road of `cpp_call` and
+`cpp_free_operator_call` never fall through on it): the getline that held and
+whose body refused (1) fell to the plain overloads of the name, where C's
+`getline(char **, size_t *, FILE *)' won by arity and the stream and the string
+went to it as pointers -- LLVM refused the cast, and would not have for a
+looser one; (3) `__builtin_char_memchr' is `memchr' (`cpp_builtin_call`), what
+`char_traits<char>::find' is written on; (4) NO POINTER FOR AN ARITHMETIC
+PARAMETER IN THE LAST RESORT EITHER (`cpp_args_no_clash` asks 0.73's
+`cpp_scalar_mismatch`): `__str.append(__first, __last)' took the shipped
+`append(const char *, size_type)' by arity, the pointer as the SIZE, and the
+library asked for a string the size of an address (`std::bad_alloc' at run
+time); C++ takes the member template `append(_InputIterator, _InputIterator)',
+which the emptied candidate set now reaches; (5) A MEMBER TEMPLATE'S
+DECLARATION LENDS ITS TEMPLATE-PARAMETER DEFAULTS to the out-of-class
+definition at the merge (`cpp_keep_tdefaults` through 0.44's
+`cpp_merge_defaults`, 0.73's rule for a free template's redeclaration):
+libc++ declares `template <class _ForwardIterator, __enable_if_t<..., int> =
+0> void __init(_ForwardIterator, _ForwardIterator);' and defines it without the
+`= 0', and taken whole the definition refused cannot_deduce(anon) -- the
+iterator-pair append constructs a string through it; (6) A MEMBER'S DEFAULT
+ARGUMENT IS DESUGARED IN ITS CLASS (`cpp_default_ctx` from the declared `this'
+parameter, `cpp_in_class` around it in `cpp_fill_defaults`), where C++ looks
+its names up: `__reset_internal_buffer(__rep __new_rep = __short())' names the
+string's nested `__short', and filled with no context it named nothing; AND A
+CLOSURE IS ENCLOSED BY THE CLASS IT IS MADE IN (`cpp_lambda_scope`,
+`'$cpp_enclosing'`), as a nested class is, so the enclosing class's types,
+statics and enumerators are in scope in a lambda's body whether or not `this'
+is captured (the record 0.59 kept only for the captured object). WHAT RUNS:
+`test/cpp/run/stdgetline.cpp` -- a line, a comma-delimited field, the member
+`getline' into a char array, `while (std::getline(cin, line)) n++' to the end
+of input (the stream's `operator bool' through 0.72's contextual conversion,
+the failed read clearing the string) -- clang++'s lines, 43 s and 1354 MB warm;
+the C++ gate GREEN at 1173 MB, 104 checks, the only gate the change touches
+(reader version 52 and lowering version 28 unchanged). NOT DONE: `cin.get()', `cin.ignore()', `std::ws', the manipulators, the
+rvalue-stream `getline(basic_istream &&, ...)' overloads (declared, untried),
+wide streams.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

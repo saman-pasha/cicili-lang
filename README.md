@@ -559,6 +559,19 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The forty-fourth step DONE: `std::getline`.** libc++'s own body,
+  compiled here: a sentry, the buffer's span, `char_traits::find`, an append
+  through a member template, a lambda that bumps the stream. Six forms on the
+  way: `auto` under a reference or a pointer deduced from its initializer; a
+  refusal inside a held candidate's body is the call's and never a chance for
+  the plain overloads (C's `getline(char **, size_t *, FILE *)` had won by
+  arity); clang's char `memchr` builtin; no pointer for a size in the last
+  resort either (the library had been asked for a string the size of an
+  address); a member template's declaration lending its parameter defaults to
+  its definition; a member's default argument desugared in its class, and a
+  closure enclosed by the class it is made in. A line, a delimited field, the
+  member `getline` into a char array, `while (std::getline(cin, line))` to the
+  end of input: clang++'s lines. GREEN.
 * **The forty-third step DONE: `std::cin`.** The library holds
   `basic_istream<char>` whole -- `extern template class` in the header -- and
   clang calls its extractors rather than compiling them; so does cicili++ now:
