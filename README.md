@@ -530,6 +530,23 @@ what runs today.
   began from -- a string constructed, appended to, pushed back on, grown
   into a heap buffer, copied and compared -- matches clang++ line for line.
   GREEN.
+* **The thirty-sixth step DONE: an instantiation inside `\+ \+`.**
+  `std::vector<std::string>` -- libc++ holding libc++ -- took 2.8 GB and 108
+  seconds and was killed. Measured: the read is 102 MB, the desugaring is
+  all the rest, and the trace shows 80 distinct instances with nothing asked
+  twice -- breadth, not a loop. So an instantiation's whole body now runs
+  inside a scope whose intermediates are reclaimed, its results being facts
+  and globals that survive; the step before had tried exactly that and
+  measured nothing, a conclusion drawn while a loop still dominated and
+  corrected here. That program's desugaring: 2824 -> 1091 MB, 108 -> 9 s;
+  the C++ gate 1057 -> 847 MB, the libc++ gate 2445 -> 1902. With it, three
+  defects the probe turned up: the type an argument has is one rule now (a
+  raw `std::move(...)` could not be typed, so every candidate scored alike
+  and the first won), the arity-only last resort never picks a class-typed
+  parameter for an argument of another class, and an unnamed template
+  parameter -- libc++'s SFINAE guard -- no longer takes whatever binding is
+  first and names one instance two ways. `vector<string>` still does not
+  run: it reaches one named defect now instead of the memory. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

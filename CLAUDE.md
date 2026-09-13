@@ -2151,6 +2151,52 @@ at a time (836 and 699 MB here), and then run it (1057 MB). The libc++ gate,
 which runs under a fresh HOME and is therefore always cold, went 1883 -> 2445
 MB, the operator templates being part of what it now writes.
 
+**M6's thirty-sixth step (0.68): AN INSTANTIATION INSIDE `\+ \+`, and the type
+an argument has.** `std::vector<std::string>` -- libc++ holding libc++ -- took
+2824 MB and 108 s and was killed at the cap. THE MEASUREMENT FIRST: the READ is
+102 MB and 1.3 s, so the desugaring is all of the rest; the trace at a low cap
+shows 185 spends and 80 DISTINCT instances with nothing asked twice, so it is
+genuine breadth and no loop. AND THE FIX IS THE ONE 0.64 TRIED AND MEASURED AS
+NOTHING: an instantiation's whole body -- substituted, registered, its members
+walked and emitted -- now runs inside `\+ \+`, whose results (facts and
+globals) survive the scope while every intermediate is reclaimed, cocolog
+reclaiming on backtracking and by nothing else. 0.64's conclusion ("its
+intermediates were not the weight") was drawn while the LOOP dominated and is
+CORRECTED here: with the loop gone they are most of it. `vector<string>`'s
+desugaring 2824 -> 1091 MB and 108 -> 9 s; THE C++ GATE 1057 -> 847 MB and THE
+LIBC++ GATE 2445 -> 1902, the biggest number this repository has.
+THREE DEFECTS the probe turned up on the way. (1) THE TYPE AN ARGUMENT HAS is
+one predicate now (`cpp_arg_type/2`: through a `move' in either spelling, else
+through the DESUGARED form), and `cpp_arg_fit` asks IT rather than the
+inference: a member initializer and a call's arguments are both RAW when they
+are scored, and libc++ writes `__rep_(std::move(__str.__rep_))' -- which the
+inference cannot type, so every candidate scored the 1 an unknown type earns
+and the FIRST constructor won, `__rep(__short)' for a `__rep', storing a union
+into a byte. `cpp_init_arg_class/2` is that predicate plus the class, one rule
+where there were two. (2) THE ARITY ALONE IS THE LAST RESORT, but never a
+CLASS-typed parameter for an argument of ANOTHER class (`cpp_args_no_clash/2`,
+in `cpp_ctor`'s and `cpp_method`'s fallbacks): that is no conversion this
+compiler makes. (3) AN UNNAMED TEMPLATE PARAMETER HAS NO NAME TO LOOK UP --
+libc++ writes its SFINAE guard as one -- and `memberchk(P-A, B)` with P unbound
+takes whatever is FIRST in the bindings, so an instance was named one way where
+it was emitted and another where it was called; it contributes no key and binds
+nothing, in both places alike. AND a member TEMPLATE's instance that fails to
+emit is a REFUSAL (`member_instance_not_emitted`), the name being noted DONE
+before the emission runs -- 0.46's rule, which had never reached this path.
+Lowering version 22. NOT DONE: `std::vector<std::string>` does NOT run. It
+compiles through the desugaring in 10 s at 1144 MB, where it could not be
+compiled at all, and stops at
+`undeclared('allocator.S.construct.S.S.S_p.S_rr')`: the member template
+`allocator<string>::construct` is NOTED as an instance and never EMITTED, so
+the call names a definition that is not there. The refusal above does not fire
+for it, which says the emission is not failing but being SKIPPED -- the name is
+already noted when the first ask arrives -- and that is where the next step
+starts. AND A LESSON FROM THE SAME AFTERNOON: two further rules tried here --
+"no argument whose type is KNOWN may score zero" in the last resort, and the
+`move' forms before the general type lookup in `cpp_arg_type' -- BROKE
+`stdstring.cpp` and were reverted. The overload rules interact, and a change to
+one is worth no more than the gate it passes. Seven gates GREEN.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

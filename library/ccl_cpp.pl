@@ -601,6 +601,14 @@ cpp_static_member(C, N, Name) :- cpp_class(C, cls(B, _, _, Ss, _, _)), ( memberc
 cpp_args_fit([], _).
 cpp_args_fit(_, []).
 cpp_args_fit([P|Ps], [A|As]) :- ( ( P = param(PT, _) ; P = param(PT, _, _) ) -> cpp_arg_fit(PT, A, S), S > 0 ; true ), cpp_args_fit(Ps, As).
+%% THE ARITY ALONE IS THE LAST RESORT, but never a CLASS-typed parameter for an argument of ANOTHER known class:
+%% that is no conversion this compiler makes, and libc++'s copy constructor writes `__rep_(__str.__rep_)', whose
+%% `__rep' argument took `__rep(__short)' by arity and stored a union into a byte.
+cpp_args_no_clash([], _).
+cpp_args_no_clash(_, []) :- !.
+cpp_args_no_clash([P|Ps], [A|As]) :-
+    \+ ( ( P = param(PT, _) ; P = param(PT, _, _) ), cpp_class_of_type(PT, C), cpp_init_arg_class(A, AC), AC \== C ),   % the argument's class through a move and, where the raw form cannot tell, the desugared one -- a member initializer is raw, and libc++ keeps `__rep_' inside its anonymous compressed pair
+    cpp_args_no_clash(Ps, As).
 cpp_method(C, M, Args, Name, Hops) :-
     cpp_class(C, cls(B, _, Ms, _, _, _)), length(Args, N),
     findall(Ps, ( member(method(_, _, _, M, Ps, _, _), Ms), cpp_arity_fits(Ps, N) ), Cands0),
@@ -608,7 +616,8 @@ cpp_method(C, M, Args, Name, Hops) :-
     %% where the context is the caller's or none at all -- libc++ gives `operator+=' an overload taking
     %% `initializer_list<value_type>', and scoring it outside the class made an instance keyed by the free name
     %% `value_type'. The rule a member template's signature has had since 0.51, for the plain overloads too.
-    cpp_in_class(C, ( ( findall(Ps, ( member(Ps, Cands0), cpp_args_fit(Ps, Args) ), [C1|Cs]) -> Cands = [C1|Cs] ; Cands = Cands0 ),
+    cpp_in_class(C, ( ( findall(Ps, ( member(Ps, Cands0), cpp_args_fit(Ps, Args) ), [C1|Cs]) -> Cands = [C1|Cs]
+                        ; findall(Ps, ( member(Ps, Cands0), cpp_args_no_clash(Ps, Args) ), Cands) ),
                       ( Cands == [] -> true ; cpp_pick(Cands, Args, Ps1) ) )),
     (   Cands \== [] -> Ps = Ps1, cpp_mangle(C, M, Ps, Name), Hops = [], cpp_use_member(C, Name)
     ;   cpp_member_template_call(C, M, [], Args, Name) -> Hops = []                              % a member template, deduced from the arguments
@@ -622,7 +631,7 @@ cpp_ctor(C, Args, Name) :-
 cpp_ctor(C, Args, Name) :- \+ ( Args = [E], cpp_class_of_type_of(E, C) ), cpp_member_template_ctor(C, Args, Name), !.   % a constructor template, deduced -- never for the class's own value: that is the copy (implicit, or the class's own), as C++ prefers the non-template
 cpp_ctor(C, Args, Name) :-                                                                      % nothing fitted, no template held: the arity alone, as it always was
     cpp_not_abstract(C), cpp_class(C, cls(_, _, Ms, _, _, _)), length(Args, N),
-    findall(Ps, ( member(ctor(_, _, Ps, _, _), Ms), cpp_arity_fits(Ps, N) ), Cands), Cands \== [], !,
+    cpp_in_class(C, findall(Ps, ( member(ctor(_, _, Ps, _, _), Ms), cpp_arity_fits(Ps, N), cpp_args_no_clash(Ps, Args) ), Cands)), Cands \== [], !,
     cpp_pick(Cands, Args, Ps), cpp_mangle(C, C, Ps, Name), cpp_use_member(C, Name).
 cpp_ctor(C, [], Name) :- cpp_implicit_ctor_needed(C), cpp_mangle(C, C, [], Name).
 cpp_pick([Ps], _, Ps) :- !.
@@ -645,7 +654,7 @@ cpp_param_ref_(T0, T) :- \+ ( T0 = ref(_, _) ; T0 = rref(_, _) ), ccl_resolve_ty
 cpp_param_ref_(T, T).
 cpp_arg_fit_(PT, A, 0) :- cpp_category_mismatch(PT, A), !.                                    % an rvalue reference binds no lvalue, a plain one no rvalue
 cpp_arg_fit_(PT, A, S) :-
-    (   ccl_type_of(A, AT), AT \== unknown
+    (   cpp_arg_type(A, AT)
     ->  ccl_unref(PT, PT1), ccl_unref(AT, AT1),
         (   cpp_class_of_type(PT1, C), cpp_class_of_type(AT1, C) -> ( PT = rref(_, _), \+ cpp_lvalue(A) -> S = 4 ; S = 3 )   % an rvalue takes the move constructor first
         ;   ccl_resolve_type(PT1, RT), ccl_resolve_type(AT1, RT) -> S = 3             % the SAME type, registered class or not: two plain structs alike fit each other
@@ -869,14 +878,19 @@ cpp_norm_inits([init(N0, As)|Is], [init(N, As)|Js]) :- ( atom(N0) -> N = N0 ; cp
 cpp_norm_inits([I|Is], [I|Js]) :- cpp_norm_inits(Is, Js).
 %% the class an initializer's argument has, on the RAW expression a constructor's initializer list carries (it is
 %% desugared later, with the body): through a `std::move', which is how a guard takes its rollback
-cpp_init_arg_class(E, C) :- cpp_class_of_type_of(E, C), !.
-cpp_init_arg_class(move(X), C) :- !, cpp_init_arg_class(X, C).
-cpp_init_arg_class(call(scoped(_, move), [X]), C) :- cpp_init_arg_class(X, C).
+%% THE TYPE AN ARGUMENT HAS, wherever the raw form cannot say it: through a `move' in either spelling, and else
+%% through the DESUGARED form. A member initializer and a call's arguments are both raw when they are scored, and
+%% libc++ writes `__rep_(std::move(__str.__rep_))' -- whose type the inference cannot tell, so every candidate
+%% scored the 1 that an unknown type earns and the FIRST constructor won, `__rep(__short)' for a `__rep'.
+cpp_arg_type(A, T) :- ccl_type_of(A, T0), T0 \== unknown, !, T = T0.
+cpp_arg_type(move(X), T) :- !, cpp_arg_type(X, T).
+cpp_arg_type(call(scoped(_, move), [X]), T) :- !, cpp_arg_type(X, T).
+cpp_arg_type(A, T) :- catch(cpp_expr(none, A, A1), _, fail), A1 \== A, ccl_type_of(A1, T0), T0 \== unknown, T = T0.
+cpp_init_arg_class(E, C) :- cpp_arg_type(E, T), ccl_unref(T, T1), cpp_class_of_type(T1, C).
 %% ... and where the RAW form cannot tell, the desugared one can: libc++'s copy constructor writes
 %% `__alloc_(__alloc_traits::select_on_container_copy_construction(__str.__alloc_))', a static member call whose
 %% result is the member's own class, and unasked it read as a member with no constructor to take it. Only the
 %% CLASS is wanted here; the initializer itself is walked with the body, once, as it always was.
-cpp_init_arg_class(E, C) :- catch(cpp_expr(none, E, E1), _, fail), E1 \== E, cpp_class_of_type_of(E1, C).
 cpp_member_inits([], _, _, _, Body, Body).
 cpp_member_inits([member(_, '$vptr', _)|Ds], Inits, Defaults, L, Pre, Body) :- !, cpp_member_inits(Ds, Inits, Defaults, L, Pre, Body).
 %% A REFERENCE MEMBER IS BOUND, never constructed and never assigned: its slot takes the object's ADDRESS, and
@@ -1567,11 +1581,11 @@ cpp_instantiate_class_(N, Args, Name) :-
     ( cpp_instance_name(N, TPs, B, Name) -> cpp_trace(want(Name)) ; cpp_trace(name_failed(N)), fail ),
     assertz('$cpp_iname'(N, Args, Name)),
     (   cpp_instance_done(Name) -> true
-    ;   cpp_spend(instance(Name)), cpp_full_args(TPs, B, FullArgs), cpp_instance_note(Name, inst(N, FullArgs)),
-        Self = N-base([], [typedef(Name)]),                                                                        % the injected class name: inside its body, `vector' is this instance
-        (   cpp_pick_spec(N, FullArgs, SB, SItem), cpp_template_defined(SItem) -> cpp_subst(SItem, [Self|SB], Item1), cpp_instance_body(N, Name, FullArgs, Item1)   % a specialization only where it HAS a body: a forward-declared one is not the definition
-        ;   cpp_template_defined(Item) -> cpp_subst(Item, [Self|B], Item1), cpp_instance_body(N, Name, FullArgs, Item1)
-        ;   cpp_incomplete_instance(N, Name) ) ).
+    ;   \+ \+ ( cpp_spend(instance(Name)), cpp_full_args(TPs, B, FullArgs), cpp_instance_note(Name, inst(N, FullArgs)),
+                Self = N-base([], [typedef(Name)]),                                                                % the injected class name: inside its body, `vector' is this instance
+                (   cpp_pick_spec(N, FullArgs, SB, SItem), cpp_template_defined(SItem) -> cpp_subst(SItem, [Self|SB], Item1), cpp_instance_body(N, Name, FullArgs, Item1)   % a specialization only where it HAS a body: a forward-declared one is not the definition
+                ;   cpp_template_defined(Item) -> cpp_subst(Item, [Self|B], Item1), cpp_instance_body(N, Name, FullArgs, Item1)
+                ;   cpp_incomplete_instance(N, Name) ) ) ).
 %% A CLASS TEMPLATE DECLARED AND NEVER DEFINED is an INCOMPLETE TYPE, which C++ lets a template argument name:
 %% libc++ dispatches its algorithms on `__specialized_algorithm<_Algorithm::__fill_n, __single_iterator<_It>>',
 %% and `__single_iterator' is declared only -- a tag, never an object. The instance is its NAME and its arguments,
@@ -1849,10 +1863,11 @@ cpp_bind_defaults([tparam(template, P, D)|TPs], B0, B) :- !,
     ( memberchk(P-_, B0) -> B1 = B0 ; D \== none -> cpp_tname_arg(D, B0, A), B1 = [P-A|B0] ; cpp_refuse(0, cannot_deduce(P)) ),
     cpp_bind_defaults(TPs, B1, B).
 cpp_bind_defaults([tparam(K, P, D)|TPs], B0, B) :-
-    (   memberchk(P-_, B0) -> B1 = B0
-    ;   cpp_pack_kind(K) -> B1 = [P-pack([])|B0]
-    ;   D \== none -> cpp_subst(D, B0, D1), cpp_type_or_value(D1, A), B1 = [P-A|B0]
-    ;   cpp_refuse(0, cannot_deduce(P)) ),
+    (   atom(P), memberchk(P-_, B0) -> B1 = B0                                            % ... and it binds nothing either, for the same reason
+    ;   cpp_pack_kind(K) -> ( atom(P) -> B1 = [P-pack([])|B0] ; B1 = B0 )
+    ;   D \== none -> cpp_subst(D, B0, D1), cpp_type_or_value(D1, A), ( atom(P) -> B1 = [P-A|B0] ; B1 = B0 )   % the default is still RESOLVED: that resolution is the SFINAE
+    ;   atom(P) -> cpp_refuse(0, cannot_deduce(P))
+    ;   B1 = B0 ),
     ( cpp_value_param_type(K, T0) -> cpp_subst(T0, B1, T1), cpp_type(T1, T2), cpp_type_resolved(T2) ; true ),
     cpp_bind_defaults(TPs, B1, B).
 cpp_value_param_type(K, K) :- compound(K), K \= vpack(_), cpp_is_type(K).
@@ -1903,7 +1918,11 @@ cpp_match_targs([P|Ps], [A|As], TPs, B0, B) :-
 cpp_decayed(T, T1) :- ( ccl_resolve_type(T, arr(_, E)) -> T1 = ptr([], E) ; T = base(_, S) -> T1 = base([], S) ; T1 = T ).
 %% the instance's name: the template's, then a key per argument
 cpp_instance_name(N0, TPs, B, Name) :- cpp_instance_base(N0, N),
-    findall(K, ( member(tparam(_, P, _), TPs), memberchk(P-A, B), cpp_type_key(A, K) ), Ks), atomic_list_concat([N|Ks], '.', Name).
+    findall(K, ( member(tparam(_, P, _), TPs), atom(P), memberchk(P-A, B), cpp_type_key(A, K) ), Ks), atomic_list_concat([N|Ks], '.', Name).
+%% AN UNNAMED TEMPLATE PARAMETER HAS NO NAME TO LOOK UP -- libc++ writes its SFINAE guard as one
+%% (`template <class _Up, class... _Args, __enable_if_t<...> = 0>') -- and `memberchk(P-A, B)' with P unbound takes
+%% whatever is FIRST in the bindings, so the instance was named one way where it was emitted and another where it
+%% was called, and the call named nothing. It contributes no key, in both places alike.
 cpp_instance_base(operator(Op), N) :- !, cpp_op_word(Op, W), atom_concat('op.', W, N).   % an OPERATOR member template: `__less<>::operator()' is a template of its own
 cpp_instance_base(N, N).
 cpp_type_key(pack([]), e) :- !.
@@ -2035,9 +2054,12 @@ cpp_try_member([TPs-method(L, Qs, Ret, M, Ps, V, Body)|Cs], C, Explicit, As, Nam
     ->  cpp_instance_name(M, TPs, B, MName), cpp_subst(method(L, Qs, Ret, M, Ps, V, Body), B, method(_, _, Ret1, _, Ps1, _, Body1)),
         cpp_mangle(C, MName, Ps1, Name),
         (   cpp_instance_done(Name) -> true
-        ;   cpp_instance_note(Name, C), cpp_class(C, cls(Base, _, _, _, Defaults, _)), ( cpp_lib_class(C) -> Lib = yes ; Lib = no ),
-            cpp_as_lib(Lib, ( cpp_isolated(cpp_in_class(C, ( cpp_declare_members([method(L, Qs, Ret1, MName, Ps1, V, Body1)], C), cpp_member_fns([method(L, Qs, Ret1, MName, Ps1, V, Body1)], C, Base, Defaults, Fns) ))),
-                              cpp_add_instance_items(Fns) )) )
+        ;   cpp_instance_note(Name, C),
+            (   cpp_class(C, cls(Base, _, _, _, Defaults, _)), ( cpp_lib_class(C) -> Lib = yes ; Lib = no ),
+                cpp_as_lib(Lib, ( cpp_isolated(cpp_in_class(C, ( cpp_declare_members([method(L, Qs, Ret1, MName, Ps1, V, Body1)], C), cpp_member_fns([method(L, Qs, Ret1, MName, Ps1, V, Body1)], C, Base, Defaults, Fns) ))),
+                                  cpp_add_instance_items(Fns) ))
+            ->  true
+            ;   cpp_refuse(L, member_instance_not_emitted(Name)) ) )   % the name is noted DONE BEFORE it is emitted, so anything that merely FAILED on the way left every later ask a call to nothing: 0.46's rule, now for a member template's instance and everything its emission needs
     ;   cpp_try_member(Cs, C, Explicit, As, Name) ).
 cpp_member_template_ctor(C, As, Name) :-
     findall(TPs-Mem, '$cpp_mt'(C, ctor, TPs, Mem), Cands), Cands \== [],
