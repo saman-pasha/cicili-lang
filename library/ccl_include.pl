@@ -414,15 +414,21 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
 %% (cicili++ never runs over a store, where such a clause would be refused). The names are the desugaring's index
 %% names (cpp_index_name/2); an item with none is never asked for by name and is left out.
 ccl_ast_file(F, A) :- atom_length(F, N), N1 is N - 4, sub_atom(F, 0, N1, 4, B), atom_concat(B, '.ast.pl', A).
-ccl_ast_write(F, unit(Is)) :- ccl_ast_file(F, A), ccl_flat_items(Is, Flat), ccl_ast_lines(Flat, Codes), write_file_from_codes(A, Codes).
-ccl_flat_items([], []).
-ccl_flat_items([namespace(_, _, Js)|Is], Flat) :- !, ccl_flat_items(Js, F1), ccl_flat_items(Is, F2), append(F1, F2, Flat).
-ccl_flat_items([extern_c(_, Js)|Is], Flat) :- !, ccl_flat_items(Js, F1), ccl_flat_items(Is, F2), append(F1, F2, Flat).
-ccl_flat_items([I|Is], [I|Flat]) :- ccl_flat_items(Is, Flat).
+ccl_ast_write(F, unit(Is)) :- ccl_ast_file(F, A), ccl_flat_items([], Is, Flat), ccl_ast_lines(Flat, Codes), write_file_from_codes(A, Codes).
+%% each item with the NAMESPACE PATH it stood in, since a name the header only declares is called by its
+%% mangled symbol and a summary-served run must know the same path the index knew (cpp_mangled_name/3)
+ccl_flat_items(_, [], []).
+ccl_flat_items(Path, [namespace(_, N, Js)|Is], Flat) :- !, ( atom(N), N \== anon -> append(Path, [N], P1) ; P1 = Path ),
+    ccl_flat_items(P1, Js, F1), ccl_flat_items(Path, Is, F2), append(F1, F2, Flat).
+ccl_flat_items(Path, [extern_c(_, Js)|Is], Flat) :- !, ccl_flat_items(c, Js, F1), ccl_flat_items(Path, Is, F2), append(F1, F2, Flat).
+ccl_flat_items(Path, [I|Is], [in(Path, I)|Flat]) :- ccl_flat_items(Path, Is, Flat).
 ccl_ast_lines([], []).
-ccl_ast_lines([I|Is], Out) :-
-    ( catch(cpp_index_name(I, N), _, fail) -> term_to_atom('$cpp_hdr_ast'(N, I), A), atom_codes(A, Cs), append(Cs, [0'., 10], L1) ; L1 = [] ),
-    ccl_ast_lines(Is, O2), append(L1, O2, Out).
+ccl_ast_lines([in(Path, I)|Is], Out) :-
+    (   catch(cpp_index_name(I, N), _, fail)
+    ->  ccl_ast_clause('$cpp_hdr_ast'(N, I), L1), ccl_ast_clause('$cpp_hdr_ast_ns'(N, Path), L2), append(L1, L2, L0)
+    ;   L0 = [] ),
+    ccl_ast_lines(Is, O2), append(L0, O2, Out).
+ccl_ast_clause(T, Cs1) :- term_to_atom(T, A), atom_codes(A, Cs), append(Cs, [0'., 10], Cs1).
 ccl_sum_mnames([], []) :- !.
 ccl_sum_mnames(Ms, Out) :- ccl_sum_mnames_(Ms, 100, Ns, Rest), ccl_sum_terms_out([mnames(Ns)], O1), ccl_sum_mnames(Rest, O2), append(O1, O2, Out).
 ccl_sum_mnames_([], _, [], []) :- !.

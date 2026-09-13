@@ -93,7 +93,7 @@ cpp_register_units(Units) :-
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
     cpp_reset('$cpp_lib'/1), cpp_reset('$cpp_libfn'/1), nb_setval('$cpp_in_lib', no),
-    cpp_reset('$cpp_fn'/5), cpp_reset('$cpp_nested'/5), nb_setval('$cpp_nesting', []), nb_setval('$cpp_cnames', []), nb_setval('$cpp_fn_refusal', none),
+    cpp_reset('$cpp_fn'/5), cpp_reset('$cpp_nested'/5), nb_setval('$cpp_nesting', []), cpp_reset('$cpp_hdr_ns'/2), dynamic('$cpp_hdr_ast_ns'/2), nb_setval('$cpp_cnames', []), nb_setval('$cpp_fn_refusal', none),
     ( catch(nb_getval('$cpp_trace', _), _, fail) -> true ; nb_setval('$cpp_trace', no) ),
     forall(member(unit(Is), Units), cpp_note_fns(Is)),                                 % the free functions FIRST: a name is overloaded or not before any call to it is read
     forall(member(unit(Is), Units), cpp_register_(Is)).
@@ -109,8 +109,10 @@ cpp_register_units(Units) :-
 cpp_note_fns([]).
 cpp_note_fns([namespace(_, _, Js)|Is]) :- !, cpp_note_fns(Js), cpp_note_fns(Is).
 cpp_note_fns([extern_c(_, Js)|Is]) :- !, cpp_c_names(Js), cpp_note_fns(Js), cpp_note_fns(Is).      % extern "C": C linkage, never a mangled name
-cpp_note_fns([function(_, _, _, N, Ps, _, Body)|Is]) :- atom(N), !, cpp_fn_put(N, Ps, Body, own), cpp_note_fns(Is).
-cpp_note_fns([declaration(_, _, _, Vs)|Is]) :- !, forall(member(var(N, fn(_, Ps, _), _), Vs), ( atom(N) -> cpp_fn_put(N, Ps, none, own) ; true )), cpp_note_fns(Is).
+cpp_note_fns([function(_, _, Ret, N, Ps, V, Body)|Is]) :- atom(N), !, cpp_fn_origin(Ret, V, Body, O), cpp_fn_put(N, Ps, Body, O), cpp_note_fns(Is).
+cpp_note_fns([declaration(_, _, _, Vs)|Is]) :- !, forall(member(var(N, fn(Ret, Ps, V), _), Vs), ( atom(N) -> cpp_fn_put(N, Ps, none, decl(Ret, V)) ; true )), cpp_note_fns(Is).
+cpp_fn_origin(Ret, V, none, decl(Ret, V)) :- !.                                          % what a DECLARATION alone can say: the result and the ellipsis a mangled name needs
+cpp_fn_origin(_, _, _, own).
 cpp_note_fns([_|Is]) :- cpp_note_fns(Is).
 %% a LIBRARY header's items of one name, before any of them is registered: its definitions kept whole, to emit on use
 cpp_note_hdr_fns([]).
@@ -127,15 +129,75 @@ cpp_c_name(N) :- nb_getval('$cpp_cnames', Ns), memberchk(N, Ns).
 %% the name a free function is emitted and called under: its own, unless the name has two definitions of
 %% different parameters and this item is one of them
 cpp_fn_name(F, _, _, F) :- cpp_c_name(F), !.
+cpp_fn_name(F, Ps, no, Name) :- cpp_mangled_name(F, Ps, Name), !.                        % declared here and DEFINED in the shipped library: its own C++ symbol
 cpp_fn_name(F, Ps, yes, Name) :- cpp_fn_overloaded(F), !, cpp_params_key(Ps, K), atomic_list_concat([F, '.', K], Name).
 cpp_fn_name(F, _, _, F).
+%% ---- ITANIUM NAME MANGLING, for what a library header only DECLARES --------------------------
+%% libc++ declares `std::__libcpp_verbose_abort(const char *, ...)' and ships its definition in
+%% libc++.dylib as `_ZNSt3__122__libcpp_verbose_abortEPKcz'. This compiler emits every name it DEFINES
+%% unmangled -- its own C-shaped symbols, and nothing else knows them -- but a name it only CALLS must be
+%% the one the library exports. So a function that a library header declares and never defines, and that
+%% is not `extern "C"', is called by its Itanium name: _ZN, the namespace path (St for std), the name
+%% length-prefixed, E, then the parameters.
+%% WHAT IS NOT MANGLED, and stays its plain name so the linker says so rather than a wrong symbol: a
+%% class-typed parameter (this compiler's class names are its own mangling, not C++'s), a type no code
+%% below encodes, and ANY signature whose substitutable components repeat -- Itanium writes the second
+%% occurrence of a component as S_, S0_ ... and a straight re-encoding would be a different symbol.
+cpp_mangled_name(F, Ps, Name) :-
+    atom(F), \+ cpp_c_name(F), '$cpp_fn'(F, _, Ps, no, decl(_, V)),
+    cpp_hdr_ns(F, Path), Path = [_|_],
+    cpp_mangle_params(Ps, V, PText, Comps), cpp_no_repeats(Comps),
+    cpp_mangle_ns(Path, NsText), atom_length(F, FL),
+    atomic_list_concat(['_ZN', NsText, FL, F, 'E', PText], Name).
+cpp_mangle_ns([std|Rest], T) :- !, cpp_mangle_ns_(Rest, R), atom_concat('St', R, T).     % St is std's own abbreviation
+cpp_mangle_ns(Path, T) :- cpp_mangle_ns_(Path, T).
+cpp_mangle_ns_([], '').
+cpp_mangle_ns_([N|Ns], T) :- atom(N), atom_length(N, L), cpp_mangle_ns_(Ns, R), atomic_list_concat([L, N, R], T).
+cpp_mangle_params([], false, v, []) :- !.                                                % f() is f(void)
+cpp_mangle_params(Ps, V, T, Comps) :- cpp_mangle_ptypes(Ps, Ts, Comps),
+    ( V == true -> append(Ts, [z], Ts1) ; Ts1 = Ts ), Ts1 \== [], atomic_list_concat(Ts1, T).
+cpp_mangle_ptypes([], [], []).
+cpp_mangle_ptypes([P|Ps], [T|Ts], Cs) :- ( P = param(PT, _) ; P = param(PT, _, _) ), !,
+    cpp_mangle_type(PT, T, C0), cpp_mangle_ptypes(Ps, Ts, C1), append(C0, C1, Cs).
+cpp_mangle_ptypes([_|Ps], Ts, Cs) :- cpp_mangle_ptypes(Ps, Ts, Cs).
+cpp_mangle_type(T0, M, Cs) :- ccl_resolve_type(T0, T), cpp_mangle_type_(T, M, Cs).
+cpp_mangle_type_(base(Q, S), M, Cs) :- cpp_mangle_basic(S, C),
+    ( memberchk(const, Q) -> atom_concat('K', C, M), Cs = [M] ; M = C, Cs = [] ).
+cpp_mangle_type_(ptr(Q, T), M, Cs) :- cpp_mangle_type(T, C, Cs0), atom_concat('P', C, M0),
+    ( memberchk(const, Q) -> atom_concat('K', M0, M), append(Cs0, [M0, M], Cs) ; M = M0, append(Cs0, [M], Cs) ).
+cpp_mangle_type_(ref(_, T), M, Cs) :- cpp_mangle_type(T, C, Cs0), atom_concat('R', C, M), append(Cs0, [M], Cs).
+cpp_mangle_type_(rref(_, T), M, Cs) :- cpp_mangle_type(T, C, Cs0), atom_concat('O', C, M), append(Cs0, [M], Cs).
+%% the builtin types' codes; a class, an enum or anything else is not mangled here (see above)
+cpp_mangle_basic(S, v) :- memberchk(void, S), !.
+cpp_mangle_basic(S, b) :- ( memberchk(bool, S) ; memberchk('_Bool', S) ), !.
+cpp_mangle_basic(S, w) :- memberchk(wchar_t, S), !.
+cpp_mangle_basic(S, 'Ds') :- memberchk(char16_t, S), !.
+cpp_mangle_basic(S, 'Di') :- memberchk(char32_t, S), !.
+cpp_mangle_basic(S, 'Du') :- memberchk(char8_t, S), !.
+cpp_mangle_basic(S, C) :- memberchk(char, S), !, ( memberchk(signed, S) -> C = a ; memberchk(unsigned, S) -> C = h ; C = c ).
+cpp_mangle_basic(S, C) :- memberchk(short, S), !, ( memberchk(unsigned, S) -> C = t ; C = s ).
+cpp_mangle_basic(S, C) :- ccl_count(long, S, 2), !, ( memberchk(unsigned, S) -> C = y ; C = x ).
+cpp_mangle_basic(S, C) :- memberchk(long, S), !,
+    ( memberchk(double, S) -> C = e ; memberchk(unsigned, S) -> C = m ; C = l ).
+cpp_mangle_basic(S, f) :- memberchk(float, S), !.
+cpp_mangle_basic(S, d) :- memberchk(double, S), !.
+cpp_mangle_basic(S, C) :- ( memberchk(int, S) ; memberchk(signed, S) ; memberchk(unsigned, S) ), !,
+    ( memberchk(unsigned, S) -> C = j ; C = i ).
+cpp_no_repeats([]).
+cpp_no_repeats([X|Xs]) :- \+ memberchk(X, Xs), cpp_no_repeats(Xs).
 cpp_fn_overloaded(F) :- '$cpp_fn'(F, K1, _, yes, _), '$cpp_fn'(F, K2, _, yes, _), K1 \== K2, !.
 %% the overload an argument list names: one whose parameters take it EXACTLY (C++ prefers such a non-template
 %% to any template), else the one whose parameters fit best (cpp_pick, the methods')
 cpp_fn_exact(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N), '$cpp_fn'(F, _, Ps, _, _), length(Ps, N), cpp_exact_params(Ps, As), !, cpp_fn_defined(F, Ps, D).
 cpp_fn_best(F, As, Ps, D) :- cpp_fn_ready(F), length(As, N),
-    findall(Ps0, ( '$cpp_fn'(F, _, Ps0, _, _), cpp_arity_fits(Ps0, N) ), Cands), Cands \== [],
+    findall(Ps0, ( '$cpp_fn'(F, _, Ps0, _, O), cpp_fn_arity_fits(Ps0, O, N) ), Cands), Cands \== [],
     cpp_pick(Cands, As, Ps), cpp_fn_defined(F, Ps, D).
+%% an ELLIPSIS takes any number past the named parameters: `__libcpp_verbose_abort(const char *, ...)' is
+%% called with a format and its arguments, and the plain arity test found no candidate for those calls
+cpp_fn_arity_fits(Ps, O, N) :- cpp_fn_variadic(O), !, cpp_required(Ps, Min), N >= Min.
+cpp_fn_arity_fits(Ps, _, N) :- cpp_arity_fits(Ps, N).
+cpp_fn_variadic(decl(_, true)).
+cpp_fn_variadic(lazy(function(_, _, _, _, _, true, _))).
 cpp_fn_ready(F) :- atom(F), '$cpp_fn'(F, _, _, _, _), !.
 cpp_fn_ready(F) :- atom(F), cpp_hdr_item(F, _), cpp_hdr_load(F), '$cpp_fn'(F, _, _, _, _), !.   % a LIBRARY header's functions of the name, registered on the first ask: `std::__throw_length_error'
 %% is defined inline in the header and emitted where it is called, so the name must be loaded here. A load that
@@ -150,7 +212,16 @@ cpp_arg_exact(PT, A) :- ccl_type_of(A, AT), AT \== unknown,
 cpp_bare_type(base(_, S), base([], S)) :- !.
 cpp_bare_type(T, T).
 cpp_free_call(F, Ps, D, As, call(id(Name), As2)) :-
-    cpp_fn_name(F, Ps, D, Name), cpp_use_fn(F, Ps, Name), cpp_fill_defaults(Name, As, As1), cpp_ref_args(Name, As1, As2).
+    cpp_fn_name(F, Ps, D, Name), cpp_use_fn(F, Ps, Name), cpp_use_mangled(F, Ps, Name),
+    cpp_fill_defaults(Name, As, As1), cpp_ref_args(Name, As1, As2).
+%% a mangled name is nothing this compiler defines, so the unit needs its PROTOTYPE: the item the lowering
+%% takes a `declare' line from, emitted once, and the symbol table's entry so the call has a type
+cpp_use_mangled(F, _, Name) :- Name == F, !.
+cpp_use_mangled(F, Ps, Name) :-
+    (   '$cpp_fn'(F, _, Ps, no, decl(Ret, V)), \+ cpp_instance_done(Name)
+    ->  cpp_instance_note(Name, mangled), ccl_declare(Name, fn(Ret, Ps, V)),
+        cpp_as_lib(yes, cpp_add_instance_items([function(0, extern, Ret, Name, Ps, V, none)]))
+    ;   true ).
 %% A LIBRARY HEADER'S FREE FUNCTION IS EMITTED WHERE IT IS CALLED, as its classes and its templates already are:
 %% libc++ writes ten `__convert_to_integral' overloads, one per integer type, and a program calls one -- the others
 %% would drag in what this compiler cannot lower (`__int128_t') for nothing.
@@ -181,15 +252,23 @@ cpp_hdr_item(N, I) :- '$cpp_hdr'(N, I).
 cpp_hdr_item(N, I) :- '$cpp_hdr_ast'(N, I).
 cpp_register_([include(_, _, file(_, _, unit(Js)))|Is]) :- !, cpp_register_header(Js), cpp_register_(Is).   % a header read whole (the program's own): its classes and templates
 %% '$cpp_hdr'(Name, Item): facts (found by name in microseconds; a global would copy the header at every read)
-cpp_index_header(Js) :- cpp_index_items(Js).
-cpp_index_items([]).
-cpp_index_items([namespace(_, _, Js)|Is]) :- !, cpp_index_items(Js), cpp_index_items(Is).
-cpp_index_items([extern_c(_, Js)|Is]) :- !, cpp_index_items(Js), cpp_index_items(Is).
-cpp_index_items([I|Is]) :- ( cpp_index_name(I, N) -> assertz('$cpp_hdr'(N, I)) ; true ), cpp_index_items(Is).
+cpp_index_header(Js) :- cpp_index_items([], Js).
+%% the NAMESPACE PATH is kept beside each indexed name ('$cpp_hdr_ns'), since a function a header only
+%% DECLARES must be called by the symbol the shipped library exports, which is its qualified name mangled
+%% (cpp_mangled_name/3); `extern "C"' is the path `c', which never mangles
+cpp_index_items(_, []).
+cpp_index_items(Path, [namespace(_, N, Js)|Is]) :- !, ( atom(N), N \== anon -> append(Path, [N], P1) ; P1 = Path ), cpp_index_items(P1, Js), cpp_index_items(Path, Is).
+cpp_index_items(Path, [extern_c(_, Js)|Is]) :- !, cpp_index_items(c, Js), cpp_index_items(Path, Is).
+cpp_index_items(Path, [I|Is]) :- ( cpp_index_name(I, N) -> assertz('$cpp_hdr'(N, I)), cpp_note_hdr_ns(N, Path) ; true ), cpp_index_items(Path, Is).
+cpp_note_hdr_ns(N, Path) :- ( '$cpp_hdr_ns'(N, _) -> true ; assertz('$cpp_hdr_ns'(N, Path)) ).
+cpp_hdr_ns(N, P) :- '$cpp_hdr_ns'(N, P), !.
+cpp_hdr_ns(N, P) :- '$cpp_hdr_ast_ns'(N, P), !.
 cpp_index_name(template(_, _, I), N) :- !, ( cpp_mdef_item(I, N, _, _) -> true ; cpp_spec_name(I, N, _) -> true ; cpp_template_name(I, N) ).
 cpp_index_name(declare(_, base(_, [class(_, N, _, Ms)])), N) :- atom(N), Ms \== none.   % a forward declaration declares nothing to register: the DEFINITION carries the name (the struct clause below always said so)
 cpp_index_name(declare(_, base(_, [struct(N, Ms)])), N) :- atom(N), Ms \== none.
 cpp_index_name(function(_, _, _, N, _, _, B), N) :- atom(N), B \== none.
+cpp_index_name(function(_, _, _, N, _, _, none), N) :- atom(N).                          % a DECLARATION: nothing to register, but its name, its parameters and its namespace are what a call must mangle
+cpp_index_name(declaration(_, _, _, [var(N, fn(_, _, _), none)|_]), N) :- atom(N).
 cpp_index_name(ctor_def(_, C, _, _, _, _), C).
 cpp_index_name(dtor_def(_, C, _, _), C).
 %% a name the registries do not have: the header's items of that name, registered now (a class as a lazy one)
@@ -710,6 +789,16 @@ cpp_init_arg_class(move(X), C) :- !, cpp_init_arg_class(X, C).
 cpp_init_arg_class(call(scoped(_, move), [X]), C) :- cpp_init_arg_class(X, C).
 cpp_member_inits([], _, _, _, Body, Body).
 cpp_member_inits([member(_, '$vptr', _)|Ds], Inits, Defaults, L, Pre, Body) :- !, cpp_member_inits(Ds, Inits, Defaults, L, Pre, Body).
+%% A REFERENCE MEMBER IS BOUND, never constructed and never assigned: its slot takes the object's ADDRESS, and
+%% every later use reads through it (ir_ref_member). libc++'s `__destroy_vector' holds a `vector &' and binds it
+%% in its constructor -- taken as a member of a class with constructors, that became `operator=' into an
+%% uninitialized reference, which ran and crashed. With no initializer the member is left alone, as a closure's
+%% captures are (an aggregate fills them item by item).
+cpp_member_inits([member(MT, N, _)|Ds], Inits, Defaults, L, Pre, Body) :- ( MT = ref(_, _) ; MT = rref(_, _) ), !,
+    (   memberchk(init(N, [E]), Inits) -> Pre = [expr(L, bind_ref(arrow(this, N), E))|Pre1]
+    ;   memberchk(N-E, Defaults) -> Pre = [expr(L, bind_ref(arrow(this, N), E))|Pre1]
+    ;   cpp_trace(reference_member_unbound(N)), Pre = Pre1 ),
+    cpp_member_inits(Ds, Inits, Defaults, L, Pre1, Body).
 cpp_member_inits([member(MT, N, _)|Ds], Inits, Defaults, L, Pre, Body) :- cpp_class_of_type(MT, MC), cpp_has_ctors(MC), !,   % a member of a class with constructors: constructed
     ( memberchk(init(N, Args), Inits) -> true ; memberchk(N-E, Defaults) -> Args = [E] ; Args = [] ),
     length(Args, NA),
@@ -948,6 +1037,7 @@ cpp_expr(Ctx, not(A), E)    :- !, cpp_expr(Ctx, A, A1), cpp_operator('!', A1, []
 cpp_expr(Ctx, neg(A), E)    :- !, cpp_expr(Ctx, A, A1), cpp_operator('-', A1, [], neg(A1), E).
 cpp_expr(Ctx, bitnot(A), E) :- !, cpp_expr(Ctx, A, A1), cpp_operator('~', A1, [], bitnot(A1), E).
 cpp_expr(Ctx, bin(Op, A, B), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1), cpp_operator(Op, A1, [B1], bin(Op, A1, B1), E).
+cpp_expr(Ctx, bind_ref(A, B), bind_ref(A1, B1)) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1).   % a reference member BOUND in a constructor: the slot takes the address
 cpp_expr(Ctx, assign(Op, A, B), E) :- Op \== '=', !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1), cpp_operator(Op, A1, [B1], assign(Op, A1, B1), E).
 cpp_expr(Ctx, assign('=', A, B), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1),
     (   cpp_class_of_type_of(A1, C), cpp_method(C, operator('='), [B1], Name, Hops)              % the class's operator=, copy or move by the value category
@@ -962,6 +1052,8 @@ cpp_expr(Ctx, decay_copy(X), E) :- !, cpp_expr(Ctx, X, X1),                     
     ->  cpp_decayed(T0, T), ( cpp_class_of_type(T, C) -> ( cpp_dtor(C, _), cpp_lvalue(X1) -> cpp_refuse(0, copy_of_a_class_with_destructor(C)) ; E = X1 ) ; E = cast(T, X1) )
     ;   E = X1 ).
 cpp_expr(Ctx, new(T0, As), E) :- !, cpp_type(T0, T), cpp_exprs(Ctx, As, As1), cpp_new(T, As1, E).
+cpp_expr(Ctx, new_at(Ps, N0), E) :- !, cpp_exprs(Ctx, Ps, Ps1),
+    ( N0 = new(T0, As) -> cpp_type(T0, T), cpp_exprs(Ctx, As, As1), cpp_new_at(Ps1, T, As1, E) ; cpp_refuse(0, placement_new_array) ).
 cpp_expr(Ctx, new_array(T0, N), new_array(T, N1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, N, N1).
 cpp_expr(Ctx, cast(T0, X), cast(T, X1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1).
 cpp_expr(_, sizeof_type(T0), sizeof_type(T)) :- !, cpp_type(T0, T).
@@ -1147,6 +1239,17 @@ cpp_new(T, As, stmt_expr(block([declaration(0, none, T, [var(P, PT, new(T, []))]
     cpp_class_of_type(T, C), cpp_has_ctors(C), !,
     length(As, N), ( cpp_ctor(C, As, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As1), ccl_gensym('$new', P), PT = ptr([], T).
 cpp_new(T, As, new(T, As)).
+%% PLACEMENT NEW constructs WHERE IT IS TOLD and allocates nothing: `::new ((void *) p) T(args)', which is what
+%% `std::__construct_at' is and what every libc++ container makes its elements with. Read as the allocating new it
+%% looks like, it called malloc and dropped the block: a vector's size grew and its elements were never stored.
+cpp_new_at([P], T, As, stmt_expr(block([declaration(0, none, PT, [var(N, PT, cast(PT, P))]), expr(0, call(id(CName), [id(N)|As1])), expr(0, id(N))]))) :-
+    cpp_class_of_type(T, C), cpp_has_ctors(C), !,
+    length(As, K), ( cpp_ctor(C, As, CName) -> true ; cpp_refuse(0, no_constructor(C, K)) ), cpp_fill_defaults(CName, As, As1),
+    ccl_gensym('$at', N), PT = ptr([], T).
+cpp_new_at([P], T, As, stmt_expr(block([declaration(0, none, PT, [var(N, PT, cast(PT, P))]), expr(0, assign('=', deref(id(N)), V)), expr(0, id(N))]))) :-
+    ( As = [V] -> true ; As == [], \+ cpp_class_of_type(T, _), \+ ccl_resolve_type(T, arr(_, _)), cpp_zero_of(T, V) ), !,
+    ccl_gensym('$at', N), PT = ptr([], T).
+cpp_new_at(Ps, T, As, _) :- length(Ps, NP), length(As, NA), cpp_refuse(0, placement_new(T, NP, NA)).
 cpp_delete(X, E) :- cpp_pointee_class_of(X, C), cpp_dtor(C, DName), !,
     (   X = id(_) -> cpp_destroy(X, C, DName, D), E = comma(D, delete(X))
     ;   ccl_type_of(X, PT), ccl_gensym('$del', P), cpp_destroy(id(P), C, DName, D), E = stmt_expr(block([declaration(0, none, PT, [var(P, PT, X)]), expr(0, comma(D, delete(id(P))))])) ).

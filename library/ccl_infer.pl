@@ -200,6 +200,7 @@ ccl_type_of(deref(E), T) :- !, ccl_type_of(E, ET), ccl_resolve_type(ET, ET1), ( 
 ccl_type_of(scoped(_, N), T) :- !, ccl_type_of(id(N), T).
 ccl_type_of(ccast(_, T, _), T) :- !.
 ccl_type_of(new(T, _), ptr([], T)) :- !.
+ccl_type_of(new_at(_, N), T) :- !, ccl_type_of(N, T).                              % placement new: the type the plain one has
 ccl_type_of(new_array(T, _), ptr([], T)) :- !.
 ccl_type_of(delete(_), base([], [void])) :- !.
 ccl_type_of(delete_array(_), base([], [void])) :- !.

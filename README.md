@@ -428,6 +428,26 @@ what runs today.
   symbols are malloc, free, memcpy and libc++'s own verbose-abort hook --
   which is C++-mangled in the shipped library, where this compiler emits
   every name unmangled. That mangling is the next step. GREEN.
+* **The twenty-ninth step DONE: `std::vector<int>` RUNS.** Four things
+  between the object file and a binary that gives C++'s answers.
+  **Itanium name mangling** for what a library header only DECLARES: a
+  function whose body libc++ ships in its own binary is called by the name
+  that binary exports (`_ZNSt3__122__libcpp_verbose_abortEPKcz`) -- the
+  namespace path, the length-prefixed name and the parameter codes, with a
+  signature whose substitutable components repeat refused rather than
+  guessed at. **A reference member is BOUND, never assigned**: `vector`
+  destroys itself through a nested class that holds a `vector &`, and
+  taken as a member of a class with constructors that became
+  `operator=` into an uninitialized reference. **Placement new**, which is
+  what `std::__construct_at` is and every container's way of making an
+  element: the reader threw the placement arguments away and the
+  allocating new it looked like malloc'd a block and dropped it, so a
+  vector's size grew and its elements were never stored. And **a cast to a
+  reference type is a bind, not a conversion** -- `static_cast<_Tp &&>(__t)`
+  is `std::forward`'s whole body, and as a value conversion it loaded the
+  int and made a pointer of it. `std::vector<int>` and `std::vector<double>`
+  now push, grow, subscript, iterate and destroy, with libc++'s numbers and
+  no leaks; `test/cpp/run/stdvector.cpp`. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(41).
+ccl_reader_version(42).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1359,11 +1359,15 @@ ccl_unary_(noexcept, kw, noexcept_expr(E)) --> ccl_cpp, !, ccl_kw(noexcept), ccl
 ccl_unary_(alignof, kw, alignof_type(T)) --> ccl_cpp, !, ccl_kw(alignof), ccl_p('('), ccl_type_name([], T), ccl_p(')').
 ccl_unary_(co_yield, kw, co_yield(E)) --> ccl_cpp, !, ccl_kw(co_yield), ccl_assign_expr(E).
 ccl_unary_(throw, kw, throw(E)) --> ccl_cpp, !, ccl_kw(throw), ( ccl_assign_expr(E), ! ; { E = none } ).
-ccl_new_expr(E) --> { Env = genv }, ( ccl_p('('), ccl_args(_), ccl_p(')'), ! ; [] ), ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) },
-    ( ccl_p('['), !, ccl_expr(N), ccl_p(']'), { E = new_array(T, N) }
-    ; ccl_p('('), !, ccl_args(As), ccl_p(')'), { E = new(T, As) }
-    ; ccl_p('{'), !, ccl_args(As), ccl_p('}'), { E = new(T, As) }
-    ; { E = new(T, []) } ).
+%% PLACEMENT arguments are KEPT: `::new ((void *) p) T(args)' constructs where it is told and allocates nothing,
+%% which is what every libc++ container builds its elements with (`std::__construct_at')
+ccl_new_expr(E) --> { Env = genv }, ( ccl_p('('), ccl_args(Ps), ccl_p(')'), ! ; { Ps = [] } ), ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) },
+    ( ccl_p('['), !, ccl_expr(N), ccl_p(']'), { ccl_new_node(Ps, new_array(T, N), E) }
+    ; ccl_p('('), !, ccl_args(As), ccl_p(')'), { ccl_new_node(Ps, new(T, As), E) }
+    ; ccl_p('{'), !, ccl_args(As), ccl_p('}'), { ccl_new_node(Ps, new(T, As), E) }
+    ; { ccl_new_node(Ps, new(T, []), E) } ).
+ccl_new_node([], N, N) :- !.
+ccl_new_node(Ps, N, new_at(Ps, N)).
 ccl_unary_('++', p, preinc(E)) --> !, ccl_p('++'), ccl_unary(E).
 ccl_unary_('--', p, predec(E)) --> !, ccl_p('--'), ccl_unary(E).
 ccl_unary_('&', p, addr(E))    --> !, ccl_p('&'), ccl_cast_expr(E).

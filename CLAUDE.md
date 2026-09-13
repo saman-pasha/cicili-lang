@@ -1801,6 +1801,73 @@ between the program and a binary that runs. Gated by
 a place, an alias template called, a static const folding, the bit count),
 clang++'s numbers; seven gates GREEN.
 
+**M6's twenty-ninth step (0.61): ITANIUM NAME MANGLING, and `std::vector<int>`
+RUNS.** Four things between 0.60's object file and a binary that gives C++'s
+answers, the first of them the name itself. (1) THE MANGLING, for what a
+library header only DECLARES: this compiler emits every name it DEFINES
+unmangled -- its own C-shaped symbols, `C.m.k`, `F.<keys>`, which nothing
+else knows -- but a name it only CALLS must be the one the shipped library
+EXPORTS, and libc++ declares `std::__libcpp_verbose_abort(const char *, ...)`
+and ships it as `_ZNSt3__122__libcpp_verbose_abortEPKcz`. So a function that
+a library header declares and never defines, that is not `extern "C"' and
+whose namespace path is known, is called by its Itanium name
+(`cpp_mangled_name/3`, chosen in `cpp_fn_name/4` where the overload mangling
+sits): `_ZN`, the namespace path (`cpp_mangle_ns/2`, `St` for std), the name
+length-prefixed, `E`, then the parameters (`cpp_mangle_params/4`,
+`cpp_mangle_type/3` over `P` `R` `O` `K` and `cpp_mangle_basic/2`'s builtin
+codes, `v` for `f()`, `z` for the ellipsis). WHAT IS NOT MANGLED keeps its
+plain name, so the linker names the symbol rather than a wrong one being
+found: a class-typed parameter (this compiler's class names are its own
+mangling, not C++'s), a type no code encodes, and ANY signature whose
+substitutable components repeat (`cpp_no_repeats/1`) -- Itanium writes the
+second occurrence of a component as `S_`, `S0_` ..., and a straight
+re-encoding would be a different symbol. A HEADER'S NAMESPACE PATH is
+recorded as the items are indexed (`cpp_index_items/2` threads it,
+`'$cpp_hdr_ns'(N, Path)`; `extern_c` is the path `c`) and written beside the
+AST for a summary-served run (`'$cpp_hdr_ast_ns'`), since the namespaces
+flatten to bare names everywhere else here; the declaration itself is
+emitted once, `cpp_use_mangled/3`, with the ellipsis kept
+(`cpp_fn_variadic/1`, `cpp_fn_arity_fits/3`). (2) A REFERENCE MEMBER IS
+BOUND, never constructed and never assigned: its slot takes the object's
+ADDRESS and every later use reads through it (`ir_ref_member/4`, which a
+lambda's `[&x]` capture already relied on). libc++'s `vector` destroys
+itself through a nested `__destroy_vector` that holds a `vector &`, and
+taken as a member of a class with constructors that member initializer
+became `operator=` into an uninitialized reference -- `vector::assign`,
+`fill_n`, SIGSEGV. `cpp_member_inits`' first clause makes it
+`bind_ref(arrow(this, N), E)`, which is `ir_bind_ref/2` in the lowering (the
+address into the SLOT, where an assignment would write through it) and a
+plain walk in the check, the object outliving its holder the way a reference
+capture's does -- neither followed by the safe part. (3) PLACEMENT NEW,
+which is what `std::__construct_at` is and every container's way of making
+an element: the reader read the placement arguments and THREW THEM AWAY, so
+`::new ((void *) __p) _Up(args)` was the allocating new it looks like, called
+malloc and dropped the block -- a vector's size grew and its elements were
+never stored. They are kept now, `new_at(Ps, new(T, As))` (reader version 42;
+`ccl_new_node/3`), and the desugaring builds what the form means
+(`cpp_new_at/4`): the class's constructor over the given address, or the
+value stored through it, or a refusal by name (`placement_new`). (4) A CAST
+TO A REFERENCE TYPE IS A BIND, not a conversion -- `static_cast<_Tp &&>(__t)`
+is `std::forward`'s whole body, and as a value conversion it loaded the int
+and made a pointer of it (`inttoptr`), so every element a container
+constructed held the low half of an address. The value of a reference is its
+address (`ir_expr(cast(T, E))` and `ir_ref_of/2` for `cast` and `ccast`
+alike, `ir_lval` for the bind as a place), and a reference where a VALUE is
+wanted is read through (`ir_convert/6`'s first clause), which is what the
+rest of the lowering had done only at a call's result. Lowering version 15.
+Gated by `test/cpp/run/stdvector.cpp`: ten `push_back`s through the slow
+path, the split buffer and the relocation, `size`, `capacity`, `operator[]`,
+`front`, `back`, and `std::vector<double>` for the whole machinery again --
+clang++'s numbers, and `leaks` finds none. Seven gates GREEN (the C++ one
+1037 MB warm, 2803 cold after the reader bump, which tripped a 2800 MB
+watchdog on the first run and read as a RED: the finding below, again). NOT
+DONE: the substitutions `S_`, `S0_` (a repeated component refuses instead), a
+class-typed parameter in a mangled name, a mangled name for a TEMPLATE
+libc++ ships instantiated, `new (p) T` told from `new (p) T()` (the reader
+gives both no arguments, and the value-initialized form is what is meant), a
+placement new of an aggregate with no arguments, `std::string` and the rest
+of the containers.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -2275,7 +2342,10 @@ module (a segfault that looked like the error path's). The build mirrors `module
   background run gets `< /dev/null`, or the query loop waits on a stdin
   that never closes. `ulimit -v` is not enforced on macOS. A watchdog that
   kills only the direct child (a shell) leaves cocolog, its grandchild,
-  running: that is what took the machine down. AND A BUMP OF
+  running: that is what took the machine down. AND A PATH IN A GOAL IS
+  QUOTED: the scratchpad's name holds a segment that starts with a digit
+  (`38dd5e5b-...`), which no reader takes as an atom -- `cocolog: could not
+  read the goal`, and nothing else said why. AND A BUMP OF
   `ccl_reader_version/1` invalidates every summary, so the FIRST gate
   run after one re-flattens the library headers and peaks far higher
   than the steady state (the C++ gate: 2512 MB cold against 1847 warm,

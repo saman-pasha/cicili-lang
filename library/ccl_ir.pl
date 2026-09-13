@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(14).
+ccl_lowering_version(15).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -381,6 +381,9 @@ ir_zero(LL, Z) :- ( LL == ptr -> Z = null ; ( LL == double ; LL == float ) -> Z 
 %% ---- conversions -------------------------------------------------------------------
 ir_convert(V, From, To, V1) :- ir_type(From, FL), ir_type(To, TL), ir_convert(V, From, FL, To, TL, V1).
 %% with both LLVM types in hand (the value's travels with it, the target's the caller has)
+%% a REFERENCE where a value is wanted is read through: its value is an address (a cast to a reference type binds)
+ir_convert(V, From, _, To, TL, V1) :- ( From = ref(_, RT) ; From = rref(_, RT) ), \+ ( To = ref(_, _) ; To = rref(_, _) ), !,
+    ccl_resolve_type(RT, T), ir_type(T, LL), ir_fresh(L), ir_ins([L, ' = load ', LL, ', ptr ', V]), ir_convert(L, T, LL, To, TL, V1).
 ir_convert(V, From, FL, To, TL, V1) :-
     (   ir_is_bool(To), \+ ir_is_bool(From) -> ir_to_bool(V, From, FL, V1)   % C++: a bool is 0 or 1, whatever came
     ;   FL == TL -> V1 = V
@@ -517,6 +520,10 @@ ir_expr(preinc(E), V, T, LL) :- !, ir_step(E, add, pre, V, T, LL).
 ir_expr(predec(E), V, T, LL) :- !, ir_step(E, sub, pre, V, T, LL).
 ir_expr(postinc(E), V, T, LL) :- !, ir_step(E, add, post, V, T, LL).
 ir_expr(postdec(E), V, T, LL) :- !, ir_step(E, sub, post, V, T, LL).
+%% A CAST TO A REFERENCE TYPE IS A BIND, never a conversion: `static_cast<_Tp &&>(__t)' is std::forward's whole
+%% body, and taken as a value conversion it loaded the int and made a pointer of it (`inttoptr'), so every element
+%% a libc++ container constructed held the low half of an address. The value of a reference is its address.
+ir_expr(cast(T, E), P, T, ptr) :- ( T = ref(_, _) ; T = rref(_, _) ), !, ir_ref_of(E, P).
 ir_expr(cast(T, E), V, T, LL) :- !, ir_expr(E, V0, T0, L0), ( ccl_resolve_type(T, base(_, [void])) -> V = V0, LL = void ; ir_type(T, LL), ir_convert(V0, T0, L0, T, LL, V) ).
 ir_expr(sizeof(E), N, T, i64) :- !, ccl_size_type(T), ccl_type_of(E, ET), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof(E)) ).
 ir_expr(sizeof_type(ET), N, T, i64) :- !, ccl_size_type(T), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof_type(ET)) ).
@@ -737,6 +744,8 @@ ir_ref_slot(A0, T0, A, T) :- ( T0 = ref(_, T) ; T0 = rref(_, T) ), !, ir_fresh(A
 ir_ref_slot(A, T, A, T).
 %% what a reference is bound to: an lvalue's address, or a call's reference result as it is
 ir_ref_of(E, P) :- ir_lvalue_form(E), !, ir_lval(E, P, _, _).
+ir_ref_of(ccast(_, T, E), P) :- !, ir_ref_of(cast(T, E), P).                          % a C++ cast keeps its word to here
+ir_ref_of(cast(T, E), P) :- ( T = ref(_, _) ; T = rref(_, _) ), !, ir_ref_of(E, P).   % the bind again: no temporary between
 ir_ref_of(call(F, Args), P) :- !, ir_call(F, Args, V, RT),
     (   ( RT = ref(_, _) ; RT = rref(_, _) ) -> P = V                                     % a reference RESULT is the address already
     ;   ccl_resolve_type(RT, T), ir_type(T, LL), ir_fresh(P), ir_alloca_typed(P, T), ir_ins(['store ', LL, ' ', V, ', ptr ', P]) ).   % a call's VALUE bound to a const reference, `std::min<size_type>(a.max_size(), n)': the temporary C++ materializes for it
@@ -760,6 +769,12 @@ ir_lval(arrow(E, N), Slot, T, LL) :- !, ir_expr(E, P, PT, _), ir_elem(PT, ST), i
 %% C++: a member that is a reference (a lambda's capture by reference) holds an address, read through
 ir_ref_member(Slot0, T0, Slot, T) :- ( T0 = ref(_, _) ; T0 = rref(_, _) ), !, ir_slot_addr(Slot0, A0), ir_ref_slot(A0, T0, Slot, T).
 ir_ref_member(Slot, T, Slot, T).
+%% BINDING a reference member: the address goes into the SLOT, where every use of that member reads through it
+ir_bind_ref(arrow(E, N), V) :- !, ir_expr(E, P, PT, _), ir_elem(PT, ST), ir_member_slot(P, ST, N, Slot, _), ir_bind_into(Slot, V).
+ir_bind_ref(member(E, N), V) :- !, ir_lval(E, Base, BT, _), ccl_resolve_type(BT, ST), ir_member_slot(Base, ST, N, Slot, _), ir_bind_into(Slot, V).
+ir_bind_into(Slot, V) :- ir_slot_addr(Slot, A), ir_ref_of(V, R), ir_ins(['store ptr ', R, ', ptr ', A]).
+ir_lval(ccast(_, T, E), S, T1, LL) :- !, ir_lval(cast(T, E), S, T1, LL).
+ir_lval(cast(T, E), P, RT, LL) :- ( T = ref(_, RT0) ; T = rref(_, RT0) ), !, ir_ref_of(E, P), ccl_resolve_type(RT0, RT), ir_type(RT, LL).   % the bind as a place
 ir_lval(compound_lit(T, Init), Addr, T, LL) :- !, ir_fresh(Addr), ir_alloca_typed(Addr, T), ir_init(Addr, T, Init), ir_type(T, LL).
 ir_lval(E, _, _, _) :- ir_fail(lvalue(E)).
 %% an alloca for a value of a C type: a struct or a union aligned as C aligns it
@@ -804,6 +819,7 @@ ir_stmt(declare(_, _)) :- !.
 ir_stmt(directive(_, _)) :- !.
 ir_stmt(include(_, _, _)) :- !.
 ir_stmt(static_assert(_, _, _)) :- !.
+ir_stmt(expr(_, bind_ref(Slot, V))) :- !, ir_bind_ref(Slot, V).      % a reference member bound in a constructor
 ir_stmt(empty) :- !.
 ir_stmt(expr(L, E)) :- !, ir_line(L), ir_expr(E, _, _).
 ir_stmt(defer(L, _, Body)) :- !, ir_line(L), ir_defer_push(Body).

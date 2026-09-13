@@ -713,6 +713,7 @@ ck_stmt(declare(_, _), St, St) :- !.
 ck_stmt(directive(_, _), St, St) :- !.
 ck_stmt(include(_, _, _), St, St) :- !.
 ck_stmt(static_assert(_, _, _), St, St) :- !.
+ck_stmt(expr(_, bind_ref(_, E)), St0, St) :- !, ck_expr(E, St0, St).   % a REFERENCE MEMBER BOUND: the object outlives its holder, as a reference capture's does -- the safe part follows neither
 ck_stmt(empty, St, St) :- !.
 ck_stmt(expr(L, E), St0, St) :- !, ck_line(L), ck_anchor_addrs(E, St0, St1), ck_expr(E, St1, St).
 ck_stmt(defer(L, _, Body), St0, St) :- !, ck_line(L), ck_defer(St0, Body, St).
