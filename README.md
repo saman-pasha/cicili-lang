@@ -506,6 +506,18 @@ what runs today.
   `main` that `value_type` resolved to nothing. Scoring now runs inside the
   class, the rule member templates have had since the twentieth step. Not
   one instance keyed by a free name remains. GREEN.
+* **The thirty-fourth step DONE: a callable member, and a string that
+  grows.** A local of a class with `operator()` has been callable since
+  lambdas were added; a member was not, and libc++'s scope guard holds the
+  closure it was made with and calls `__func_()` in its destructor -- which
+  is how `basic_string` unwinds an append. Five more came with it: a prvalue
+  of the class IS the object (C++17's elision), a converting constructor at
+  a call, a parameter resolved in its class before it is scored, the same
+  type fitting itself, a member initialized from a call taking its class
+  from the desugared form, and a default argument kept from the declaration
+  where the out-of-class definition may not repeat it. `std::string` now
+  appends, pushes back, grows out of its own bytes into a heap buffer and is
+  copied -- clang++'s numbers, no leaks. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

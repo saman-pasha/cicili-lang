@@ -2069,6 +2069,59 @@ being skipped. 0.64's self-typedef guard stays as the net under it. Gated by
 so the first declared takes it) and LLVM refuses the call; with it, clang++'s
 numbers.
 
+**M6's thirty-fourth step (0.66): A DATA MEMBER THAT IS CALLABLE, and the
+string that GROWS.** A local of a class with `operator()` has been callable
+since M6's fifth step; a MEMBER was not, and libc++'s `__scope_guard` holds
+the closure it was made with and writes `__func_()` in its destructor -- which
+is the whole of how `basic_string` unwinds an append. The member is reached the
+way every bare member name is (`this->f_`, a base's hops with it) and its own
+class's `operator()` takes its address, the local's road one scope further in.
+FIVE MORE the growing string asked for, each its own rule. (1) A PRVALUE OF THE
+CLASS IS THE OBJECT, elided, as C++17 guarantees -- no constructor runs and
+none is looked for: `auto __guard = std::__make_scope_guard(f);` handed a
+`__scope_guard` to the only constructor `__scope_guard(_Func)` has, which takes
+the closure, and LLVM refused the store; the temporary that built it is the
+object too, so the statement must not destroy it (`cpp_temp_elide`, as a
+by-value parameter and a return already did). (2) A CONVERTING CONSTRUCTOR AT A
+CALL (`cpp_converting_ctor`, in `cpp_copies_` beside the copy): libc++ hands a
+`__long` where a `__rep` is wanted, and `__rep(__long)` is how a string becomes
+long. It converts only where the argument's type is KNOWN and is not already
+the parameter's class -- what cannot be typed is never converted, which is the
+guard `bag.cpp` earned when a `Name` temporary, whose type nothing could tell,
+was wrapped in a second `Name`. (3) A PARAMETER IS RESOLVED IN ITS CLASS BEFORE
+IT IS SCORED (`cpp_param_ref` through `cpp_type`): 0.65 put the SCORING in the
+class, but the fit test resolves with the INFERENCE, which knows typedefs and
+tags and no class scope, so `__rep(__long __r)` -- two of `basic_string`'s
+nested classes by their short names -- still fitted nothing. (4) THE SAME TYPE
+FITS ITSELF, registered class or not: two plain structs alike scored zero,
+since only a registered class was compared. (5) A MEMBER INITIALIZED FROM A
+CALL takes its class from the DESUGARED form where the raw one cannot tell it:
+libc++'s copy constructor writes
+`__alloc_(__alloc_traits::select_on_container_copy_construction(__str.__alloc_))`,
+and unasked it read as a member with no constructor to take it. AND (6) A
+DEFAULT ARGUMENT BELONGS TO THE DECLARATION, which C++ forbids an out-of-class
+definition to repeat -- so taking the definition whole (0.55) threw the
+defaults away, and `__grow_by_without_replace(a, b, c, d, 0)`, five arguments
+to six parameters, found no member of that arity at all (`cpp_keep_defaults`,
+`cpp_member_params`). FOUND ON THE WAY, older than this step: a temporary
+hoisted out of its own block (0.62) was DECLARED nowhere until the statement
+that holds it was walked, so nothing could type the value the block yields;
+`cpp_temporary` declares it where it registers it. AND A LESSON THE GATE
+TAUGHT: two clauses of `cpp_keep_defaults` both matched the empty case, which
+made `cpp_member_def` nondeterministic, so `findall` gave the member twice and
+a constructor was emitted twice -- `invalid redefinition of function`. A
+refusal now TRACES its breadcrumb (`refuse(What, in(W))` under `'$cpp_trace'`),
+which is how two of these were found. Lowering version 20. WHAT RUNS:
+`std::string` appends (`+=`, a `const char *` and in a loop), `push_back`s,
+grows out of its own bytes into a heap buffer, and is COPIED into a string with
+a buffer of its own -- clang++'s numbers, `leaks` finds none. Gated by
+`test/cpp/run/callable.cpp` (a callable member with two overloads, a converting
+constructor, a default argument on the declaration) and an extended
+`test/cpp/run/stdstring.cpp`. Seven gates GREEN (the C++ one 846 MB). NOT DONE:
+`operator==` on a string -- a FREE OPERATOR TEMPLATE of a library header, which
+is not registered as a free operator at all (`'$cpp_free_ops'` holds the
+program's own) -- and `operator+`, `substr`, `find`, iterators.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
