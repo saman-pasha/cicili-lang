@@ -559,6 +559,12 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The forty-fifth step DONE: `cin.get()` and the unformatted input
+  family.** `get()` in its four forms, `gcount`, `peek`, `ignore`, `unget`,
+  `putback`, `eof` and `fail` -- the shipped members of the library's
+  `basic_istream<char>` and the hidden wrappers over them -- every one through
+  the rules already there, the first fixture of the stream work to ask for no
+  new rule. clang++'s lines. GREEN.
 * **The forty-fourth step DONE: `std::getline`.** libc++'s own body,
   compiled here: a sentry, the buffer's span, `char_traits::find`, an append
   through a member template, a lambda that bumps the stream. Six forms on the

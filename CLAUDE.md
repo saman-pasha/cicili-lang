@@ -53,8 +53,8 @@ bin/cicili++             cicili for C++ (M5): the same, every input read as C++,
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
 test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME;
-                         test/cpp/run/stdcout.cpp, stdendl.cpp, stdcin.cpp and stdgetline.cpp are std::cout << "hello" << std::endl, std::cin >> n
-                         and std::getline built against libc++ and run (a fixture's input is NAME.stdin)
+                         test/cpp/run/stdcout.cpp, stdendl.cpp, stdcin.cpp, stdgetline.cpp and stdget.cpp are std::cout << "hello" << std::endl,
+                         std::cin >> n, std::getline and cin.get() built against libc++ and run (a fixture's input is NAME.stdin)
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2750,6 +2750,22 @@ the C++ gate GREEN at 1173 MB, 104 checks, the only gate the change touches
 (reader version 52 and lowering version 28 unchanged). NOT DONE: `cin.get()', `cin.ignore()', `std::ws', the manipulators, the
 rvalue-stream `getline(basic_istream &&, ...)' overloads (declared, untried),
 wide streams.
+
+**M6's forty-fifth step (0.77): `cin.get()` and the unformatted input family --
+no new rule.** `int_type get()', `peek()', `get(char_type *, streamsize,
+char_type)', `ignore(streamsize, int_type)', `putback(char_type)' and
+`unget()' are shipped members of the extern instance (0.75), `get(char_type &)',
+`get(char_type *, streamsize)', `ignore()' with its two defaults (`1',
+`traits_type::eof()', desugared in the class, 0.76) and `gcount()' the hidden
+inline wrappers over them, `std::char_traits<char>::eof()' a static call on a
+specialization, `cin.eof()' and `cin.fail()' basic_ios's through the base
+hops -- every form went through the rules already there, the first fixture of
+the stream work to ask nothing. Gated by `test/cpp/run/stdget.cpp` (a
+character as an int, one into a char, a bounded read and its count, a
+delimited one and a peek, ignore, unget, putback, a loop to the end of input
+and the stream's state after it), clang++'s lines, 15 s and 871 MB warm; the
+C++ gate GREEN at 2143 MB, 105 checks, the only gate the change touches. NOT DONE: `std::ws', `cin.read()', `readsome()', `tellg()' and
+`seekg()' (`fpos', untried), the manipulators, wide streams.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
