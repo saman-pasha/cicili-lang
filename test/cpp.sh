@@ -29,7 +29,8 @@ echo "-- M6, in steps: C++ that is C with names, classes, virtual, templates, la
 for src in "$ROOT"/test/cpp/run/*.cpp; do
   n=$(basename "$src" .cpp)
   flags=$(cat "$ROOT/test/cpp/run/$n.flags" 2>/dev/null)
-  got=$("$ROOT/bin/cicili++" $flags "$src" -o "$n" 2>&1 && { "./$n"; echo "exit $?"; })
+  inp="$ROOT/test/cpp/run/$n.stdin"; [ -f "$inp" ] || inp=/dev/null   # a fixture that READS gives its input as NAME.stdin (stdcin.cpp); the rest read nothing
+  got=$("$ROOT/bin/cicili++" $flags "$src" -o "$n" 2>&1 && { "./$n" < "$inp"; echo "exit $?"; })
   if [ "$got" = "$(cat "$ROOT/test/cpp/run/$n.expect")" ]; then echo "ok   $n.cpp: built through cicili++, runs, and prints what it should"; else echo "FAIL $n.cpp"; echo "$got" | diff "$ROOT/test/cpp/run/$n.expect" - 2>&1 | head -6 | sed 's/^/     /'; failures=$((failures + 1)); fi
 done
 got=$("$ROOT/bin/cicili++" "$ROOT/test/cpp/classes.cpp" -o classes 2>&1 && { ./classes; echo "exit $?"; })

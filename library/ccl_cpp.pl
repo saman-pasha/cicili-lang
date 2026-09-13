@@ -87,7 +87,7 @@ cpp_instance_note(Name, What) :- assertz('$cpp_inst'(Name, What)).
 
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
-    cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_mdef'/5), cpp_reset('$cpp_extra'/2), cpp_reset('$cpp_vbase'/1),
+    cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_mdef'/5), cpp_reset('$cpp_extern'/3), cpp_reset('$cpp_extra'/2), cpp_reset('$cpp_vbase'/1),
     nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0), nb_setval('$cpp_closure_this', []), nb_setval('$cpp_temps', none), nb_setval('$cpp_making', []),
     nb_setval('$cpp_nontrivial', []),
     nb_setval('$cpp_concepts', []),
@@ -161,16 +161,25 @@ cpp_mangled_name(F, Ps, Name) :-
 %% has no spelling for -- a function pointer, a non-type template argument, an operator, an array -- FAILS, and the
 %% member keeps its own name for the linker to name.
 cpp_ita_function([std], [], F, _, Ps, V, Name) :- !,                                       % a function directly in std is UNSCOPED: `_ZSt19uncaught_exceptionsv', no N...E
-    cpp_ita_member_name(F, MText), cpp_ita_params(Ps, V, [], ParamText, _), atomic_list_concat(['_ZSt', MText, ParamText], Name).
+    cpp_ita_member_text(F, Ps, MText), cpp_ita_params(Ps, V, [], ParamText, _), atomic_list_concat(['_ZSt', MText, ParamText], Name).
 cpp_ita_function(Path, Chain, F, Qs, Ps, V, Name) :-
     ( memberchk(const, Qs) -> CV = 'K' ; CV = '' ),
     cpp_ita_prefix(Path, Chain, [], PText, Subs1),
-    cpp_ita_member_name(F, MText),
+    cpp_ita_member_text(F, Ps, MText),
     cpp_ita_params(Ps, V, Subs1, ParamText, _),
     atomic_list_concat(['_ZN', CV, PText, MText, 'E', ParamText], Name).
+cpp_ita_member_text(operator(Op), [], Code) :- cpp_ita_unary(Op, Code), !.               % a member operator with no parameter is the unary one: `operator-()' is `ng'
+cpp_ita_member_text(F, _, T) :- cpp_ita_member_name(F, T).
 cpp_ita_member_name('$ctor', 'C1') :- !.
 cpp_ita_member_name('$dtor', 'D1') :- !.
+cpp_ita_member_name(operator(Op), Code) :- !, cpp_ita_op(Op, Code).                      % an operator by the ABI's two-letter code: `operator>>' is `rs'
 cpp_ita_member_name(F, T) :- atom(F), atom_length(F, L), atomic_list_concat([L, F], T).
+cpp_ita_op('+', pl).    cpp_ita_op('-', mi).    cpp_ita_op('*', ml).    cpp_ita_op('/', dv).    cpp_ita_op('%', rm).    cpp_ita_op('&', an).    cpp_ita_op('|', or).    cpp_ita_op('^', eo).
+cpp_ita_op('=', 'aS').  cpp_ita_op('+=', 'pL'). cpp_ita_op('-=', 'mI'). cpp_ita_op('*=', 'mL'). cpp_ita_op('/=', 'dV'). cpp_ita_op('%=', 'rM'). cpp_ita_op('&=', 'aN'). cpp_ita_op('|=', 'oR'). cpp_ita_op('^=', 'eO').
+cpp_ita_op('<<', ls).   cpp_ita_op('>>', rs).   cpp_ita_op('<<=', 'lS'). cpp_ita_op('>>=', 'rS'). cpp_ita_op('==', eq). cpp_ita_op('!=', ne). cpp_ita_op('<', lt). cpp_ita_op('>', gt). cpp_ita_op('<=', le). cpp_ita_op('>=', ge). cpp_ita_op('<=>', ss).
+cpp_ita_op('!', nt).    cpp_ita_op('&&', aa).   cpp_ita_op('||', oo).   cpp_ita_op('++', pp).   cpp_ita_op('--', mm).   cpp_ita_op(',', cm).    cpp_ita_op('->*', pm).  cpp_ita_op('->', pt).
+cpp_ita_op('()', cl).   cpp_ita_op('[]', ix).   cpp_ita_op('~', co).    cpp_ita_op(new, nw).    cpp_ita_op(delete, dl).
+cpp_ita_unary('-', ng). cpp_ita_unary('+', ps). cpp_ita_unary('*', de). cpp_ita_unary('&', ad).
 %% the prefix: the namespace path, then the class chain (plain(Name) or inst(Name, Args) per level), each level a
 %% candidate once complete; a level already in the table replaces everything spelled so far by its code
 cpp_ita_prefix(Path, Chain, Subs0, Text, Subs) :-
@@ -225,8 +234,11 @@ cpp_ita_class(N, Subs0, Canon, Text, Subs) :-
     (   Path == [std], Chain = [plain(Last)]
     ->  atom_length(Last, L), atomic_list_concat(['St', L, Last], Canon), ( cpp_ita_sub(Canon, Subs1, Code) -> Text = Code, Subs = Subs1 ; Text = Canon, cpp_ita_note(Canon, Subs1, Subs) )
     ;   cpp_ita_chain_type(Chain, C0, T0, Subs1, C1, T1, Subs2),
-        atomic_list_concat(['N', C1, 'E'], Canon),
+        Canon = C1,                                                                                  % THE KEY IS THE CHAIN'S OWN, as a prefix level's is: the ABI counts `basic_istream<char>' the prefix and the type as ONE entity
         ( cpp_ita_sub(Canon, Subs2, Code) -> Text = Code, Subs = Subs2 ; atomic_list_concat(['N', T1, 'E'], Text), cpp_ita_note(Canon, Subs2, Subs) ) ).
+%% ... a key with `N ... E' around it matched no prefix level, so `basic_istream<char>::sentry::sentry(basic_istream<char> &,
+%% bool)' spelled its parameter afresh, `RNS0_IcS2_EE', where the library has `RS3_' -- the instance noted as the
+%% constructor's own prefix; the sentry constructors were the two symbols the link named.
 %% the chain of a TYPE: every level but the last is a prefix candidate; the last is the type's own (noted whole above)
 cpp_ita_chain_type([L], C0, T0, Subs0, C, T, Subs) :- !, cpp_ita_last_level(L, C0, T0, Subs0, C, T, Subs).
 cpp_ita_chain_type([L|Ls], C0, T0, Subs0, C, T, Subs) :- cpp_ita_chain([L], C0, T0, Subs0, C1, T1, Subs1), cpp_ita_chain_type(Ls, C1, T1, Subs1, C, T, Subs).
@@ -364,6 +376,8 @@ cpp_index_name(ctor_def(_, C, _, _, _, _), C) :- atom(C).
 cpp_index_name(dtor_def(_, C, _, _), C) :- atom(C).
 cpp_index_name(ctor_def(_, scoped(Path, _), _, _, _, _), C) :- cpp_mdef_class(Path, C, _), atom(C).   % a NESTED class's, by the enclosing class's name
 cpp_index_name(dtor_def(_, scoped(Path, _), _, _), C) :- cpp_mdef_class(Path, C, _), atom(C).
+cpp_index_name(extern_template(_, declare(_, base(_, [class(tmpl(N, _), none)]))), N) :- atom(N).   % AN EXTERN TEMPLATE, by the template's name: the instance the shipped library defines (cpp_note_extern)
+cpp_index_name(extern_template(_, declaration(_, _, _, [var(scoped(Path, _), fn(_, _, _), none)])), N) :- ccl_last(Path, tmpl(N, _)), atom(N).   % ... and one member of an instance, declared alone (libc++'s string)
 %% a name the registries do not have: the header's items of that name, registered now (a class as a lazy one)
 cpp_hdr_load(N) :- atom(N), cpp_hdr_item(N, _), \+ ( nb_getval('$cpp_hdr_loaded', Ls), memberchk(N, Ls) ), !,
     cpp_spend(load(N)), nb_getval('$cpp_hdr_loaded', Ls0), nb_setval('$cpp_hdr_loaded', [N|Ls0]), assertz('$cpp_lib'(N)),
@@ -406,6 +420,7 @@ cpp_lazy_inline_var(L, N, T0, Init0) :- \+ cpp_instance_done(N), !, cpp_instance
 cpp_lazy_inline_var(_, _, _, _).
 cpp_init_expr(init(Items), init(Items1)) :- !, findall(item(D, V1), ( member(item(D, V0), Items), cpp_init_expr(V0, V1) ), Items1).
 cpp_init_expr(E0, E) :- cpp_expr(none, E0, E).
+cpp_register_lazy([extern_template(_, I)|Is]) :- !, cpp_note_extern(I), cpp_register_lazy(Is).
 cpp_register_lazy([I|Is]) :- cpp_register_(I), cpp_register_lazy(Is).
 %% A LIBRARY HEADER'S EXTERN GLOBAL is DEFINED IN THE SHIPPED BINARY and reached by the symbol that binary
 %% exports, as a declared-only function has been since 0.61: `extern ostream cout;' inside `std::__1' is
@@ -482,6 +497,7 @@ cpp_register_header([declare(L, base(_, [class(K, C0, Bases, Ms)]))|Is]) :- cpp_
 cpp_register_header([namespace(_, _, Js)|Is]) :- !, cpp_register_header(Js), cpp_register_header(Is).
 cpp_register_header([I|Is]) :- cpp_note_fns([I]), cpp_register_([I]), cpp_register_header(Is).
 cpp_register_([]).
+cpp_register_([extern_template(_, I)|Is]) :- !, cpp_note_extern(I), cpp_register_(Is).
 cpp_register_([declare(L, base(_, [class(_, C0, Bases, Ms)]))|Is]) :- !,
     ( cpp_class_item_name(C0, C) -> cpp_class_encloses(C0, C), cpp_register_class(L, C, Bases, Ms) ; true ), cpp_register_(Is).
 %% A NESTED CLASS DEFINED OUT OF ITS ENCLOSING CLASS -- `class locale::facet : public __shared_count { ... };',
@@ -798,7 +814,14 @@ cpp_static_type(base(Q, S), base(Q1, S)) :- memberchk(static, Q), !, ccl_delete_
 cpp_static_type(ptr(Q, T0), ptr(Q, T)) :- !, cpp_static_type(T0, T).
 cpp_static_type(arr(N, T0), arr(N, T)) :- !, cpp_static_type(T0, T).
 cpp_static_type(ref(Q, T0), ref(Q, T)) :- !, cpp_static_type(T0, T).
-cpp_split_members([member(T0, N, _)|Ms], [member(T, N, none)|Data], Ss, Ds) :- !, cpp_type(T0, T), cpp_split_members(Ms, Data, Ss, Ds).
+cpp_split_members([member(T0, N, W0)|Ms], [member(T, N, W)|Data], Ss, Ds) :- !, cpp_type(T0, T), cpp_bit_width(W0, W), cpp_split_members(Ms, Data, Ss, Ds).
+%% A BITFIELD KEEPS ITS WIDTH, folded in the class's words as an array's bound is: libc++'s string is `unsigned char
+%% __is_long_ : 1; unsigned char __size_ : 7;' in its short form and `size_type __is_long_ : 1; size_type __cap_ :
+%% sizeof(size_type) * CHAR_BIT - 1;' in its long one -- with the widths dropped each was a whole byte or word, the
+%% string 40 bytes where the library's is 24, and the library's own push_back wrote by its layout while our size()
+%% read by ours (self-consistent, the string fixtures had never met the library's members)
+cpp_bit_width(none, none) :- !.
+cpp_bit_width(W0, W) :- cpp_array_bound(W0, W).
 cpp_split_members([default_init(N, E)|Ms], Data, Ss, [N-E|Ds]) :- !, cpp_split_members(Ms, Data, Ss, Ds).
 cpp_split_members([_|Ms], Data, Ss, Ds) :- cpp_split_members(Ms, Data, Ss, Ds).
 %% the functions a class makes are declared in the symbol table at once, so
@@ -1007,16 +1030,16 @@ cpp_required([param(_, _, _)|_], 0) :- !.
 cpp_required([_|Ps], N) :- cpp_required(Ps, N0), N is N0 + 1.
 
 %% ---- names ----------------------------------------------------------------------
-cpp_mangle(C, operator(Op), Ps, Name) :- !, cpp_op_word(Op, W), cpp_params_key(Ps, K), atomic_list_concat([C, '.op.', W, '.', K], Name).
 %% A MEMBER A LIBRARY HEADER DECLARES AND THE SHIPPED LIBRARY DEFINES is called by its Itanium name, at the one door
 %% every member's name comes through -- the emission of its declaration, the call, the table's slot: `__num_put_base::
 %% __identify_padding', `ctype<char>::do_narrow'. A constructor is `C1', a destructor `D1' (0.72's cpp_dtor_name,
 %% folded in). Where the encoder has no spelling the member keeps its own name, and the link names it.
 cpp_mangle(C, M, Ps, Name) :- cpp_shipped_member(C, M, Ps, Qs, Kind), cpp_class_scope(C, Path, Chain),
     catch(( cpp_in_class(C, cpp_plain_params(Ps, Ps1)), cpp_ita_function(Path, Chain, Kind, Qs, Ps1, false, Name) ), _, fail), !.   % the parameters RESOLVED IN THE CLASS first: `do_narrow(char_type, char)' is written in ctype's own words
+cpp_mangle(C, operator(Op), Ps, Name) :- !, cpp_op_word(Op, W), cpp_params_key(Ps, K), atomic_list_concat([C, '.op.', W, '.', K], Name).
 cpp_mangle(_, M, _, _) :- \+ atom(M), !, cpp_refuse(0, member_name(M)).   % never a raw type_error out of atomic_list_concat: say which name could not be mangled
 cpp_mangle(C, M, Ps, Name) :- cpp_params_key(Ps, K), atomic_list_concat([C, '.', M, '.', K], Name).
-cpp_shipped_member(C, M, Ps, Qs, Kind) :- atom(M), cpp_lib_class(C), cpp_class(C, cls(_, _, Ms, _, _, _)), cpp_params_key(Ps, K),
+cpp_shipped_member(C, M, Ps, Qs, Kind) :- ( atom(M) -> true ; M = operator(_) ), cpp_lib_class(C), cpp_class(C, cls(_, _, Ms, _, _, _)), cpp_params_key(Ps, K),   % an operator member too: `cin >> n' is the shipped `rs'
     (   M == C -> member(ctor(_, Qs, Ps0, _, none), Ms), cpp_params_key(Ps0, K), Kind = '$ctor'
     ;   member(method(_, Qs, _, M, Ps0, _, none), Ms), \+ memberchk(pure, Qs), cpp_params_key(Ps0, K), Kind = M ),
     \+ cpp_defined_out_of_class(C, Kind, K), !.
@@ -1252,7 +1275,8 @@ cpp_member_inits([member(MT, N, _)|Ds], Inits, Defaults, L, Pre, Body) :- cpp_cl
     ( memberchk(init(N, Args), Inits) -> true ; memberchk(N-E, Defaults) -> Args = [E] ; Args = [] ),
     length(Args, NA),
     (   cpp_ctor(MC, Args, CName) -> cpp_fill_defaults(CName, Args, Args1), Pre = [expr(L, call(id(CName), [addr(arrow(this, N))|Args1]))|Pre1]
-    ;   Args == [], cpp_trivial_default(MC) -> Pre = Pre1                                          % nothing to construct: libc++'s allocator, `allocator() = default' and a converting template
+    ;   Args == [], cpp_trivial_default(MC)                                                        % nothing to construct: libc++'s allocator, `allocator() = default' and a converting template
+    ->  ( memberchk(init(N, []), Inits) -> Pre = [expr(L, call(id(memset), [addr(arrow(this, N)), int(0), sizeof_type(MT)]))|Pre1] ; Pre = Pre1 )   % ... but `m()' WRITTEN OUT is VALUE-initialization, which ZEROES a class whose default constructor is not user-provided: basic_string's `: __rep_()', and left as garbage the union's `__is_long_' bit read long, `clear()' wrote through a null pointer
     ;   Args = [E], cpp_init_arg_class(E, MC)                                                      % the implicit copy or move: bitwise, as a struct copies; a class with a destructor keeps the rule
     ->  ( cpp_dtor(MC, _) -> cpp_refuse(L, copy_of_a_class_with_destructor(MC)) ; Pre = [expr(L, assign('=', arrow(this, N), E))|Pre1] )
     ;   cpp_refuse(L, member_not_constructed(N, MC, NA)) ),
@@ -1552,8 +1576,16 @@ cpp_no_copies_([P|Ps], [A|As]) :-
     ( cpp_class_of_type(PT, C), cpp_dtor(C, _), cpp_lvalue(A) -> cpp_refuse(0, class_with_destructor_by_value(C)) ; true ),
     cpp_no_copies_(Ps, As).
 cpp_no_copies_([_|Ps], [_|As]) :- cpp_no_copies_(Ps, As).
-cpp_expr(Ctx, member(X, N), E) :- !, cpp_expr(Ctx, X, X1), ( cpp_class_of_type_of(X1, C), cpp_data_member(C, N, Hops), Hops \== [] -> cpp_hops(X1, Hops, B), E = member(B, N) ; E = member(X1, N) ).
-cpp_expr(Ctx, arrow(X, N), E) :- !, cpp_expr(Ctx, X, X1), ( cpp_pointee_class_of(X1, C), cpp_data_member(C, N, Hops), Hops \== [] -> cpp_access(X1, N, Hops, E) ; E = arrow(X1, N) ).
+cpp_expr(Ctx, member(X, N), E) :- !, cpp_expr(Ctx, X, X1),
+    (   cpp_class_of_type_of(X1, C), cpp_data_member(C, N, Hops), Hops \== [] -> cpp_hops(X1, Hops, B), E = member(B, N)
+    ;   cpp_class_of_type_of(X1, C), \+ cpp_data_member(C, N, _), cpp_static_through_object(C, N, E0) -> E = E0   % A STATIC NAMED THROUGH AN OBJECT, `__ct.space', which C++ allows: ctype_base's masks through a facet
+    ;   E = member(X1, N) ).
+cpp_expr(Ctx, arrow(X, N), E) :- !, cpp_expr(Ctx, X, X1),
+    (   cpp_pointee_class_of(X1, C), cpp_data_member(C, N, Hops), Hops \== [] -> cpp_access(X1, N, Hops, E)
+    ;   cpp_pointee_class_of(X1, C), \+ cpp_data_member(C, N, _), cpp_static_through_object(C, N, E0) -> E = E0
+    ;   E = arrow(X1, N) ).
+cpp_static_through_object(C, N, V) :- cpp_static_const(C, N, V), !.                    % a static const with a constant: the constant, as `C::value' folds
+cpp_static_through_object(C, N, id(Name)) :- cpp_static_member(C, N, Name).
 cpp_expr(Ctx, bin('<=>', A, B), E) :- !, cpp_expr(Ctx, A, A1), cpp_expr(Ctx, B, B1),         % C++20: the three-way comparison, an int for scalars (-1, 0, 1); a class's operator<=> when it has one
     (   cpp_class_of_type_of(A1, C) -> ( cpp_method(C, operator('<=>'), [B1], Name, Hops) -> cpp_hops(A1, Hops, Base), cpp_object_arg(Name, addr(Base), Obj), E = call(id(Name), [Obj, B1]) ; cpp_refuse(0, three_way_comparison_of_a_class(C)) )
     ;   E = bin('-', bin('>', A1, B1), bin('<', A1, B1)) ).
@@ -2095,9 +2127,44 @@ cpp_member_def(N, Name, Args, M0, M) :- cpp_member_def_key(N, Name, Args, plain,
 cpp_member_def_key(N, Name, Args, Where, M0, M) :-
     (   cpp_member_shape(M0, K, Ps, none), cpp_params_key(Ps, PK), cpp_mdef_key(Where, K, Key),
         '$cpp_mdef'(N, Key, TPs, Pat, Item0), cpp_mdef_inner(Item0, Item), cpp_mdef_bind(Pat, Args, TPs, B),
-        cpp_subst(Item, [N-base([], [typedef(Name)])|B], M1), cpp_member_shape(M1, K, Ps1, B1), B1 \== none, cpp_params_key(Ps1, PK)
+        cpp_subst(Item, [N-base([], [typedef(Name)])|B], M1), cpp_member_shape(M1, K, Ps1, B1), B1 \== none, cpp_params_key(Ps1, PK),
+        \+ cpp_extern_shipped(N, Args, Where, K, PK, Item)                  % ... unless the shipped library DEFINES it (below): the member stays declared, and is called by its symbol
     ->  cpp_keep_defaults(Ps, Ps1, Ps2), cpp_member_params(M1, Ps2, M)     % the DEFINITION's body with the DECLARATION's default arguments
     ;   M = M0 ).
+%% AN EXTERN TEMPLATE'S INSTANCE IS SHIPPED: `extern template class basic_istream<char>;' in a library header says the
+%% library's binary holds that instance -- every member of it that libc++ does not hide from its ABI -- and clang
+%% calls those members rather than instantiating them (`cin >> n' is `_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE
+%% rsERi' in clang's own object; the num_get machinery behind it is never compiled by a program). Here the same: the
+%% instance's out-of-class definitions are NOT merged into its members (cpp_member_def_key), so they stay declared,
+%% and a declared member of a library class is called by its Itanium name (cpp_shipped_member, 0.73). WHICH members:
+%% libc++ marks the hidden ones `_LIBCPP_HIDE_FROM_ABI', which the preprocessor here spells as visibility hidden plus
+%% always_inline -- and every such out-of-class definition of the stream classes is written `inline', every exported
+%% one without it (measured on the flattened <iostream>: 41 + 29 + 16 definitions, not one exception) -- so the
+%% `inline' the reader keeps (cpp_mdef_item's Qs) is the mark, no attribute needed. A member in the class body stays
+%% compiled as before (libc++ writes those hidden without exception). The other spelling, `extern template void
+%% basic_string<char>::__init(const value_type *, size_type);', names ONE member of an instance (libc++'s string
+%% lists its exported members so), keyed by its name and its parameters as written.
+cpp_note_extern(declare(_, base(_, [class(tmpl(N, Args), none)]))) :- atom(N), !, assertz('$cpp_extern'(N, Args, all)).
+cpp_note_extern(declaration(_, _, _, [var(scoped(Path, M), fn(_, Ps, _), none)])) :- ccl_last(Path, tmpl(N, Args)), atom(N), cpp_mdef_name(M), !,
+    cpp_params_key(Ps, K), assertz('$cpp_extern'(N, Args, member(M, K))).
+cpp_note_extern(_).
+cpp_extern_shipped(N, Args, Where, K, PK, Item) :-
+    '$cpp_extern'(N, EArgs, Scope), cpp_extern_args(EArgs, Args), ( Scope == all -> true ; Where == plain, Scope == member(K, PK) ),
+    cpp_mdef_function(Item), \+ cpp_mdef_inline(Item), !.
+%% ... a member FUNCTION, never a nested class's definition (the stream's sentry, merged as any nested class), and never a
+%% MEMBER TEMPLATE (a second template wrapper: no explicit instantiation covers one)
+cpp_mdef_function(template(_, _, M)) :- !, M \= template(_, _, _), cpp_mdef_function(M).
+cpp_mdef_function(in_nested(_, M)) :- !, cpp_mdef_function(M).
+cpp_mdef_function(method(_, _, _, _, _, _, _)).
+cpp_mdef_function(ctor(_, _, _, _, _)).
+cpp_mdef_function(dtor(_, _, _)).
+cpp_extern_args([], _).                                                          % the extern declaration's arguments are the instance's first ones; the defaults fill the rest
+cpp_extern_args([E|Es], [A|As]) :- cpp_type_key(E, EK), cpp_type_key(A, AK), EK == AK, cpp_extern_args(Es, As).
+cpp_mdef_inline(template(_, _, M)) :- !, cpp_mdef_inline(M).
+cpp_mdef_inline(in_nested(_, M)) :- !, cpp_mdef_inline(M).
+cpp_mdef_inline(method(_, Qs, _, _, _, _, _)) :- memberchk(inline, Qs).
+cpp_mdef_inline(ctor(_, Qs, _, _, _)) :- memberchk(inline, Qs).
+cpp_mdef_inline(dtor(_, Qs, _)) :- memberchk(inline, Qs).
 cpp_mdef_key(plain, K, K).
 cpp_mdef_key(nested(Nested), K, nested_member(Nested, K)).
 cpp_mdef_inner(in_nested(_, Item), Item) :- !.

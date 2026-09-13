@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(51).
+ccl_reader_version(52).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 

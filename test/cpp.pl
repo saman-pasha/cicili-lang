@@ -50,7 +50,7 @@ c_checks :-
     c17, c18, c19, c20, c21,
     section('C++20: concepts and requires, <=>, consteval and constinit, char8_t, coroutines read, using enum, for with an initializer, designated initializers, an abbreviated template, a template lambda, if constexpr'),
     c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33,
-    section('the Itanium mangler (0.73): clang++ six symbols, spelled from the desugaring own terms -- substitutions, nested names, template instances, K, C1/D1'),
+    section('the Itanium mangler (0.73, 0.75): nine symbols of clang++ and the shipped library, spelled from the desugaring own terms -- substitutions, nested names, template instances, K, C1/D1, an operator, a prefix as a type'),
     c34.
 
 c1 :- check('namespace N { ... } is namespace(L, N, Items), nested, and anonymous',
@@ -183,8 +183,10 @@ c33 :- check('auto(k) is decay_copy(k); if (using T = long; true) is a block of 
 %% cleared after, so no later check meets them.
 ita_facts :-
     ccl_ensure_globals, ita_clear,
-    nb_setval('$cpp_enclosing', ['loc2.fac'-loc2]),
-    ita_ns([ios_base, ct2, loc2, basic_string, char_traits, allocator, tw]),
+    nb_setval('$cpp_enclosing', ['loc2.fac'-loc2, 'bis.sentry'-bis, 'bos.sentry'-bos]),
+    ita_ns([ios_base, ct2, loc2, basic_string, char_traits, allocator, tw, basic_istream, basic_ostream]),
+    assertz('$cpp_inst'(bis, inst(basic_istream, [base([], [char]), base([], [typedef(ctc)])]))),
+    assertz('$cpp_inst'(bos, inst(basic_ostream, [base([], [char]), base([], [typedef(ctc)])]))),
     assertz('$cpp_inst'('ct2.char', inst(ct2, [base([], [char])]))),
     assertz('$cpp_inst'(ctc, inst(char_traits, [base([], [char])]))),
     assertz('$cpp_inst'(alc, inst(allocator, [base([], [char])]))),
@@ -198,7 +200,7 @@ ita_name(Chain, F, Qs, Ps, Want) :-
     cpp_ita_function([std, '__1'], Chain, F, Qs, Ps, false, Got),
     (   Got == Want -> true
     ;   write('     mangled '), write(F), write(' as '), write(Got), write(' where clang++ has '), write(Want), nl, fail ).
-c34 :- check('the Itanium mangler spells clang++ six symbols: a static method over two pointers and a const reference (S1_, NS_...E), a const method of a template instance (K, IcE), a nested class destructor (D1), two strings by value (S5_), a reference and a pointer to one class (S0_, S2_), a static member of an instance over two instances (S3_)',
+c34 :- check('the Itanium mangler spells clang++ and the shipped library nine symbols: a static method over two pointers and a const reference (S1_, NS_...E), a const method of a template instance (K, IcE), a nested class destructor (D1), two strings by value (S5_), a reference and a pointer to one class (S0_, S2_), a static member of an instance over two instances (S3_), the stream sentries constructors taking their own instance (RS3_, the prefix as a type), and operator>> (rs)',
     ( ita_facts,
       ita_name([plain(npb2)], ipad, [], [param(ptr([], base([], [char])), a), param(ptr([], base([], [char])), b), param(ref([], base([const], [typedef(ios_base)])), c)], '_ZNSt3__14npb24ipadEPcS1_RKNS_8ios_baseE'),
       ita_name([inst(ct2, [base([], [char])])], nar, [const], [param(base([], [char]), a), param(base([], [char]), b)], '_ZNKSt3__13ct2IcE3narEcc'),
@@ -206,6 +208,9 @@ c34 :- check('the Itanium mangler spells clang++ six symbols: a static method ov
       ita_name([], ff, [], [param(base([], [typedef(bsc)]), a), param(base([], [typedef(bsc)]), b)], '_ZNSt3__12ffENS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES5_'),
       ita_name([], gg, [], [param(ref([], base([const], [typedef(ios_base)])), a), param(ptr([], base([], [typedef(ios_base)])), b), param(ref([], base([const], [typedef(ios_base)])), c)], '_ZNSt3__12ggERKNS_8ios_baseEPS0_S2_'),
       ita_name([inst(tw, [base([], [char])])], two, [], [param(base([], [typedef('ct2.char')]), a), param(base([], [typedef('ct2.char')]), b)], '_ZNSt3__12twIcE3twoENS_3ct2IcEES3_'),
+      ita_name([inst(basic_istream, [base([], [char]), base([], [typedef(ctc)])]), plain(sentry)], '$ctor', [], [param(ref([], base([], [typedef(bis)])), a), param(base([], [bool]), b)], '_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEE6sentryC1ERS3_b'),
+      ita_name([inst(basic_ostream, [base([], [char]), base([], [typedef(ctc)])]), plain(sentry)], '$ctor', [], [param(ref([], base([], [typedef(bos)])), a)], '_ZNSt3__113basic_ostreamIcNS_11char_traitsIcEEE6sentryC1ERS3_'),
+      ita_name([inst(basic_istream, [base([], [char]), base([], [typedef(ctc)])])], operator('>>'), [], [param(ref([], base([], [int])), a)], '_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEErsERi'),
       ita_clear )).
 
 %% ---- real C++ from the neighbours: Cicili's emitted C++, read entirely ----------------------

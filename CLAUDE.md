@@ -53,7 +53,8 @@ bin/cicili++             cicili for C++ (M5): the same, every input read as C++,
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
 test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME;
-                         test/cpp/run/stdcout.cpp and stdendl.cpp are std::cout << "hello" << std::endl built against libc++ and run
+                         test/cpp/run/stdcout.cpp, stdendl.cpp and stdcin.cpp are std::cout << "hello" << std::endl and std::cin >> n built
+                         against libc++ and run (a fixture's input is NAME.stdin)
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2636,6 +2637,69 @@ unchanged. NOT DONE: an OVERLOAD SET of plain functions as an
 argument (C++ picks by the target; here a name has the one declared type);
 `std::hex' and kin scored by type now but not gated; `<iomanip>''s
 manipulators, which are classes; a number inserted (`num_put'), `std::cin'.
+
+**M6's forty-third step (0.75): `std::cin` -- THE EXTERN TEMPLATE'S INSTANCE IS
+SHIPPED, and the string's true layout.** `cin >> n' in clang's own object is a
+call to `_ZNSt3__113basic_istreamIcNS_11char_traitsIcEEErsERi' -- the library
+holds `basic_istream<char>' whole (`extern template class basic_istream<char>;'
+in the header), and the num_get machinery behind the extractor is never
+compiled by a program. THE SAME HERE: an `extern template class X<Args>;' item
+of a library header is indexed by the template's name and noted at the load
+(`cpp_note_extern`, `'$cpp_extern'(N, Args, all)`); an instance of N with those
+arguments first (the defaults fill the rest) does NOT take its out-of-class
+member definitions at the merge (`cpp_member_def_key` asks `cpp_extern_shipped`),
+so they stay DECLARED, and a declared member of a library class is called by its
+Itanium name (0.73's `cpp_shipped_member`, now for an operator member too, whose
+clause had sat before the door with a cut). WHICH MEMBERS: libc++ hides a member
+from its ABI with `_LIBCPP_HIDE_FROM_ABI', which this preprocessor spells as
+visibility hidden plus always_inline; every such out-of-class definition of the
+four stream classes is written `inline' and every exported one without it
+(measured on the flattened `<iostream>`: 41 + 29 + 16 definitions, no
+exception), so the `inline' the reader keeps (`cpp_mdef_item`'s Qs) is the mark,
+no attribute kept; a member with its body in the class stays compiled (libc++
+writes those hidden without exception); never a nested class's definition, never
+a member TEMPLATE (a second template wrapper: no explicit instantiation covers
+one). The other spelling, `extern template void basic_string<char>::__init(const
+value_type *, size_type);' -- libc++ lists its string's exported members one by
+one -- names ONE member by its name and its parameters as written
+(`'$cpp_extern'(N, Args, member(M, K))`). WHAT THE INDEX CHANGE COST: reader
+version 52, every summary rewritten. THE MANGLER, twice more: an operator member
+by the ABI's code (`cpp_ita_op`: `rs', `ls', `pL' ...; a member with no
+parameter the unary one, `cpp_ita_unary`), and THE KEY OF A CLASS TYPE IS ITS
+CHAIN'S OWN, as a prefix level's is -- the ABI counts `basic_istream<char>' the
+prefix and the type as ONE entity, and with `N ... E' around the type's key the
+sentry's constructor spelled its parameter afresh (`RNS0_IcS2_EE') where the
+library has `RS3_'; c34 spells nine symbols now, the two sentries and
+`operator>>' among them, checked against the shipped library's export list.
+THREE MORE THE FIXTURE ASKED: (1) A STATIC NAMED THROUGH AN OBJECT, `__ct.space'
+(`cpp_static_through_object` in the member and arrow clauses of `cpp_expr`):
+ctype_base's masks through the facet, which C++ allows and the lowering met as a
+data member that was not there; (2) `m()' WRITTEN OUT IN A MEMBER INITIALIZER IS
+VALUE-INITIALIZATION, which ZEROES a class whose default constructor is not
+user-provided (`memset' over the member, `cpp_member_inits`): basic_string's
+`: __rep_()' left the union as garbage, its `__is_long_' bit read long and
+`clear()' wrote through a null pointer; (3) A BITFIELD KEEPS ITS WIDTH
+(`cpp_split_members` had replaced every member's third argument with `none';
+`cpp_bit_width` folds it in the class's words as an array's bound is): libc++'s
+string is `__is_long_ : 1; __size_ : 7' in its short form and `__is_long_ : 1;
+__cap_ : 63' in its long one, and with the widths dropped each was a whole byte
+or word -- the string 40 bytes where the library's is 24, self-consistent, so
+the string fixtures never knew; the library's own `push_back' wrote by its
+layout and our `size()' read by ours. `sizeof(std::string)' is 24 now, as
+clang's. THE GATE reads a fixture's input from `NAME.stdin' when it exists, else
+nothing (`/dev/null'). WHAT RUNS: `test/cpp/run/stdcin.cpp` -- `cin >> n >>
+word', `cin >> d', `cout << n * 2 << " " << word << endl', `cout << d + 0.5 <<
+endl' -- an int, a word and a double read through the shipped extractors (the
+string's through libc++'s hidden template compiled here: the istream sentry
+shipped, `rdbuf()->sgetc()' and `sbumpc()' into the streambuf's virtuals,
+`ctype<char>::is', the shipped `push_back'), the numbers written through the
+shipped inserters; clang++'s lines, 34 s and 895 MB warm. Not one C++ symbol
+in the object is outside the library's export list. Seven gates GREEN (the C++
+one 1407 MB, 103 checks; the libc++ one 1753 MB; the cold read of `<iostream>`
+1949 MB with the extern items in its AST). NOT DONE: `std::getline',
+`cin.get()', `cin.fail()' as a test, the manipulators (`std::hex', `setw'),
+formatted floating input past a plain double, `std::cin' tied flushing checked
+only through the lines printed.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

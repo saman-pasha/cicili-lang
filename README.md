@@ -559,6 +559,19 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The forty-third step DONE: `std::cin`.** The library holds
+  `basic_istream<char>` whole -- `extern template class` in the header -- and
+  clang calls its extractors rather than compiling them; so does cicili++ now:
+  an extern template's instance keeps its out-of-class members declared, and
+  a declared member of a library class is called by its Itanium name, an
+  operator member by the ABI's code. Three things the fixture uncovered: a
+  static named through an object, a member initializer `m()` that
+  value-initializes (zeroes) a class with a defaulted constructor, and a
+  bitfield's width kept through the desugaring -- with the widths dropped
+  `std::string` was 40 bytes here where the library's is 24, self-consistent
+  and never caught until the library's own `push_back` wrote by its layout.
+  `sizeof(std::string)` is 24 now. `cin >> n >> word`, `cin >> d`, the numbers
+  written back through the shipped inserters: clang++'s lines. GREEN.
 * **The forty-second step DONE: `std::endl`.** A function template's name as
   an argument has no type of its own: C++ deduces its template arguments
   from the target, the function type a function-pointer parameter names, and
