@@ -2118,9 +2118,38 @@ a buffer of its own -- clang++'s numbers, `leaks` finds none. Gated by
 `test/cpp/run/callable.cpp` (a callable member with two overloads, a converting
 constructor, a default argument on the declaration) and an extended
 `test/cpp/run/stdstring.cpp`. Seven gates GREEN (the C++ one 846 MB). NOT DONE:
-`operator==` on a string -- a FREE OPERATOR TEMPLATE of a library header, which
-is not registered as a free operator at all (`'$cpp_free_ops'` holds the
-program's own) -- and `operator+`, `substr`, `find`, iterators.
+`operator+`, `substr`, `find`, iterators (`operator==` is 0.67's).
+
+**M6's thirty-fifth step (0.67): A FREE OPERATOR TEMPLATE OF A LIBRARY
+HEADER.** `s == "abc"` is how a string compares, and libc++ writes it as
+`template <class _CharT, class _Traits, class _Allocator> bool operator==(const
+basic_string<...> &, const _CharT *)` -- a free function TEMPLATE. It reached
+nothing here: `'$cpp_free_ops'` holds the operators the PROGRAM writes out, and
+a header's item is indexed by NAME, which for `operator('==')` is a compound
+that `cpp_template_name` would not take -- so the template was neither indexed
+nor registered, and the `==` stayed a raw one on a struct, which LLVM refused.
+Two halves. (1) A FREE OPERATOR TEMPLATE IS NAMED as a written-out one already
+is, by its word and arity (`cpp_free_operator`, `op.eq.2`): with a name, a
+library header indexes it, `cpp_hdr_load` registers it and `'$cpp_tmpl'` holds
+it. (2) AT THE CALL, `cpp_operator`'s free branch falls through to THE
+FREE-FUNCTION ROAD (`cpp_call(none, id(Name), [A|Args], E)`) -- its lazy load
+by name, its candidate set, its deduction, all of which the plain free calls
+have had since 0.56 -- and the answer is taken ONLY where the callee comes back
+DECLARED; otherwise the form stays as it was, so a scalar `==` is untouched and
+a name that resolves to nothing is refused where it always was. THE NAMING IS
+WHAT A SUMMARY'S AST HOLDS, so `ccl_reader_version` is bumped (43) and every
+summary and AST is rewritten: without that, a cached header keeps the old index
+and the operator is invisible. Reader version 43, lowering version 21. Gated by
+`test/cpp/run/stdstring.cpp`, which now compares (`1 0`); with it the probe
+this whole stretch began from -- a string constructed, appended to, pushed back
+on, grown into a heap buffer, COPIED and COMPARED -- matches clang++ line for
+line. Seven gates GREEN. A NOTE ON THE COLD RUN, beyond the finding below: the
+C++ gate peaked at 2803 MB twice after the version bump and was KILLED at the
+2800 cap both times -- and a killed run writes no summary, so it stays cold for
+ever. The way through is to warm the cache OUTSIDE the gate, one fixture build
+at a time (836 and 699 MB here), and then run it (1057 MB). The libc++ gate,
+which runs under a fresh HOME and is therefore always cold, went 1883 -> 2445
+MB, the operator templates being part of what it now writes.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

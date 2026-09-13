@@ -1,3 +1,3 @@
 3 abc ac | 63 af 0
-abcdef! 7 | 50 09 | abcdef!? abcdef!
+abcdef! 7 | 50 09 | abcdef!? abcdef! | 1 0
 exit 0

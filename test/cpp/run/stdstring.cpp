@@ -23,7 +23,8 @@ int main() {
   for (int i = 0; i < 4; i++) u += "0123456789";                    // past the short bytes: into a heap buffer
   std::string v = s;                                                // COPIED: its own buffer, freed by its own destructor
   v += "?";
-  printf("%s %d | %d %c%c | %s %s\n", s.c_str(), (int) s.size(), (int) u.size(), u[0], u[u.size() - 1],
-         v.c_str(), s.c_str());
+  printf("%s %d | %d %c%c | %s %s | %d %d\n", s.c_str(), (int) s.size(), (int) u.size(), u[0], u[u.size() - 1],
+         v.c_str(), s.c_str(),
+         (int) (s == "abcdef!"), (int) (s == "nope"));    // a FREE OPERATOR TEMPLATE of the header
   return 0;
 }

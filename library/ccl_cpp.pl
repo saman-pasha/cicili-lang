@@ -1397,6 +1397,13 @@ cpp_operator(Op, A, Args, Plain, E) :-
     ->  cpp_hops(A, Hops, B), cpp_fill_defaults(Name, Args, Args0), cpp_ref_args_of(Name, Args0, Args1), cpp_object_arg(Name, addr(B), Obj), E = call(id(Name), [Obj|Args1])
     ;   cpp_class_of_type_of(A, _), length(Args, N0), N1 is N0 + 1, length(Ps, N1), cpp_free_operator(Op, Ps, Name), nb_getval('$cpp_free_ops', Os), memberchk(Name, Os)
     ->  E = call(id(Name), [A|Args])
+        %% ... AND A LIBRARY HEADER'S OWN, which is a TEMPLATE: `operator==(const basic_string<C, T, A> &, const C *)'
+        %% is how a string compares, and the registry above holds only the program's written-out operators. The name
+        %% is the same (`op.eq.2'), so the free-function road takes it from here -- its lazy load, its candidates,
+        %% its deduction. It must ANSWER a call, or the form stays as it was and the scalar rule applies.
+    ;   cpp_class_of_type_of(A, _), length(Args, N2), N3 is N2 + 1, length(Qs, N3), cpp_free_operator(Op, Qs, Name),
+        catch(cpp_call(none, id(Name), [A|Args], E0), error(not_lowered(_), _), fail), E0 = call(id(F0), _), ccl_declared(F0, fn(_, _, _))
+    ->  E = E0
     ;   E = Plain ).
 %% new C(args): malloc's block constructed; delete p: destroyed, then freed
 cpp_new(T, As, stmt_expr(block([declaration(0, none, T, [var(P, PT, new(T, []))]), expr(0, call(id(Name), [id(P)|As1])), expr(0, id(P))]))) :-
@@ -1425,6 +1432,7 @@ cpp_delete(X, delete(X)).
 %% '$cpp_templates' = [Name-tmpl(TParams, Item) ...]; '$cpp_instances' = [InstanceName-Template ...];
 %% '$cpp_instance_items' the items the instances made, newest first
 cpp_template_name(function(_, _, _, N, _, _, _), N) :- atom(N).
+cpp_template_name(function(_, _, _, operator(Op), Ps, _, _), N) :- cpp_free_operator(Op, Ps, N).   % a FREE OPERATOR TEMPLATE: named by its word and arity, as a written-out one is, so a header indexes and registers it
 cpp_template_name(declare(_, base(_, [class(_, N, _, _)])), N) :- atom(N).
 cpp_template_name(declare(_, base(_, [struct(N, _)])), N) :- atom(N).
 cpp_template_name(declare(_, base(_, [class(N, none)])), N) :- atom(N).                     % a forward declaration (its defaults count)

@@ -518,6 +518,18 @@ what runs today.
   where the out-of-class definition may not repeat it. `std::string` now
   appends, pushes back, grows out of its own bytes into a heap buffer and is
   copied -- clang++'s numbers, no leaks. GREEN.
+* **The thirty-fifth step DONE: a free operator template of a library
+  header.** `s == "abc"` is how a string compares, and libc++ writes it as a
+  free function template -- which reached nothing here, since the registry
+  held only the operators a program writes out and a header indexes its
+  items by a NAME that `operator('==')` did not have. It has one now, by its
+  word and arity, so the header indexes and registers it; and at the call
+  the operator falls through to the free-function road -- its lazy load, its
+  candidates, its deduction -- taken only where the callee comes back
+  declared, so a scalar `==` is untouched. With it, the probe this stretch
+  began from -- a string constructed, appended to, pushed back on, grown
+  into a heap buffer, copied and compared -- matches clang++ line for line.
+  GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the
