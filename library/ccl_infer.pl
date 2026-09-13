@@ -188,6 +188,7 @@ ccl_type_of(ulong(_), base([], [unsigned, long])) :- !.
 ccl_type_of(bool(_), base([], [bool])) :- !.                          % C++
 ccl_type_of(nullptr, ptr([], base([], [void]))) :- !.
 ccl_type_of(float(_), base([], [double])) :- !.
+ccl_type_of(chr(_), base([], [char])) :- ccl_lang(cpp), !.   % C++: a character literal is a char (C's is an int): `cout << ' '' takes the char inserter, not operator<<(int)
 ccl_type_of(chr(_), base([], [int])) :- !.
 ccl_type_of(str(_), ptr([], base([], [char]))) :- !.
 ccl_type_of(id(N), T) :- !, ( ccl_declared(N, T0) -> ccl_unref(T0, T) ; T = unknown ).

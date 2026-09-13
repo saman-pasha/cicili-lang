@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(28).
+ccl_lowering_version(29).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -479,6 +479,7 @@ ir_expr(uint(N), N, base([], [unsigned]), i32) :- !.                       % the
 ir_expr(long(N), N, base([], [long]), i64) :- !.
 ir_expr(ulong(N), N, base([], [unsigned, long]), i64) :- !.
 ir_expr(float(F), A, base([], [double]), double) :- !, ir_double(F, A).
+ir_expr(chr(C), C, base([], [char]), i8) :- ccl_lang(cpp), !.   % C++: a char, as the inference types it
 ir_expr(chr(C), C, T, i32) :- !, ir_int(T).
 ir_expr(str(S), Ref, ptr([], base([], [char])), ptr) :- !, ir_string(S, Ref).
 ir_expr(id(N), V, T, i32) :- ccl_enum_value(N, V), !, ir_int(T).          % an enumerator is its value

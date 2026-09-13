@@ -402,11 +402,15 @@ ccl_forget_named([P|Ps]) :- atom_concat(P, names, IK), nb_setval(IK, []), ccl_fo
 %% notes tens of thousands of items, and nb_setval/2 copies the whole list
 %% every time; so the bulk noter collects first and sets each table once.
 ccl_items_note(Is) :-
-    ccl_collect_items(Is, D, [], T, [], G, [], E, []),
+    ccl_own_first(Is, Own, Incs), append(Own, Incs, Ordered),                              % THE UNIT'S OWN ITEMS FIRST, its includes' after: a name the unit DEFINES shadows a header's declaration of it (the lookup takes the first), and the C++ desugaring emits a header's inline function with its types resolved where the summary declares it raw
+    ccl_collect_items(Ordered, D, [], T, [], G, [], E, []),
     ccl_scope_add(D),
     nb_getval('$ccl_typedefs', T0), append(T, T0, T1), nb_setval('$ccl_typedefs', T1),
     nb_getval('$ccl_tags', G0), append(G, G0, G1), nb_setval('$ccl_tags', G1), ccl_tables_changed,
     nb_getval('$ccl_enums', E0), append(E, E0, E1), nb_setval('$ccl_enums', E1).
+ccl_own_first([], [], []).
+ccl_own_first([I|Is], Own, [I|Incs]) :- I = include(_, _, _), !, ccl_own_first(Is, Own, Incs).
+ccl_own_first([I|Is], [I|Own], Incs) :- ccl_own_first(Is, Own, Incs).
 %% accumulators as difference lists: declarations, typedefs, tags, enumerators
 ccl_collect_items([], D, D, T, T, G, G, E, E).
 ccl_collect_items([I|Is], D0, D, T0, T, G0, G, E0, E) :-

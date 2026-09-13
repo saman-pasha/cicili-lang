@@ -53,8 +53,8 @@ bin/cicili++             cicili for C++ (M5): the same, every input read as C++,
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
 test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME;
-                         test/cpp/run/stdcout.cpp, stdendl.cpp, stdcin.cpp, stdgetline.cpp and stdget.cpp are std::cout << "hello" << std::endl,
-                         std::cin >> n, std::getline and cin.get() built against libc++ and run (a fixture's input is NAME.stdin)
+                         test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
+                         the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip); a fixture's input is NAME.stdin
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2766,6 +2766,97 @@ delimited one and a peek, ignore, unget, putback, a loop to the end of input
 and the stream's state after it), clang++'s lines, 15 s and 871 MB warm; the
 C++ gate GREEN at 2143 MB, 105 checks, the only gate the change touches. NOT DONE: `std::ws', `cin.read()', `readsome()', `tellg()' and
 `seekg()' (`fpos', untried), the manipulators, wide streams.
+
+**M6's forty-sixth step (0.78): THE STANDARD STREAMS' SURFACE, in one step --
+`std::ws' asked for, and the module done whole (the owner's rule, 2026-09-13:
+a module at once, not function by function).** `std::ws' ran as it stood (the
+manipulator's road of 0.74, the whitespace loop of 0.76); the rest of what
+`<istream>', `<ostream>', `<ios>' and `<iomanip>' offer a char stream came in
+four more fixtures, and asked sixteen forms, each named: (1) THE HIDDEN
+FRIEND, a function defined in a class body that only argument-dependent lookup
+finds -- how `<iomanip>' writes every manipulator's inserter and how a program
+prints its own class -- is split out of the members at registration
+(`cpp_split_friends`) and registered as the free function it is
+(`cpp_register_friends`: a template as a template, a plain one of a library
+class as a lazy function of the header, a plain one of the program's class
+declared at file scope and EMITTED WITH THE CLASS, `'$cpp_friends'`); (2) A
+FREE OPERATOR IS AN OVERLOAD SET like a function's (0.56): noted by its word,
+named by its parameters where two definitions share it, chosen by the
+arguments through the free-function road (the `'$cpp_free_ops'` branch of
+`cpp_operator` is gone) -- two classes' friend inserters are both
+`operator<<(ostream &, ...)', and the first took the second's argument; (3) A
+HEADER'S TEMPLATES AND FUNCTIONS OF A NAME JOIN THE PROGRAM'S (`cpp_hdr_join`
+in `cpp_template` and `cpp_fn_ready`): loaded on the first ask whether or not
+the program has one -- the friend registered `op.shl.2' first, the lookup
+found it and never loaded libc++'s inserters, and every string went to the
+`const void *' member; (4) FORWARDING REFERENCES: `T &&' with T a parameter,
+given an LVALUE, deduces T as the argument's type AS A REFERENCE
+(`cpp_deduce_one`, the `_Args &&...' packs alike, a call returning a reference
+counted an lvalue, `cpp_lvalue`), with REFERENCE COLLAPSING in `cpp_type`
+(`cpp_collapse_ref`) -- so `std::forward<T>' hands an lvalue back as one, and
+the rvalue-stream inserter's `is_base_of<ios_base, _Stream>' is false for
+`basic_ostream &'; deduced as the plain class it was viable for an lvalue
+stream, and, the friend unknown, called itself until the stack ran out; (5) A
+HEADER'S INLINE FUNCTION IS DECLARED WITH ITS TYPES RESOLVED
+(`cpp_resolved_params`), and THE UNIT'S OWN ITEMS COME FIRST in the bulk noter
+(`ccl_own_first` in `ccl_items_note`, the includes after), so an emitted
+definition shadows a summary's raw declaration of the same name -- the passes
+rebuild the tables from the summary, where `setiosflags(ios_base::fmtflags)'
+is raw, and the lowering converted the call's argument to `ios_base::fmtflags';
+(6) A CLASS VALUE WHERE A SCALAR IS WANTED converts through its CONVERSION
+OPERATOR (`cpp_conv_to`: a declaration, an argument, a cast; scored exact
+after it where the operator's result is the parameter's type, else 1,
+`cpp_arg_fit_`) -- fpos's `operator streamoff()', `streamoff off =
+cin.tellg()', `cout << cout.tellp()'; a CAST admits an explicit one and a cast
+to bool takes the contextual road (`cpp_cast_to`: `(bool) cin'); (7) A
+CHARACTER LITERAL IS A `char' IN C++ (the inference and the lowering, C's
+`int' kept in C; lowering version 29): `cout << ' '' printed 32; (8) AN
+INTEGER TYPE'S SPELLING IS ONE where sameness and exactness are judged
+(`cpp_canon_specs`: `unsigned' is `unsigned int'): the member
+`operator<<(unsigned int)' was no exact match for an `unsigned', every
+arithmetic member tied at 2, `operator<<(bool)' won the tie and the free
+`unsigned char' template took the call; (9) A FUNCTION FITS ONLY A FUNCTION
+POINTER, in the fit (`cpp_pointee_fit`), the template acceptance
+(`cpp_scalar_mismatch`) and exactness (a function decays, `cpp_arg_exact`):
+the character-string inserter took `std::hex' and printed the manipulator's
+code bytes, the char extractor took `std::noskipws' and wrote into code; (10)
+A HEADER'S FUNCTION NAMED AS A VALUE, bare or `std::'-qualified, is emitted
+as a call would emit it (`cpp_lazy_fn_value`): nineteen manipulators the link
+named; (11) `T()' with T bound to a builtin or a pointer is the type's zero
+(`cpp_subst`): `*__s = _CharT()' ends the char extractor's string; (12) a
+class-scope typedef CALLED THROUGH ITS CLASS, `ios_base::fmtflags(0)', takes
+the type-call road (a cast for a scalar, a temporary for a class); (13) THE
+ARITY-ONLY LAST RESORT, free and member alike, refuses a class parameter for a
+scalar argument and a pointer for an arithmetic one (`cpp_args_no_clash`,
+`cpp_fn_best`); (14) a parameter is RESOLVED before exactness is judged
+(`cpp_arg_exact` through `cpp_type_or_self`): a program's `operator<<(
+std::ostream &, const P &)' is noted raw, and `std::ostream' is nothing to the
+inference; (15) an operator function's RESULT type is resolved at declaration
+and emission as a plain function's is; (16) the auto forms and the getline
+forms of 0.76 carried the rest. WHAT RUNS, five fixtures against clang++'s
+lines: `test/cpp/run/stdws.cpp` (`getline(cin >> ws, line)', `ws' before a
+character, before a word, at the end); `stdistream.cpp` (the extractors for
+short, unsigned short, int, unsigned, long, unsigned long, long long,
+unsigned long long, float, double, bool, char and unsigned char, a `char *'
+word, `getline', `read', `gcount', `readsome'); `stdistream2.cpp' (`sync',
+`tellg' through fpos, `(bool) cin', `noskipws' and `skipws', `hex' and `dec'
+on input, a `void *' extracted, a failed read, `clear', `ignore', `eof');
+`stdostream.cpp' (a program's plain and template friend inserters, the
+inserters for every arithmetic type, `bool', `char', `unsigned char', `signed
+char', `const void *', `nullptr', a string and its `c_str()', `write', `put',
+`flush', `cerr' and `clog' redirected through `rdbuf(streambuf *)', `tellp',
+the state queries, `tie'); `stdmanip.cpp' (`hex', `oct', `dec', `showbase',
+`uppercase', `boolalpha', `setw', `left', `right', `internal', `setfill',
+`fixed', `scientific', `defaultfloat', `setprecision', `showpos', `showpoint',
+`setbase', `setiosflags', `resetiosflags', and `width', `precision', `fill',
+`setf', `unsetf', `flags' called). Not one form of the surface for a char
+stream is outside them but `long double' (lowered as a double where the
+library's is x87), the money and time facets, `quoted', `seekg'/`seekp' (a
+pipe has no position), `sync_with_stdio', the exceptions mask, and an
+overload SET of plain functions named as a value. Reader version 52 unchanged,
+lowering version 29. Seven gates GREEN (the C++ one 2519 MB, 110 checks, 457 s;
+the libc++ one 1747 MB); the two input fixtures peak near 2.4 GB each, which is
+why the extractors and the stream's state are two fixtures and not one.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

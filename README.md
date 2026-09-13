@@ -559,6 +559,21 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The forty-sixth step DONE: the standard streams' surface, whole.**
+  `std::ws` ran as it stood; the rest of what `<istream>`, `<ostream>`, `<ios>`
+  and `<iomanip>` offer a char stream came in four more fixtures and asked
+  sixteen forms: the hidden friend (how `<iomanip>` writes every manipulator's
+  inserter and how a program prints its own class), free operators as an
+  overload set, a header's templates joining the program's own, forwarding
+  references with reference collapsing, a header's inline function declared
+  with its types resolved and a unit's own items ahead of its includes',
+  conversion operators where a scalar takes a class value, a character
+  literal as a `char`, one spelling for an integer type, a function fitting
+  only a function pointer, a header's function named as a value, and the
+  rest. The extractors and inserters for every arithmetic type, `char *`
+  words, `bool` and pointers, `read`/`readsome`/`write`/`tellg`/`tellp`,
+  `cerr`/`clog`, every `<ios>` manipulator and `<iomanip>`'s six, the stream's
+  state: clang++'s lines, all five. GREEN.
 * **The forty-fifth step DONE: `cin.get()` and the unformatted input
   family.** `get()` in its four forms, `gcount`, `peek`, `ignore`, `unget`,
   `putback`, `eof` and `fail` -- the shipped members of the library's
