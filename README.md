@@ -559,6 +559,25 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The thirty-ninth step DONE: the road to `<iostream>`.** The whole
+  stream and locale machinery -- 662 items -- read whole after eleven reader
+  gaps closed by the census loop (`extern "C++"` transparent where `extern
+  "C"` keeps its block, a nested class defined out of its enclosing class,
+  the GNU spellings of the keywords, `_BitInt`, and a type template argument
+  that names no declarator, which had cost libc++'s `pair` half its
+  condition); `std::cout` found in the header and named by the symbol
+  libc++ exports, `_ZNSt3__14coutE`; and seven forms of the library's
+  locale and iterator machinery desugared, each gated on the program's own
+  classes: a nested enum as a type of its class, a nested class declared in
+  its holder and defined out of it, multiple inheritance where the extra
+  bases are empty (a scope, no sub-object), a pure virtual slot's null in
+  the table, a base constructor's default argument from a derived class's
+  initializer list, the implicit default constructor C++ deletes, an alias
+  named as a base. `std::cout << "hello"` goes 236 loads and instances deep
+  -- `basic_ostream`, `basic_ios`, `basic_streambuf`, `locale::facet`,
+  `ctype<char>`, `std::copy` -- and stops at `std::pair`'s constructors,
+  which ask a constexpr static member function template to be evaluated at
+  compile time: the next stretch, named. GREEN.
 * **The thirty-eighth step DONE: a vector of strings.** libc++ holding
   libc++ -- each element owning a heap buffer of its own, constructed in the
   container's raw memory, relocated when it grows and destroyed with it. Two
@@ -737,7 +756,7 @@ label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
 UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
 the extended floating-point suffixes, `[[assume]]` told to LLVM.
 **C++26**: its macros, so libc++ takes its paths, its forms still to
-come. The library itself: the reader reads `<vector>` and `<string>`
+come. The library itself: the reader reads `<vector>`, `<string>` and `<iostream>`
 whole, the desugaring registers a flattened header's items by name
 as a program asks for them, and `std::vector<int>` gets several
 classes deep before the next forms stop it -- under an instantiation

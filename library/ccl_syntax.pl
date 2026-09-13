@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(43).
+ccl_reader_version(47).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -611,7 +611,8 @@ ccl_splice(I, More, [I|More]).
 %% typedef names the headers would have declared; the file may add its own
 ccl_seed_typedefs([size_t, ssize_t, ptrdiff_t, intptr_t, uintptr_t, int8_t, int16_t, int32_t, int64_t,
     uint8_t, uint16_t, uint32_t, uint64_t, bool, 'FILE', va_list, time_t, clock_t, off_t, pid_t,
-    uid_t, gid_t, mode_t, 'DIR', wchar_t, jmp_buf, sigset_t, socklen_t, pthread_t, pthread_mutex_t]).
+    uid_t, gid_t, mode_t, 'DIR', wchar_t, jmp_buf, sigset_t, socklen_t, pthread_t, pthread_mutex_t,
+    '__int128_t', '__uint128_t']).   % the compiler's own 128-bit types, which clang predefines and libc++ writes (`using type = __uint128_t;'); nothing lowers one, and a use is refused by name
 
 %% the typedef names in force, kept globally too, for the casts and sizeofs
 %% that sit deep in an expression where no Env is threaded
@@ -712,8 +713,17 @@ ccl_external(Env, Env, using(L, namespace(Q))) --> ccl_cpp, ccl_line(L), ccl_kw(
 ccl_external(Env0, [T|Env0], typedef(L, [var(T, Type, none)])) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(T), ccl_attrs, ccl_p('='), !, ccl_type_name(Env0, Type), ccl_p(';'),
     { ccl_add_env(T), ccl_note_item(typedef(L, [var(T, Type, none)])) }.
 ccl_external(Env, Env, using(L, name(Q))) --> ccl_cpp, ccl_line(L), ccl_kw(using), !, ccl_qname(Env, type, Q), ccl_p(';').
-ccl_external(Env, Env, extern_c(L, Items)) --> ccl_cpp, ccl_line(L), ccl_kw(extern), [tok(str, S, _)], { ( S = [67] ; S = [67, 43, 43] ) }, !,
-    ( ccl_p('{'), !, ccl_externals(Env, Items), ccl_p('}') ; ccl_external(Env, _, I), { Items = [I] } ).
+%% `extern "C"' gives its block C LINKAGE: the item keeps the block, and nothing inside it is mangled.
+%% `extern "C++"' NAMES THE DEFAULT, so its block is TRANSPARENT -- the items are spliced where it stood and
+%% keep the namespace they are written in. Read as a C block (both spellings were one item), libc++'s
+%% <math.h>, which wraps `namespace std' in one, put a namespace under the C marker: the flattened header's
+%% AST could not be written at all, and every name inside such a block was a C name.
+ccl_external(Env, Env, I) --> ccl_cpp, ccl_kw(extern), [tok(str, [67, 43, 43], _)], !, ccl_linkage_block(Env, Is), { ccl_spliced(Is, I) }.
+ccl_external(Env, Env, extern_c(L, Items)) --> ccl_cpp, ccl_line(L), ccl_kw(extern), [tok(str, [67], _)], !, ccl_linkage_block(Env, Items).
+ccl_linkage_block(Env, Items) --> ccl_p('{'), !, ccl_externals(Env, Items), ccl_p('}').
+ccl_linkage_block(Env, [I]) --> ccl_external(Env, _, I).
+ccl_spliced([I], I) :- !.
+ccl_spliced(Is, '$splice'(Is)).
 %% explicit instantiations: `extern template void X<char>::f(int);' (a declaration), `template class X<char>;' (a definition)
 ccl_external(Env, Env, extern_template(L, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(extern), ccl_kw(template), !, ccl_external(Env, _, Item).
 ccl_external(Env, Env, explicit_instantiation(L, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(template), ccl_peek(K, V), { \+ ( K == p, V == '<' ) }, !, ccl_external(Env, _, Item).
@@ -827,6 +837,23 @@ ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_id(own), !, ccl_specs(Env, Sc,
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(bool), !, ccl_specs(Env, Sc, St0, Q0, [bool|S0], St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(constexpr), !, ccl_specs(Env, Sc, St0, [const|Q0], S0, St, Q, S).   % a constexpr OBJECT is a const one whose value folds (ccl_note_constants)
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(thread_local), !, ccl_specs(Env, Sc, [thread_local|St0], Q0, S0, St, Q, S).
+%% C23's BIT-PRECISE INTEGER, `_BitInt(N)', which clang offers in C++ too and libc++ writes in its bit algorithms
+%% (`template <int _Np> _BitInt(_Np) abs(_BitInt(_Np) __x)'). READ as the specifier it is; nothing lowers one yet,
+%% and a program that uses one is refused by name where it is used rather than stopping the header at its line.
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_id('_BitInt'), ccl_p('('), ccl_expr(N), ccl_p(')'), !, ccl_specs(Env, Sc, St0, Q0, [bitint(N)|S0], St, Q, S).
+%% THE GNU SPELLINGS of the keywords, which Apple's SDK writes and clang takes as the words themselves:
+%% `typedef __signed char __int8_t;' in <sys/_types/_int8_t.h> stopped the reader at <iostream>'s 170th line, the
+%% double underscore being a spelling and not a word of its own. Read HERE rather than in the lexer, since the
+%% keyword tables are the LANGUAGE's and both lexers share them token for token (k84).
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_peek(id, V), { ccl_gnu_word(V, K) }, !, ccl_id(_), ccl_gnu_spec(Env, Sc, K, St0, Q0, S0, St, Q, S).
+ccl_gnu_spec(Env, Sc, K, St0, Q0, S0, St, Q, S) --> { ccl_basic_type(K) }, !, ccl_specs(Env, Sc, St0, Q0, [K|S0], St, Q, S).
+ccl_gnu_spec(Env, Sc, K, St0, Q0, S0, St, Q, S) --> { ccl_qualifier(K) }, !, ccl_specs(Env, Sc, St0, [K|Q0], S0, St, Q, S).
+ccl_gnu_spec(Env, Sc, K, St0, Q0, S0, St, Q, S) --> ccl_specs(Env, Sc, [K|St0], Q0, S0, St, Q, S).
+ccl_gnu_word('__signed', signed).      ccl_gnu_word('__signed__', signed).
+ccl_gnu_word('__const', const).        ccl_gnu_word('__const__', const).
+ccl_gnu_word('__volatile', volatile).  ccl_gnu_word('__volatile__', volatile).
+ccl_gnu_word('__restrict', restrict).  ccl_gnu_word('__restrict__', restrict).
+ccl_gnu_word('__inline', inline).      ccl_gnu_word('__inline__', inline).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_basic_type(K) }, !, ccl_specs(Env, Sc, St0, Q0, [K|S0], St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_struct_spec(Env, T), !, ccl_specs(Env, Sc, St0, Q0, [T|S0], St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_enum_spec(T), !, ccl_specs(Env, Sc, St0, Q0, [T|S0], St, Q, S).
@@ -906,7 +933,13 @@ ccl_skip_parens([_|T], D, R) :- ccl_skip_parens(T, D, R).
 ccl_targs_follow([tok(K, V, _)|_]) :- ( K == id ; K == p, memberchk(V, ['*', '&', '&&', '::', ',', ')', '>', '>>', ';', '{', '(', '...', '=', '[']) ; K == kw, ccl_qualifier(V) ), !.
 ccl_targs(Env, As) --> ccl_p('<'), ( ccl_targ_list(Env, As), ! ; { As = [] } ), ccl_tclose.
 ccl_targ_list(Env, [A|As]) --> ccl_targ(Env, A), ( ccl_p(','), !, ccl_targ_list(Env, As) ; { As = [] } ).
-ccl_targ(Env, A) --> ccl_type_name(Env, A0), ccl_targ_pack(A0, A), ccl_targ_end, !.
+ccl_targ(Env, A) --> ccl_targ_type(Env, A0), ccl_targ_pack(A0, A), ccl_targ_end, !.
+%% A TYPE ARGUMENT NAMES NO DECLARATOR: `cond<A::value && B::value, X, Y>' read `A::value &&' as an rvalue
+%% reference whose declarator-id was `B::value' (the id a declarator may end with since 0.44), swallowed the
+%% second half of the condition and gave the alias one argument too few -- libc++'s pair writes exactly that
+%% (`__conditional_t<is_copy_assignable<first_type>::value && is_copy_assignable<second_type>::value, pair,
+%% __nat>'). An abstract declarator, or it is no type argument and the expression is read instead.
+ccl_targ_type(Env, T) --> ccl_decl_specs(Env, typename, _, Base), ccl_abstract_or_declarator(Env, Base, Name, T), { Name == anon }.
 ccl_targ(_, A) --> ccl_targ_expr(A0), ccl_targ_pack(A0, A).
 %% an expression inside `< >': any assignment-expression, a `>' closing it (ccl_op_open/1)
 ccl_targ_expr(E) --> { ccl_targ_enter }, ( ccl_assign_expr(E), !, { ccl_targ_leave } ; { ccl_targ_leave, fail } ).
@@ -1000,16 +1033,29 @@ ccl_struct_body(Env, K, T) --> ccl_attrs, ccl_p('{'), ccl_class_members(Env, ano
 %% C++: `struct N final : public B, C { ... }' -- class(Kind, N, Bases, Ms) when
 %% it has bases, is a `class', or holds anything but fields; else C's struct
 %% `struct X<int>', `struct X<T *>': a specialization, its name the template-id
-ccl_class_targs(Env, N, tmpl(N, As)) --> ccl_cpp, ccl_peek(p, '<'), !, ccl_targs(Env, As).
+%% a NESTED class DEFINED OUT OF ITS ENCLOSING CLASS: `class locale::facet : public __shared_count { ... }' and
+%% `class basic_ostream<_CharT, _Traits>::sentry { ... }', which is how libc++ writes half of <locale> and <ostream>.
+%% The name is the qualified one, as an out-of-class MEMBER's already is, and the template arguments come first.
+ccl_class_targs(Env, N, Name) --> ccl_cpp, ccl_peek(p, '<'), !, ccl_targs(Env, As), ccl_class_qual(Env, tmpl(N, As), Name).
+ccl_class_targs(Env, N, Name) --> ccl_cpp, ccl_peek(p, '::'), !, ccl_class_qual(Env, N, Name).
 ccl_class_targs(_, N, N) --> [].
+ccl_class_qual(Env, H, Name) --> ccl_cpp, ccl_peek(p, '::'), !, ccl_p('::'), ccl_id(M), ccl_class_targs(Env, M, Inner), { ccl_class_qname(H, Inner, Name) }.
+ccl_class_qual(_, H, H) --> [].
+ccl_class_qname(N, scoped(P, L), scoped([N|P], L)) :- !.
+ccl_class_qname(N, M, scoped([N], M)).
 ccl_class_tail(Env, K, N, T) --> ( ccl_id(final), ! ; [] ), ( ccl_p(':'), !, ccl_bases(Env, Bs) ; { Bs = [] } ),
     ( ccl_p('{'), !, ccl_class_members(Env, N, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, N, Bs, Ms, T) } ; { Bs == [], T =.. [K, N, none] } ).
-ccl_bases(Env, [base(A, Q)|Bs]) --> ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ( ccl_kw(virtual), ! ; [] ), ccl_qname(Env, type, Q0), ccl_targ_pack(Q0, Q),
+ccl_bases(Env, [base(A, Q)|Bs]) --> ( ccl_kw(virtual), ! ; [] ), ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ( ccl_kw(virtual), ! ; [] ), ccl_qname(Env, type, Q0), ccl_targ_pack(Q0, Q),
     ( ccl_p(','), !, ccl_bases(Env, Bs) ; { Bs = [] } ).
 ccl_class_members(Env, N, Ms) --> { ccl_class_push(N) }, ( ccl_members(Env, Ms), { ccl_class_pop }, ! ; { ccl_class_pop }, { fail } ).
 ccl_class_push(N) :- nb_getval('$ccl_class', S), nb_setval('$ccl_class', [N|S]).
 ccl_class_pop :- nb_getval('$ccl_class', [_|S]), nb_setval('$ccl_class', S).
-ccl_current_class(N) :- nb_getval('$ccl_class', [C|_]), ( C == N -> true ; C = tmpl(N, _) ).
+%% the class a constructor is known by: its BARE name, through a template-id and through the qualified name an
+%% out-of-class definition carries (`class locale::facet { ... facet(size_t); ... }')
+ccl_current_class(N) :- nb_getval('$ccl_class', [C|_]), ccl_class_bare(C, N).
+ccl_class_bare(scoped(_, L), B) :- !, ccl_class_bare(L, B).
+ccl_class_bare(tmpl(N, _), N) :- !.
+ccl_class_bare(N, N).
 ccl_make_class(union, N, _, Ms, union(N, Ms)) :- !.
 ccl_make_class(K, N, Bs, Ms, class(K, N, Bs, Ms)) :- ccl_lang(cpp), ( K == class ; Bs \== [] ; member(M, Ms), M \= member(_, _, _) ), !.
 ccl_make_class(K, N, _, Ms, T) :- T =.. [K, N, Ms].
@@ -1099,7 +1145,7 @@ ccl_enum_members(T, Es, [enum_base(T)|Es]).
 ccl_enumerators(Es) --> [tok(pp, _, _)], !, ccl_enumerators(Es).             % a #define among the enumerators
 ccl_enumerators([E|Es]) --> ccl_enumerator(E), ( ccl_p(','), !, ccl_enumerators(Es) ; { Es = [] } ).
 ccl_enumerators([]) --> [].
-ccl_enumerator(enumerator(N, V)) --> ccl_id(N), ( ccl_p('='), !, ccl_cond_expr(V) ; { V = none } ).
+ccl_enumerator(enumerator(N, V)) --> ccl_id(N), ccl_attrs, ( ccl_p('='), !, ccl_cond_expr(V) ; { V = none } ).   % C++17: an ATTRIBUTE on an enumerator, `no_message_available [[deprecated]] = 96'
 
 %% ---- declarators ------------------------------------------------------------
 %% Parsed inside-out the way C means them: pointers, then the direct part,
@@ -1362,10 +1408,14 @@ ccl_unary_(throw, kw, throw(E)) --> ccl_cpp, !, ccl_kw(throw), ( ccl_assign_expr
 %% PLACEMENT arguments are KEPT: `::new ((void *) p) T(args)' constructs where it is told and allocates nothing,
 %% which is what every libc++ container builds its elements with (`std::__construct_at')
 ccl_new_expr(E) --> { Env = genv }, ( ccl_p('('), ccl_args(Ps), ccl_p(')'), ! ; { Ps = [] } ), ccl_decl_specs(Env, typename, _, Base), ccl_pointers(Ptrs), { ccl_apply_pointers(Ptrs, Base, T) },
-    ( ccl_p('['), !, ccl_expr(N), ccl_p(']'), { ccl_new_node(Ps, new_array(T, N), E) }
+    ( ccl_p('['), !, ccl_expr(N), ccl_p(']'), ccl_new_array_init(I),   % C++: `new _Up[__n]()' value-initializes its elements, which libc++'s make_unique writes
+        { ( I == none -> A = new_array(T, N) ; A = new_array_init(T, N, I) ), ccl_new_node(Ps, A, E) }
     ; ccl_p('('), !, ccl_args(As), ccl_p(')'), { ccl_new_node(Ps, new(T, As), E) }
     ; ccl_p('{'), !, ccl_args(As), ccl_p('}'), { ccl_new_node(Ps, new(T, As), E) }
     ; { ccl_new_node(Ps, new(T, []), E) } ).
+ccl_new_array_init(As) --> ccl_p('('), !, ccl_args(As), ccl_p(')').
+ccl_new_array_init(As) --> ccl_p('{'), !, ccl_args(As), ccl_p('}').
+ccl_new_array_init(none) --> [].
 ccl_new_node([], N, N) :- !.
 ccl_new_node(Ps, N, new_at(Ps, N)).
 ccl_unary_('++', p, preinc(E)) --> !, ccl_p('++'), ccl_unary(E).
@@ -1401,6 +1451,7 @@ ccl_postfix_p(_, E, E) --> [].
 %% name is tmpl(N, Args) when the arguments read as such, ending before what a
 %% call or a closing paren starts (`x.n < y' scans to its `;' and is not one)
 ccl_member_name(operator(Op)) --> ccl_cpp, ccl_kw(operator), !, ccl_op_name(Op).                % p.operator->(), x.operator=(y)
+ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_kw(template), !, ccl_id(N), { Env = genv }, ccl_targs(Env, As).   % `x.template f<T>(args)': the disambiguator on an OBJECT, as `X<T>::template f<U>' already had it on a scope
 ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_id(N), ccl_targs_ahead, { Env = genv }, ccl_targs(Env, As), !.
 ccl_member_name(N) --> ccl_id(N).
 ccl_args([A|As]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(A0), ccl_targ_pack(A0, A), ( ccl_p(','), !, ccl_args(As) ; { As = [] } ).   % C++: f({1, 2}), a braced list as an argument

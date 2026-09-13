@@ -52,7 +52,7 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 33 checks over test/cpp/*.cpp, the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector> and <string> flattened and read WHOLE, under a fresh HOME
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2260,6 +2260,96 @@ all -- clang++'s numbers, `leaks` finds none, 825 MB to build. Gated by
 `test/cpp/run/stdvectorstring.cpp`. Seven gates GREEN (the C++ one 805 MB).
 NOT DONE: `vector<string>`'s `insert`, `erase` and `resize`; a `string` as a
 class's member; `std::map` and the associative containers; `<iostream>`.
+
+**M6's thirty-ninth step (0.71): THE ROAD TO `<iostream>` -- read whole,
+`std::cout` named by its symbol, and fourteen forms between the include and
+the locale.** THE READER (version 47), by the census loop, eleven gaps:
+C23's `_BitInt(N)`; the GNU spellings `__signed`, `__const`, `__volatile`,
+`__restrict`, `__inline` and their `__x__` forms (`ccl_gnu_word/2`, one clause
+per word, one rule for all); a NESTED CLASS DEFINED OUT OF ITS ENCLOSING CLASS,
+`class locale::facet : public __shared_count { ... }`, read as `class(K,
+scoped([locale], facet), ...)` (`ccl_class_qual`, and `ccl_current_class` sees
+through the scoping); an enumerator with attributes; `virtual` on either side
+of the access word in a base clause; a member template's name after
+`template`; `new T[n](args)` and `new T[n]{...}` as `new_array_init` (refused
+by name); `__int128_t` and `__uint128_t` in the typedef seed; `extern "C++"`
+TRANSPARENT -- its items spliced where it stood (`'$splice'`, the door macros
+use), where `extern "C"` keeps its block -- both spellings had been one item,
+and libc++'s `<math.h>` wrapping `namespace std` in one put a namespace under
+the C marker, on which `ccl_flat_items` FAILED and the header's AST beside the
+summary was never written (the stale one of an older, 74-item read served,
+and `cout` was not in it -- the silent failure that hid everything below); and
+A TYPE TEMPLATE ARGUMENT NAMES NO DECLARATOR (`ccl_targ_type`): `__conditional_t<
+is_copy_assignable<first_type>::value && is_copy_assignable<second_type>::value,
+pair, __nat>` read `...::value &&` as an rvalue reference whose declarator-id was
+the second half, and libc++'s `pair` lost half its condition. THE AST BESIDE
+THE SUMMARY: a failed write is traced (`ast_not_written`), `ccl_flat_items`
+keeps the C marker under a namespace, the text is built A HUNDRED ITEMS AT A
+TIME inside `\+ \+` (`ccl_ast_chunks`; the cold read of `<iostream>` 2598 ->
+1987 MB, the same bytes) and the summary's sections are lists of TERMS made
+into text the same way (`ccl_sum_chunks`); and since its content follows
+`cpp_index_name/2`, A CHANGE THERE BUMPS THE READER VERSION TOO -- the only
+stamp the file has, and a stale one served the old index silently. THE EXTERN GLOBAL: `extern ostream cout;` is
+indexed (`cpp_index_name` on an extern declaration), registered on the first
+ask (`cpp_lazy_var`) under the symbol libc++ exports, `_ZNSt3__14coutE`
+(`cpp_mangled_var`: the header's namespace path `[std, __1]` from
+`'$cpp_hdr_ns'`, checked against `nm` of `libc++.tbd`), and `cpp_global_var/2`
+gives `std::cout` and a bare `cout` that name. THE DESUGARING, seven forms,
+each with a ten-line reproduction that ran in a second where the probe took
+ten: (1) A NESTED ENUM is a type of the class that holds it, as a nested class
+is (`cpp_nested_enum`: one tag `Enclosing.Name` at file scope, its enumerators
+global names as every enum's are) -- `ios_base::seekdir`; and a scope path ENDS
+at a nested enum (`cpp_scope_walk`), where `B::strong::two` had become the
+static member `B.two`. (2) A NESTED CLASS DECLARED IN ITS HOLDER AND DEFINED
+OUT OF IT: `scoped([locale], facet)` is `locale.facet` in the index, the
+registrations and the emission (`cpp_class_item_name`), the forward
+declaration `class facet;` names the type (`cpp_nested_name`'s `class(N,
+none)` clause, no class registered for it), and the holder's types are in
+scope inside (`cpp_encloses`). (3) MULTIPLE INHERITANCE WHERE EVERY BASE AFTER
+THE FIRST IS EMPTY -- no data, no slots, nothing to construct: C++'s empty base
+optimization gives it no bytes, so it is a SCOPE and no sub-object here
+(`cpp_extra_bases`, `cpp_empty_class`, `'$cpp_extra'`), and `cpp_base_scope/2`
+is the one door every base lookup goes through -- typedefs, static consts,
+static members, `cpp_has_member`, a method (`cpp_extra_method`, the object's
+own address being the base's); a second base WITH storage or slots is refused
+as before. `ctype<char> : public locale::facet, public ctype_base`. (4) A PURE
+VIRTUAL SLOT NOTHING OVERRIDES holds a NULL in the table (`cpp_slot_def`), where
+the link named `SC.zero.0` and nothing defined it -- `__shared_count::
+__on_zero_shared() = 0`; `cpp_not_abstract` still never fires, since
+`cpp_slot_impl` answers the pure declaration, a gap older than this step. (5)
+THE DEFAULT-ARGUMENT DROP RAN OFF THE END: a method's recorded defaults do not
+count `this`, and a call the desugaring had already built carries it, so
+`cpp_drop` had no clause and the whole constructor walk FAILED -- silently --
+on `facet(size_t __refs = 0) : __shared_count(static_cast<long>(__refs) - 1)`
+(`cpp_drop(_, [], [])`; `ctor_walk_failed` prints the body now). (6) THE
+IMPLICIT DEFAULT CONSTRUCTOR C++ DELETES: a member whose class has no default
+constructor leaves its holder without one, and the class stays the aggregate
+it was written as (`cpp_members_default`, `cpp_default_ctor_exists`, a test
+that emits nothing) -- `__in_out_result` holding an `ostreambuf_iterator`,
+built `return { a, b }`; making the constructor refused the whole class. (7)
+AN ALIAS NAMED AS A BASE names the INSTANCE (`cpp_base_name` asks `cpp_class`
+of the atom first): `__libcpp_is_contiguous_iterator<char *> : true_type`.
+Lowering version 25 (the null slot). WHERE `std::cout << "hello"` STANDS: the
+desugaring goes through `basic_ostream<char>`, `basic_ios`, `ios_base`,
+`basic_streambuf`, `locale::facet`, `__shared_count`, `ctype<char>`,
+`__pad_and_output` and `std::copy`'s `__unwrap_range` -- 236 loads and
+instances, 1166 trace lines, 9 s and 816 MB warm -- and stops at
+`std::pair<char *, char *>`'s constructors: every one is a template whose
+parameter `__enable_if_t<_CheckArgsDep::template __is_pair_constructible<_U1,
+_U2>(), int> = 0` asks a CONSTEXPR STATIC MEMBER FUNCTION TEMPLATE to be
+EVALUATED AT COMPILE TIME (its body one `return is_constructible<_T1,
+_U1>::value && ...`); taken for a class template it refuses
+`template_without_body(__is_pair_constructible)`, and every two-argument
+constructor is rejected. A constexpr function of one `return` could fold as a
+static const's initializer does (`cpp_fold_static`: instantiate, desugar in
+the class's words, `ccl_const_eval`) -- the next stretch, and named. Gated by
+`test/cpp/run/nestedenum.cpp` (plain and scoped, as a member's type in a
+template) and `test/cpp/run/facet.cpp` (the facet shape whole: declared in,
+defined out, an abstract first base, an empty second, a defaulted base
+constructor, the slot filled by the derived class), clang++'s numbers; and
+`<iostream>` read WHOLE in `test/libcxx.pl` (662 items). Seven gates GREEN
+(the C++ one 2245 MB, the libc++ one 1743 MB with `<iostream>`; a cold read
+of `<iostream>` alone 2009 MB, under the 2800 MB cap the owner set).
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

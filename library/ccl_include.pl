@@ -366,7 +366,7 @@ ccl_read_unit(Path, How, Unit) :-
     (   ccl_sum_valid(F) -> How = summary, Unit = summary(F)
     ;   ccl_pp_parse(Path, U1, Info1, Files), How = preprocessed, ccl_partial(U1, Info1, Unit),
         ( catch(ccl_sum_write(F, Path, Files, U1), _, fail) -> true ; true ),
-        ( catch(ccl_ast_write(F, U1), _, fail) -> true ; true ) ).
+        ( catch(ccl_ast_write(F, U1), E, ccl_ast_trace(ast_not_written(Path, E))) -> true ; ccl_ast_trace(ast_not_written(Path)) ) ).
 
 %% ---- the summary cache: a C++ library header, once ----------------------------
 %% What a header contributes downstream is its declarations -- the names and
@@ -400,12 +400,12 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
     ccl_collect_items(Is, Ds, [], Ts, [], Gs, [], Es, []),
     ccl_items_typedefs(Is, Names0), ccl_tag_names(Gs, TagNames), append(Names0, TagNames, Names),
     ccl_items_templates(Is, Tmpls),
-    ccl_std(S), ccl_sum_terms_out([sum(Path, key(V, cpp(S)))], Out0), ccl_sum_deps(Deps, Out0b), append(Out0, Out0b, Out1),   % a term per dep: a line stays short
-    ccl_sum_decls(Ds, Out2), ccl_sum_typedefs(Ts, Out3), ccl_sum_tags(Gs, Out4), ccl_sum_enums(Es, Out5),
-    ccl_sum_names(Names, Out6), ccl_sum_tmpls(Tmpls, Out7),
-    ccl_concat_codes([Out1, Out2, Out3, Out4, Out5, Out6, Out7], Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
-    ccl_pp_macros(Ms), ccl_sum_mnames(Ms, Out8), ccl_sum_terms_out(Ms, Out9),   % the macros the run defined, for the user's file, beside it
-    ccl_mac_file(F, M), append(Out8, Out9, MCodes), write_file_from_codes(M, MCodes).
+    ccl_std(S), ccl_sum_deps(Deps, T1), ccl_sum_decls(Ds, T2), ccl_sum_typedefs(Ts, T3), ccl_sum_tags(Gs, T4),   % a term per dep, per declaration ...: a line stays short
+    ccl_sum_enums(Es, T5), ccl_sum_names(Names, T6), ccl_sum_tmpls(Tmpls, T7),
+    ccl_concat_codes([[sum(Path, key(V, cpp(S)))], T1, T2, T3, T4, T5, T6, T7], Terms),
+    ccl_sum_chunks(Terms, 100, Codes), write_file_from_codes(F, Codes), ccl_sum_forget(F),
+    ccl_pp_macros(Ms), ccl_sum_mnames(Ms, Out8), append(Out8, Ms, MTerms),   % the macros the run defined, for the user's file, beside it
+    ccl_mac_file(F, M), ccl_sum_chunks(MTerms, 100, MCodes), write_file_from_codes(M, MCodes).
 %% THE AST BESIDE THE SUMMARY: the flattened header's named items, one clause each -- '$cpp_hdr_ast'(Name, Item) in
 %% <name>-<fold>.ast.pl -- consulted by the desugaring when the include is served from the summary, so a program that
 %% instantiates a library template needs no second flatten (two minutes for <vector>): what the summary keeps for the
@@ -414,11 +414,26 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
 %% (cicili++ never runs over a store, where such a clause would be refused). The names are the desugaring's index
 %% names (cpp_index_name/2); an item with none is never asked for by name and is left out.
 ccl_ast_file(F, A) :- atom_length(F, N), N1 is N - 4, sub_atom(F, 0, N1, 4, B), atom_concat(B, '.ast.pl', A).
-ccl_ast_write(F, unit(Is)) :- ccl_ast_file(F, A), ccl_flat_items([], Is, Flat), ccl_ast_lines(Flat, Codes), write_file_from_codes(A, Codes).
+ccl_ast_write(F, unit(Is)) :- ccl_ast_file(F, A), ccl_flat_items([], Is, Flat), ccl_ast_chunks(Flat, 100, Codes), write_file_from_codes(A, Codes).
+%% THE TEXT IS BUILT A HUNDRED ITEMS AT A TIME, each chunk inside \+ \+ and kept through a global: cocolog reclaims
+%% the heap on backtracking only, and term_to_atom over three thousand items in one deterministic run held a
+%% gigabyte of intermediates beside the two megabytes of text it was making (the cold read of <iostream>: 2598 MB).
+ccl_ast_chunks([], _, []) :- !.
+ccl_ast_chunks(Is, K, Codes) :-
+    ccl_ast_take(K, Is, Some, Rest),
+    \+ \+ ( ccl_ast_lines(Some, Cs), nb_setval('$ccl_ast_chunk', Cs) ),
+    nb_getval('$ccl_ast_chunk', Cs1), nb_setval('$ccl_ast_chunk', []),
+    ccl_ast_chunks(Rest, K, More), append(Cs1, More, Codes).
+ccl_ast_take(0, Is, [], Is) :- !.
+ccl_ast_take(_, [], [], []) :- !.
+ccl_ast_take(K, [I|Is], [I|Some], Rest) :- K1 is K - 1, ccl_ast_take(K1, Is, Some, Rest).
+%% the write is allowed to fail -- the header is read again next run -- but never SILENTLY: <iostream>'s AST was
+%% the stale one of an older read for as long as ccl_flat_items failed on it, and nothing said so
+ccl_ast_trace(T) :- once(catch(cpp_trace(T), _, true)).
 %% each item with the NAMESPACE PATH it stood in, since a name the header only declares is called by its
 %% mangled symbol and a summary-served run must know the same path the index knew (cpp_mangled_name/3)
 ccl_flat_items(_, [], []).
-ccl_flat_items(Path, [namespace(_, N, Js)|Is], Flat) :- !, ( atom(N), N \== anon -> append(Path, [N], P1) ; P1 = Path ),
+ccl_flat_items(Path, [namespace(_, N, Js)|Is], Flat) :- !, ( atom(N), N \== anon, Path \== c -> append(Path, [N], P1) ; P1 = Path ),
     ccl_flat_items(P1, Js, F1), ccl_flat_items(Path, Is, F2), append(F1, F2, Flat).
 ccl_flat_items(Path, [extern_c(_, Js)|Is], Flat) :- !, ccl_flat_items(c, Js, F1), ccl_flat_items(Path, Is, F2), append(F1, F2, Flat).
 ccl_flat_items(Path, [I|Is], [in(Path, I)|Flat]) :- ccl_flat_items(Path, Is, Flat).
@@ -430,25 +445,34 @@ ccl_ast_lines([in(Path, I)|Is], Out) :-
     ccl_ast_lines(Is, O2), append(L0, O2, Out).
 ccl_ast_clause(T, Cs1) :- term_to_atom(T, A), atom_codes(A, Cs), append(Cs, [0'., 10], Cs1).
 ccl_sum_mnames([], []) :- !.
-ccl_sum_mnames(Ms, Out) :- ccl_sum_mnames_(Ms, 100, Ns, Rest), ccl_sum_terms_out([mnames(Ns)], O1), ccl_sum_mnames(Rest, O2), append(O1, O2, Out).
+ccl_sum_mnames(Ms, [mnames(Ns)|Out]) :- ccl_sum_mnames_(Ms, 100, Ns, Rest), ccl_sum_mnames(Rest, Out).
 ccl_sum_mnames_([], _, [], []) :- !.
 ccl_sum_mnames_(Ms, 0, [], Ms) :- !.
 ccl_sum_mnames_([macro(N, _, _)|Ms], K, [N|Ns], Rest) :- K1 is K - 1, ccl_sum_mnames_(Ms, K1, Ns, Rest).
+%% EACH SECTION IS A LIST OF TERMS, and the text is made of them all at the end, a hundred at a time (below):
+%% the codes were built term by term and appended, and cocolog reclaims nothing a deterministic run makes
 ccl_sum_deps([], []).
-ccl_sum_deps([P-T|Ds], Out) :- ccl_sum_terms_out([dep(P, T)], O1), ccl_sum_deps(Ds, O2), append(O1, O2, Out).
+ccl_sum_deps([P-T|Ds], [dep(P, T)|Out]) :- ccl_sum_deps(Ds, Out).
 ccl_sum_decls([], []).
-ccl_sum_decls([N-T|Ds], Out) :- ccl_sum_terms_out([decl(N, T)], O1), ccl_sum_decls(Ds, O2), append(O1, O2, Out).
+ccl_sum_decls([N-T|Ds], [decl(N, T)|Out]) :- ccl_sum_decls(Ds, Out).
 ccl_sum_typedefs([], []).
-ccl_sum_typedefs([N-T|Ds], Out) :- ccl_sum_terms_out([typedef(N, T)], O1), ccl_sum_typedefs(Ds, O2), append(O1, O2, Out).
+ccl_sum_typedefs([N-T|Ds], [typedef(N, T)|Out]) :- ccl_sum_typedefs(Ds, Out).
 ccl_sum_tags([], []).
-ccl_sum_tags([Tag-Ms|Gs], Out) :- ccl_sum_slim(Ms, Ms1), ccl_sum_terms_out([tag(Tag, Ms1)], O1), ccl_sum_tags(Gs, O2), append(O1, O2, Out).
+ccl_sum_tags([Tag-Ms|Gs], [tag(Tag, Ms1)|Out]) :- ccl_sum_slim(Ms, Ms1), ccl_sum_tags(Gs, Out).
 ccl_sum_enums([], []).
-ccl_sum_enums([N-V|Es], Out) :- ccl_sum_terms_out([enum(N, V)], O1), ccl_sum_enums(Es, O2), append(O1, O2, Out).
+ccl_sum_enums([N-V|Es], [enum(N, V)|Out]) :- ccl_sum_enums(Es, Out).
 ccl_sum_names([], []).
-ccl_sum_names([N|Ns], Out) :- ccl_sum_terms_out([tname(N)], O1), ccl_sum_names(Ns, O2), append(O1, O2, Out).
+ccl_sum_names([N|Ns], [tname(N)|Out]) :- ccl_sum_names(Ns, Out).
 ccl_sum_tmpls([], []).
-ccl_sum_tmpls([fn(N)|Ns], Out) :- !, ccl_sum_terms_out([ftemplate(N)], O1), ccl_sum_tmpls(Ns, O2), append(O1, O2, Out).
-ccl_sum_tmpls([N|Ns], Out) :- ccl_sum_terms_out([template(N)], O1), ccl_sum_tmpls(Ns, O2), append(O1, O2, Out).
+ccl_sum_tmpls([fn(N)|Ns], [ftemplate(N)|Out]) :- !, ccl_sum_tmpls(Ns, Out).
+ccl_sum_tmpls([N|Ns], [template(N)|Out]) :- ccl_sum_tmpls(Ns, Out).
+%% the terms' text, a hundred terms at a time inside \+ \+, as the AST beside it is built (ccl_ast_chunks)
+ccl_sum_chunks([], _, []) :- !.
+ccl_sum_chunks(Ts, K, Codes) :-
+    ccl_ast_take(K, Ts, Some, Rest),
+    \+ \+ ( ccl_sum_terms_out(Some, Cs), nb_setval('$ccl_sum_chunk', Cs) ),
+    nb_getval('$ccl_sum_chunk', Cs1), nb_setval('$ccl_sum_chunk', []),
+    ccl_sum_chunks(Rest, K, More), append(Cs1, More, Codes).
 %% a class's members without their bodies: what a type needs of them
 ccl_sum_slim(none, none) :- !.
 ccl_sum_slim([], []).
