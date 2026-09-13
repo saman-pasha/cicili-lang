@@ -50,9 +50,10 @@ test/c/safe/             programs the check must REFUSE, each with the error its
 bin/cicili               the command: clang's arguments, one cocolog run over ~/.cicili/KB (ccl_drive/2);
                          six forks, since each is a floor (the findings)
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
-test/cpp.pl, cpp.sh      the C++ reader's gate: 33 checks over test/cpp/*.cpp, the six C++ files of Cicili's
+test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME;
+                         test/cpp/run/stdcout.cpp is std::cout << "hello" built against libc++ and run
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2478,6 +2479,109 @@ build is 11 s and about 1000 MB warm; the cold read of `<iostream>` 1425 MB.
 Gated by `test/cpp/run/constexprfn.cpp`, `aggcall.cpp`, `staticbase.cpp`,
 `virtualbase.cpp` and `stdtraits.cpp`, clang++'s numbers. Seven gates GREEN
 (the C++ one 1140 MB, the libc++ one 1811 MB).
+
+**M6's forty-first step (0.73): THE ITANIUM MANGLER'S SECOND HALF, and
+`std::cout << "hello, cicili++\n"` RUNS.** THE MANGLER (`cpp_ita_*`): what
+0.61 spelled -- `_ZN', a namespace, a name, `E', builtin parameters, refusing
+any repeat -- is spelled with the ABI's SUBSTITUTION TABLE threaded through
+(`cpp_ita_sub`, `cpp_ita_note`: every prefix, nested name and non-builtin type
+a candidate in order, its second occurrence `S_', `S0_', `S1_' ... in base 36),
+a class a NESTED NAME (`N <prefix> <len>name E'; `St' for std, no candidate;
+`St3__1' one), a template instance `<len>name I <args> E' (its template-name
+prefix a candidate; as a TYPE the instance itself, as a member's PREFIX the
+template-id too -- the two cases clang++ told apart: `ff(string, string)' ends
+`S5_', `tw<char>::two(ct2<char>, ct2<char>)' `S3_'), `K' after `_ZN' for a const
+method, a function directly in std UNSCOPED (`_ZSt19uncaught_exceptionsv'),
+`C1' and `D1' for a constructor and a destructor (0.72's `cpp_dtor_name`
+folded in). MEASURED against clang's own symbols for six shapes, all six equal.
+AT ONE DOOR, `cpp_mangle/4`: a member a library header DECLARES and the shipped
+library DEFINES (`cpp_shipped_member`: no body in the class's list AND no
+out-of-class definition in the header, `cpp_defined_out_of_class`; the
+parameters RESOLVED IN THE CLASS before spelling, `do_narrow(char_type, char)'
+being written in ctype's words) is named by its symbol where it is declared,
+called and slotted -- `__num_put_base::__identify_padding',
+`ctype<char>::do_narrow', `locale::use_facet'; a shipped STATIC DATA MEMBER
+alike (`cpp_static_name': every facet's `static locale::id id',
+`_ZNSt3__15ctypeIcE2idE'). What the encoder cannot spell keeps its own name, and
+the link names it. ON THE WAY TO THE LINK AND PAST IT, twelve more: (1) THE
+MEMBERS OF A NESTED CLASS DEFINED OUT OF ITS CLASS TEMPLATE, `template <...>
+basic_ostream<_CharT, _Traits>::sentry::sentry(basic_ostream &)': the reader
+keeps the enclosing path on such a constructor or destructor (`ctor_def(L,
+scoped([tmpl(basic_ostream, ...)], sentry), ...)`, reader version 50; the bare
+name had lost which class's sentry it was), the index keys them under the
+enclosing class (`in_nested(N, M)', the key `nested_member(N, K)'), and the
+merge reaches into the nested class's members once the class is whole
+(`cpp_nested_defs`, `cpp_member_def_key`); (2) A PLAIN CLASS'S OUT-OF-CLASS
+BODIES, `inline ios_base::fmtflags ios_base::flags() const { ... }', indexed
+by the class's name, noted BEFORE the batch registers (`cpp_note_hdr_mdefs`:
+the class item comes first in the header) and merged in `cpp_lazy_class` --
+unindexed, `flags()' took the mangled road and libc++ hides it from its ABI;
+(3) a nested class KNOWN BY NAME ALONE (`class locale::id', forward-declared,
+defined out of class) loaded when its name resolves as a type
+(`cpp_touch_nested`), so its struct exists for the lowering; (4) A HEADER'S
+INLINE VARIABLE -- C++17's, defined in the header with its initializer,
+exported by no library: libc++'s digit tables, `__digits_base_10',
+`__pow10_64' -- indexed and emitted as a `linkonce' global by the program
+that names it (`cpp_lazy_inline_var`, its items desugared; reader version 51,
+the index changed); named through the summary alone it was an `external
+global' and the link named five; (5) 0.69's RULE IN ITS THIRD AND FOURTH
+PLACES: a function template's instance (`cpp_instantiate_function_`) and a
+library free function's overload (`cpp_use_fn`) are noted when EMITTED, in
+progress while they emit -- `__to_chars_integral' was declared and never
+defined; (6) A HEADER'S LOAD DECLARES AT FILE SCOPE (`cpp_isolated` around
+`cpp_register_lazy`): met inside a function's body walk, a load declared the
+header's functions into that function's open frame -- `ccl_declare` takes the
+innermost -- and they went with it: `__convert_to_integral.unsigned_long'
+declared in one walk, undeclared at the next call, its type unknown and
+`_Size' undeducible; (7) A FUNCTION TEMPLATE'S REDECLARATION TAKES THE DEFAULTS
+OF ITS FIRST DECLARATION (`cpp_fn_merge_defaults` over the candidates with the
+same template parameters, kind for kind and name for name, through 0.44's
+`cpp_merge_defaults`): C++ lets a default template argument stand on the first
+declaration only, and libc++'s definition of `__to_chars_integral' refused
+`cannot_deduce(anon)' while its prototype held and was emitted as a declare;
+(8) A NAME QUALIFIED BY A PARAMETER IS A NON-DEDUCED CONTEXT in a function
+parameter too (`cpp_path_dependent` in `cpp_match`): `typename
+_IterOps<_AlgPolicy>::template __difference_type<_InIter> __n' binds nothing
+and resolves once the others bind it -- taken for a class template by its last
+segment it refused deduction_failed; (9) NO STANDARD CONVERSION between a
+pointer and an arithmetic parameter in a template's acceptance
+(`cpp_scalar_mismatch`: a bool takes a pointer, nothing else does) --
+`cout << "hello"' took the CHAR inserter and passed the literal's address
+truncated to a byte; (10) A QUALIFIED CALL INSIDE A CLASS PASSES `this'
+through the base sub-objects, never virtual (`cpp_base_hops`; a static
+method keeps its null): libc++'s basic_ios forwards `good()' as `return
+ios_base::good();', and it went out with a null this -- SIGSEGV in
+`ios_base::good'; (11) THE BIT BUILTINS AT RUN TIME are LLVM's intrinsics
+(`ir_bit_builtin`: `__builtin_clz*', `ctz*', `popcount*' and the generic `g'
+forms with their second argument, over the argument's own width, a raw
+`declare' line since `i1' has no C spelling) -- 0.60 folded them where the
+argument was a constant, and `__countl_zero' calls one at run time; (12) A
+CLASS THAT IS NOT TRIVIALLY COPYABLE OR DESTRUCTIBLE CROSSES A CALL BY
+INVISIBLE REFERENCE and comes back through a hidden pointer, WHATEVER ITS
+SIZE -- the Itanium C++ ABI's rule on both architectures, which the shipped
+library follows: `ios_base::getloc()' returns a `locale', one pointer wide with
+a destructor, through sret, and taken as a register value the library wrote
+its result over `this' -- SIGSEGV in `locale::locale(const locale &)'. The
+desugaring marks such classes (`'$cpp_nontrivial'`, `cpp_note_nontrivial`: a
+destructor, a copy or move constructor, a virtual function, or a base or a
+member that is such) and the lowering classifies them `indirect'
+(`ir_nontrivial_class` in `ir_abi_`); the program's own classes follow the
+same rule on both sides of every call. Lowering version 28. WHAT RUNS:
+`std::cout << "hello, cicili++\n"' -- the library's own object, written to
+through libc++'s basic_ostream, its sentry, ostreambuf_iterator,
+`__pad_and_output', std::copy and the streambuf's virtuals into libc++'s
+`__stdoutbuf' -- and a chained `<< "one " << "two\n"'; 19 s and about 950 MB
+warm, the cold read of `<iostream>` 1498 MB. Gated by
+`test/cpp/run/stdcout.cpp` and the mangler's check in `test/cpp.pl` (clang's
+six symbols). Seven gates GREEN (the C++ one 2125 MB, of which the fixture
+itself is 917 -- the peak is the cold flatten of `<sstream>` and ten more
+headers the reader's fixtures pull in after the version bump, rewritten inside
+the gate; the libc++ one 1833 MB). NOT DONE: the ostreambuf `__pad_and_output' still loses to the
+generic one (a conversion counted on the temporary; it works through
+std::copy); `std::endl', a number inserted (`num_put', walked and untested),
+`std::cin'; a function-type or array parameter in a mangled name; a null
+pointer converted to a base at an offset; explicit constructors in the
+acceptance test.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

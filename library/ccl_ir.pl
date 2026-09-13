@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(27).
+ccl_lowering_version(28).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -304,6 +304,14 @@ ir_abi_nocache(T, Abi) :-
     ;   Abi = scalar ).
 ir_is_aggregate(base(_, [struct(_, Ms)])) :- Ms \== none.
 ir_is_aggregate(base(_, [union(_, Ms)])) :- Ms \== none.
+%% A CLASS THAT IS NOT TRIVIALLY COPYABLE OR DESTRUCTIBLE crosses a call BY INVISIBLE REFERENCE -- a pointer to the
+%% caller's temporary -- and comes back through a hidden pointer, whatever its size: the Itanium C++ ABI's rule on
+%% both architectures, which the shipped library follows. `ios_base::getloc()' returns a `locale', one pointer wide
+%% with a destructor, through sret; taken as a register value, the library wrote its result over `this'. The
+%% desugaring marks such classes ('$cpp_nontrivial', 0.73), and the program's own follow the same rule on both
+%% sides of every call.
+ir_abi_(_, base(_, [struct(C, _)]), LL, _, A, indirect(LL, A)) :- ir_nontrivial_class(C), !.
+ir_nontrivial_class(C) :- atom(C), catch(nb_getval('$cpp_nontrivial', L), _, fail), memberchk(C, L).
 ir_abi_(_, _, _, 0, _, direct([piece(i8, 0)])) :- !.   % an EMPTY class (an allocator, a comparator, a tag): C++ gives it size one, and one byte crosses a call -- with no leaves it classified as no pieces at all, which has no type
 ir_abi_(sysv, T, LL, N, A, Abi) :- ( N > 16 -> Abi = memory(LL, A) ; ir_leaves(T, 0, Ls), ir_eightbytes(Ls, N, 0, Ps), Abi = direct(Ps) ).
 ir_abi_(aapcs, T, LL, N, A, Abi) :-
@@ -696,6 +704,26 @@ ir_array_defers([var(N, T, _)|Vs], Sto) :-
     ir_array_defers(Vs, Sto).
 
 %% ---- calls ------------------------------------------------------------------------------
+%% THE BIT BUILTINS AT RUN TIME are LLVM's intrinsics -- 0.60 folded them where the argument was a constant:
+%% __builtin_clz*, __builtin_ctz*, __builtin_popcount*, and the generic `g' forms, over the argument's own width; a
+%% zero is defined (the count is the width), which is what libc++'s __countl_zero guards for in any case. An int
+%% comes back, as C has it. The intrinsic's declaration is a raw line (an `i1' has no C spelling for the table).
+ir_call(id(B), [X|Rest], V, base([], [int])) :- ir_bit_builtin(B, Intr), ( Rest = [] ; Rest = [_] ), !,   % the generic forms take a second argument: the value for a zero
+    ir_expr(X, XV, _, XL), ir_bit_width(XL, W), atomic_list_concat(['llvm.', Intr, '.i', W], Name),
+    (   Intr == ctpop -> atomic_list_concat(['declare i', W, ' @', Name, '(i', W, ')'], Decl), Extra = ''
+    ;   atomic_list_concat(['declare i', W, ' @', Name, '(i', W, ', i1)'], Decl), Extra = ', i1 false' ),
+    ir_note_extern(Name, raw(Decl)),
+    ir_fresh(R), ir_ins([R, ' = call i', W, ' @', Name, '(i', W, ' ', XV, Extra, ')']),
+    (   W =:= 32 -> C = R
+    ;   W > 32 -> ir_fresh(C), ir_ins([C, ' = trunc i', W, ' ', R, ' to i32'])
+    ;   ir_fresh(C), ir_ins([C, ' = zext i', W, ' ', R, ' to i32']) ),
+    (   Rest = [Fb] -> ir_expr(Fb, FV0, FT, FL), ir_convert(FV0, FT, FL, base([], [int]), i32, FV),
+        ir_fresh(Z), ir_ins([Z, ' = icmp eq i', W, ' ', XV, ', 0']), ir_fresh(V), ir_ins([V, ' = select i1 ', Z, ', i32 ', FV, ', i32 ', C])
+    ;   V = C ).
+ir_bit_builtin('__builtin_clzg', ctlz).  ir_bit_builtin('__builtin_clz', ctlz).  ir_bit_builtin('__builtin_clzl', ctlz).  ir_bit_builtin('__builtin_clzll', ctlz).
+ir_bit_builtin('__builtin_ctzg', cttz).  ir_bit_builtin('__builtin_ctz', cttz).  ir_bit_builtin('__builtin_ctzl', cttz).  ir_bit_builtin('__builtin_ctzll', cttz).
+ir_bit_builtin('__builtin_popcountg', ctpop).  ir_bit_builtin('__builtin_popcount', ctpop).  ir_bit_builtin('__builtin_popcountl', ctpop).  ir_bit_builtin('__builtin_popcountll', ctpop).
+ir_bit_width(i8, 8).  ir_bit_width(i16, 16).  ir_bit_width(i32, 32).  ir_bit_width(i64, 64).
 ir_call(id(N), Args, V, RT) :-
     ir_lookup(N, loc(Addr, T0)), ccl_resolve_type(T0, fn(RT, Ps, Var)), !,
     ir_call_(Addr, RT, Ps, Var, Args, V).
@@ -1120,6 +1148,7 @@ ir_struct_defs([], []).
 ir_struct_defs([_-pending|T], D) :- !, ir_struct_defs(T, D).
 ir_struct_defs([_-Def|T], [Def|D]) :- ir_struct_defs(T, D).
 ir_declares([], _, []).
+ir_declares([_-raw(D)|Es], Ds, [D|Decls]) :- !, ir_declares(Es, Ds, Decls).       % an intrinsic's line, spelled where it was used
 ir_declares([N-_|Es], Ds, Decls) :- memberchk(N, Ds), !, ir_declares(Es, Ds, Decls).
 ir_declares([N-T|Es], Ds, [D|Decls]) :-
     ccl_resolve_type(T, T1),

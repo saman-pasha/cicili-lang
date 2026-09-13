@@ -559,6 +559,26 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The forty-first step DONE: `std::cout << "hello, cicili++\n"` RUNS.**
+  The Itanium mangler's second half -- the substitution table (`S_`, `S0_`
+  ...), nested names, template instances, `K` for a const method, `C1`/`D1`,
+  an unscoped `std::` name -- measured against clang's own symbols for six
+  shapes, all six equal; at one door, every member a library header declares
+  and the shipped library defines is called by its symbol, its parameters
+  resolved in its class, its static data members too. Twelve forms on the way
+  from the link to the first line printed, each named: the members of a
+  nested class defined out of its class template, a plain class's out-of-class
+  bodies, a nested class known by name alone loaded when its name resolves, a
+  header's inline variables emitted by the program that names them, a name
+  noted when it is emitted in two more places, a header's load declaring at
+  file scope, a function template's redeclaration taking its first
+  declaration's defaults, a name qualified by a parameter as a non-deduced
+  context, no pointer for an arithmetic parameter, a qualified call inside a
+  class passing `this`, the bit builtins as LLVM's intrinsics, and a class
+  that is not trivially copyable crossing a call by invisible reference and
+  returning through sret -- the ABI's rule the library's `getloc()` follows. The library's own `cout`, written to through
+  libc++'s stream, sentry, iterator and streambuf virtuals: the first C++
+  program of this compiler's to speak to the standard library's runtime. GREEN.
 * **The fortieth step DONE: the constexpr function, and the road to a
   running `std::cout`.** A constexpr function of one `return` folds where a
   constant is wanted -- its body read back from the emitted instance, its

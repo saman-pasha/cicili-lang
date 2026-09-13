@@ -49,7 +49,9 @@ c_checks :-
     section('statements and expressions: range-for, try/catch/throw, lambdas, enum class, casts'),
     c17, c18, c19, c20, c21,
     section('C++20: concepts and requires, <=>, consteval and constinit, char8_t, coroutines read, using enum, for with an initializer, designated initializers, an abbreviated template, a template lambda, if constexpr'),
-    c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33.
+    c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33,
+    section('the Itanium mangler (0.73): clang++ six symbols, spelled from the desugaring own terms -- substitutions, nested names, template instances, K, C1/D1'),
+    c34.
 
 c1 :- check('namespace N { ... } is namespace(L, N, Items), nested, and anonymous',
     ( unit('names.cpp', unit(Is)), member(namespace(2, geo, Gs), Is), member(function(_, _, _, twice, _, _, _), Gs), member(namespace(_, inner, _), Gs), member(namespace(_, anon, _), Is) )).
@@ -175,6 +177,36 @@ c33 :- check('auto(k) is decay_copy(k); if (using T = long; true) is a block of 
     ( fn_body('cxx23.cpp', main, B), member(declaration(_, _, _, [var(copy, _, decay_copy(id(k)))]), B),
       member(block([typedef(_, [var('T', base([], [long]), none)]), if(_, bool(true), block([declaration(_, _, base(_, [typedef('T')]), [var(x, _, int(40))]), _]), none)]), B),
       member(block([expr(_, assign('=', id(copy), int(1))), label(_, done, empty)]), B) )).
+
+%% ---- the Itanium mangler (0.73): the six shapes clang++ was asked to spell (scratch mg.cpp, nm on its object) ----
+%% The facts a real run would have left: each class's namespace path and the template instances the parameters name;
+%% cleared after, so no later check meets them.
+ita_facts :-
+    ccl_ensure_globals, ita_clear,
+    nb_setval('$cpp_enclosing', ['loc2.fac'-loc2]),
+    ita_ns([ios_base, ct2, loc2, basic_string, char_traits, allocator, tw]),
+    assertz('$cpp_inst'('ct2.char', inst(ct2, [base([], [char])]))),
+    assertz('$cpp_inst'(ctc, inst(char_traits, [base([], [char])]))),
+    assertz('$cpp_inst'(alc, inst(allocator, [base([], [char])]))),
+    assertz('$cpp_inst'(bsc, inst(basic_string, [base([], [char]), base([], [typedef(ctc)]), base([], [typedef(alc)])]))).
+ita_ns([]).
+ita_ns([N|Ns]) :- assertz('$cpp_hdr_ns'(N, [std, '__1'])), ita_ns(Ns).
+ita_clear :-
+    dynamic('$cpp_hdr_ns'/2), dynamic('$cpp_hdr_ast_ns'/2), dynamic('$cpp_inst'/2),
+    retractall('$cpp_hdr_ns'(_, _)), retractall('$cpp_inst'(_, _)), nb_setval('$cpp_enclosing', []).
+ita_name(Chain, F, Qs, Ps, Want) :-
+    cpp_ita_function([std, '__1'], Chain, F, Qs, Ps, false, Got),
+    (   Got == Want -> true
+    ;   write('     mangled '), write(F), write(' as '), write(Got), write(' where clang++ has '), write(Want), nl, fail ).
+c34 :- check('the Itanium mangler spells clang++ six symbols: a static method over two pointers and a const reference (S1_, NS_...E), a const method of a template instance (K, IcE), a nested class destructor (D1), two strings by value (S5_), a reference and a pointer to one class (S0_, S2_), a static member of an instance over two instances (S3_)',
+    ( ita_facts,
+      ita_name([plain(npb2)], ipad, [], [param(ptr([], base([], [char])), a), param(ptr([], base([], [char])), b), param(ref([], base([const], [typedef(ios_base)])), c)], '_ZNSt3__14npb24ipadEPcS1_RKNS_8ios_baseE'),
+      ita_name([inst(ct2, [base([], [char])])], nar, [const], [param(base([], [char]), a), param(base([], [char]), b)], '_ZNKSt3__13ct2IcE3narEcc'),
+      ita_name([plain(loc2), plain(fac)], '$dtor', [], [], '_ZNSt3__14loc23facD1Ev'),
+      ita_name([], ff, [], [param(base([], [typedef(bsc)]), a), param(base([], [typedef(bsc)]), b)], '_ZNSt3__12ffENS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEES5_'),
+      ita_name([], gg, [], [param(ref([], base([const], [typedef(ios_base)])), a), param(ptr([], base([], [typedef(ios_base)])), b), param(ref([], base([const], [typedef(ios_base)])), c)], '_ZNSt3__12ggERKNS_8ios_baseEPS0_S2_'),
+      ita_name([inst(tw, [base([], [char])])], two, [], [param(base([], [typedef('ct2.char')]), a), param(base([], [typedef('ct2.char')]), b)], '_ZNSt3__12twIcE3twoENS_3ct2IcEES3_'),
+      ita_clear )).
 
 %% ---- real C++ from the neighbours: Cicili's emitted C++, read entirely ----------------------
 c_real :-

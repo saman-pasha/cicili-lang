@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(49).
+ccl_reader_version(51).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -751,9 +751,16 @@ ccl_external(Env, Env, D) --> ccl_c_or_cpp, ccl_line(L), ccl_kw(auto), ccl_id(N)
 ccl_external(Env, Env, deduction_guide(L, N, Ps, T)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_id(N), { ccl_known_template(N) }, ccl_p('('), ccl_params(Env, Ps, _), ccl_p(')'), ccl_p('->'), !,
     ccl_type_name(Env, T), ccl_p(';').
 %% a constructor or destructor defined out of its class: C::C(...), X<T>::X(...), X<T>::~X()
-ccl_external(Env, Env, ctor_def(L, C, Qs, Ps, Inits, Body)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_qname(Env, type, scoped(Path, C)), { atom(C), ccl_last(Path, P), ccl_class_base(P, C) }, ccl_p('('), !,
+ccl_external(Env, Env, ctor_def(L, CName, Qs, Ps, Inits, Body)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_qname(Env, type, scoped(Path, C)), { atom(C), ccl_last(Path, P), ccl_class_base(P, C), ccl_ctor_class(Path, C, CName) }, ccl_p('('), !,
     ccl_params(Env, Ps, _), ccl_p(')'), ccl_method_quals(Qs), ccl_ctor_inits(Env, Inits), ccl_fn_body(Env, Ps, Body).
-ccl_external(Env, Env, dtor_def(L, C, Qs, Body)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_qname(Env, type, Q), { ccl_class_base(Q, C) }, ccl_p('::'), ccl_p('~'), !, ccl_id(C), ccl_p('('), ccl_p(')'), ccl_method_quals(Qs), ccl_fn_body(Env, [], Body).
+ccl_external(Env, Env, dtor_def(L, CName, Qs, Body)) --> ccl_cpp, ccl_line(L), ccl_member_prefix(_), ccl_qname(Env, type, Q), { ccl_class_base(Q, C) }, ccl_p('::'), ccl_p('~'), !, ccl_id(C), ccl_p('('), ccl_p(')'), ccl_method_quals(Qs), ccl_fn_body(Env, [], Body), { ccl_dtor_class(Q, C, CName) }.
+%% A NESTED CLASS'S constructor or destructor defined out of ITS ENCLOSING class keeps the enclosing path:
+%% `basic_ostream<_CharT, _Traits>::sentry::sentry(...)' is ctor_def(L, scoped([tmpl(basic_ostream, ...)], sentry), ...),
+%% where the bare name lost which class's sentry it was; a class's own stays its bare name (reader version 50)
+ccl_ctor_class([_], C, C) :- !.
+ccl_ctor_class(Path, C, scoped(Front, C)) :- append(Front, [_], Path).
+ccl_dtor_class(scoped(Front, _), C, scoped(Front, C)) :- !.
+ccl_dtor_class(_, C, C).
 ccl_class_base(C, C) :- atom(C), !.
 ccl_class_base(tmpl(C, _), C) :- !.
 ccl_class_base(scoped(_, Last), C) :- ccl_class_base(Last, C).
