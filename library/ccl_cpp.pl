@@ -292,6 +292,7 @@ cpp_fn_ready(F) :- atom(F), cpp_hdr_item(F, _), cpp_hdr_load(F), '$cpp_fn'(F, _,
 cpp_fn_defined(F, Ps, D) :- ( '$cpp_fn'(F, _, Ps, yes, _) -> D = yes ; D = no ).
 cpp_exact_params([], []).
 cpp_exact_params([P|Ps], [A|As]) :- ( P = param(T, _) ; P = param(T, _, _) ), cpp_arg_exact(T, A), cpp_exact_params(Ps, As).
+cpp_arg_exact(PT, A) :- cpp_fn_template_ref(A, F), !, cpp_fn_target(PT, FnT), cpp_target_deduces(F, FnT).   % a template's name the target deduces is exact
 cpp_arg_exact(PT, A) :- ccl_type_of(A, AT), AT \== unknown,
     ccl_unref(PT, PT1), ccl_unref(AT, AT1), ccl_resolve_type(PT1, R1), ccl_resolve_type(AT1, R2),
     cpp_bare_type(R1, B1), cpp_bare_type(R2, B2), B1 == B2.
@@ -928,6 +929,7 @@ cpp_param_ref(T0, T) :- ( catch(cpp_type(T0, T1), _, fail) -> true ; T1 = T0 ), 
 cpp_param_ref_(T0, T) :- \+ ( T0 = ref(_, _) ; T0 = rref(_, _) ), ccl_resolve_type(T0, R), ( R = ref(_, _) ; R = rref(_, _) ), !, T = R.
 cpp_param_ref_(T, T).
 cpp_arg_fit_(PT, A, 0) :- cpp_category_mismatch(PT, A), !.                                    % an rvalue reference binds no lvalue, a plain one no rvalue
+cpp_arg_fit_(PT, A, S) :- cpp_fn_template_ref(A, F), !, ( cpp_fn_target(PT, FnT), cpp_target_deduces(F, FnT) -> S = 3 ; S = 0 ).   % a template's name: exact where the parameter's target type deduces it, no fit otherwise
 cpp_arg_fit_(PT, A, S) :-
     (   cpp_arg_type(A, AT)
     ->  ccl_unref(PT, PT1), ccl_unref(AT, AT1),
@@ -937,15 +939,23 @@ cpp_arg_fit_(PT, A, S) :-
         ;   ccl_is_arith(PT1), ccl_is_arith(AT1) -> S = 2
         ;   S = 0 )
     ;   S = 1 ).
-cpp_pointerish(T) :- ccl_resolve_type(T, R), ( R = ptr(_, _) ; R = arr(_, _) ), !.
+cpp_pointerish(T) :- ccl_resolve_type(T, R), ( R = ptr(_, _) ; R = arr(_, _) ; R = fn(_, _, _) ), !.   % a function decays to a pointer
 %% ... BY WHAT THEY POINT TO: `void *' takes any object pointer, a FUNCTION pointer takes only a function, a pointer
 %% to a class one to a class; the rest -- the scalars, `char *' to `const char *' -- fit as they always did. Scored
 %% as any two pointers, basic_ostream's manipulator inserter, `operator<<(basic_ostream &(*)(basic_ostream &))',
 %% took `cout << "hello"' and the literal was CALLED.
-cpp_pointer_fit(P, A) :- ccl_resolve_type(P, ptr(_, PE)), ccl_resolve_type(A, AR), ( AR = ptr(_, AE) ; AR = arr(_, AE) ), !, cpp_pointee_fit(PE, AE).
+cpp_pointer_fit(P, A) :- ccl_resolve_type(P, ptr(_, PE)), ccl_resolve_type(A, AR), ( AR = ptr(_, AE) ; AR = arr(_, AE) ; AR = fn(_, _, _), AE = AR ), !, cpp_pointee_fit(PE, AE).
 cpp_pointer_fit(_, _).
 cpp_pointee_fit(PE, AE) :- ccl_resolve_type(PE, base(_, [void])), !, \+ ccl_resolve_type(AE, fn(_, _, _)).
-cpp_pointee_fit(PE, AE) :- ccl_resolve_type(PE, fn(_, _, _)), !, ccl_resolve_type(AE, fn(_, _, _)).
+cpp_pointee_fit(PE, AE) :- ccl_resolve_type(PE, fn(R1, Ps1, V1)), !, ccl_resolve_type(AE, fn(R2, Ps2, V2)), cpp_fn_types_agree(fn(R1, Ps1, V1), fn(R2, Ps2, V2)).   % a function pointer takes only a function OF ITS TYPE: `std::hex' is `ios_base &(ios_base &)', and the inserter over `basic_ostream &(*)(basic_ostream &)' would call it on the wrong sub-object
+%% two function types agree parameter for parameter and in their result, whatever the parameters are named
+cpp_fn_types_agree(fn(R1, Ps1, V), fn(R2, Ps2, V)) :- cpp_types_agree(R1, R2), cpp_param_types_agree(Ps1, Ps2).
+cpp_param_types_agree([], []).
+cpp_param_types_agree([P|Ps], [Q|Qs]) :- cpp_param_type_of(P, T1), cpp_param_type_of(Q, T2), cpp_types_agree(T1, T2), cpp_param_types_agree(Ps, Qs).
+cpp_param_type_of(param(T, _), T).
+cpp_param_type_of(param(T, _, _), T).
+cpp_types_agree(T1, T2) :- cpp_type_or_self(T1, R1), cpp_type_or_self(T2, R2), ccl_resolve_type(R1, S1), ccl_resolve_type(R2, S2), cpp_bare_type(S1, B1), cpp_bare_type(S2, B2), B1 == B2.
+cpp_type_or_self(T, R) :- ( catch(cpp_type(T, R0), _, fail) -> R = R0 ; R = T ).
 cpp_pointee_fit(PE, AE) :- cpp_class_of_type(PE, _), !, cpp_class_of_type(AE, _).
 cpp_pointee_fit(_, _).
 cpp_category_mismatch(rref(_, _), A) :- cpp_lvalue(A), !.
@@ -957,6 +967,7 @@ cpp_ref_args_of(Name, As, As1) :- ccl_declared(Name, fn(_, [_|Ps], _)), !, cpp_r
 cpp_ref_args_of(_, As, As).
 cpp_ref_args_([], As, As).
 cpp_ref_args_(_, [], []).
+cpp_ref_args_([P|Ps], [A|As], [id(Inst)|Bs]) :- ( P = param(PT, _) ; P = param(PT, _, _) ), cpp_fn_template_ref(A, F), cpp_fn_target(PT, FnT), cpp_deduce_target(F, FnT, Inst), !, cpp_ref_args_(Ps, As, Bs).   % A TEMPLATE'S NAME TAKES ITS INSTANCE from the parameter's target type, here where the candidate is chosen
 cpp_ref_args_([P|Ps], [A|As], [A1|Bs]) :- ( P = param(PT, _) ; P = param(PT, _, _) ), !, ( ( PT = rref(_, _) ; PT = ref(_, _) ), A = move(X) -> A1 = X ; A1 = A ), cpp_ref_args_(Ps, As, Bs).
 cpp_ref_args_([_|Ps], [A|As], [A|Bs]) :- cpp_ref_args_(Ps, As, Bs).
 %% a type that holds an owner: an own pointer, an own array, a struct with one inside
@@ -1216,6 +1227,7 @@ cpp_norm_inits([I|Is], [I|Js]) :- cpp_norm_inits(Is, Js).
 %% scored the 1 that an unknown type earns and the FIRST constructor won, `__rep(__short)' for a `__rep'.
 cpp_arg_type(move(X), T) :- !, cpp_arg_type(X, T).                       % THE MOVE FORMS FIRST: <utility> comes in with
 cpp_arg_type(call(scoped(_, move), [X]), T) :- !, cpp_arg_type(X, T).   % every container, so `std::move' is a declared template whose RAW result type would otherwise win
+cpp_arg_type(A, tmplfn(F)) :- cpp_fn_template_ref(A, F), !.               % A FUNCTION TEMPLATE'S NAME has no type of its own: a target type gives it one (cpp_deduce_target)
 cpp_arg_type(A, T) :- ccl_type_of(A, T0), T0 \== unknown, !, T = T0.
 cpp_arg_type(A, T) :- catch(cpp_expr(none, A, A1), _, fail), A1 \== A, ccl_type_of(A1, T0), T0 \== unknown, T = T0.
 cpp_init_arg_class(E, C) :- cpp_arg_type(E, T), ccl_unref(T, T1), cpp_class_of_type(T1, C), !.
@@ -2224,6 +2236,41 @@ cpp_same_tparams(Ps, [requires(_)|Qs]) :- !, cpp_same_tparams(Ps, Qs).
 %% is never called, and a decltype wants only its return type
 cpp_fn_item(function(L, Sto, Ret, N, Ps, V, Body), function(L, Sto, Ret, N, Ps, V, Body)).
 cpp_fn_item(declaration(L, Sto, _, [var(N, fn(Ret, Ps, V), none)]), function(L, Sto, Ret, N, Ps, V, none)) :- atom(N).
+%% A FUNCTION TEMPLATE'S NAME AS AN ARGUMENT has no type of its own: C++ deduces its template arguments from the
+%% TARGET, the function type a function-pointer parameter names ([temp.deduct.funcaddr]) -- `cout << std::endl' hands
+%% `endl' to `operator<<(basic_ostream &(*)(basic_ostream &))', and the instance is endl<char, char_traits<char>>.
+%% Typed by the inference as the template's RAW signature (a function template is declared under it, 0.49), the
+%% argument's `basic_ostream<_CharT, _Traits>' was instantiated on the free names -- and `_Traits' met a stray block
+%% typedef of another template's body -- 412 s to the memory cap. The name is `tmplfn(F)' to cpp_arg_type; a candidate's
+%% function-pointer parameter DEDUCES it (cpp_target_deduces: the template's parameter types against the target's,
+%% reference for reference, then its result, the defaults and the constraints; the first candidate of the name that
+%% holds) and scores it exact; any other parameter takes it not at all; and where the candidate is chosen
+%% (cpp_ref_args_) the argument becomes the instance's name, emitted as any instance is (cpp_deduce_target).
+cpp_fn_template_ref(id(F), F) :- atom(F), \+ cpp_local(F), cpp_fn_template(F), !.
+cpp_fn_template_ref(scoped(Path, F), F) :- atom(F), \+ cpp_scope_class(Path, _), cpp_fn_template(F), !.
+cpp_fn_template(F) :- \+ \+ ( cpp_template(F, _, Item), cpp_fn_item(Item, _) ).
+cpp_fn_target(PT0, FnT) :- cpp_type_or_self(PT0, PT), ccl_resolve_type(PT, R), ( R = ptr(_, T) ; R = ref(_, T) ; R = rref(_, T) ; R = fn(_, _, _), T = R ), ccl_resolve_type(T, FnT), FnT = fn(_, _, _), !.
+cpp_target_deduces(F, FnT) :- \+ \+ cpp_target_bindings(F, FnT, _, _, _, _).
+cpp_deduce_target(F, FnT, Name) :- cpp_where(fn(F), cpp_deduce_target_(F, FnT, Name)).
+cpp_deduce_target_(F, FnT, Name) :-
+    cpp_target_bindings(F, FnT, NC, K, TPs, h(function(L, Sto, Ret, _, Ps0, V0, Body), B)),
+    ( NC =:= 1 -> FN = F ; atomic_list_concat([F, '.c', K], FN) ), cpp_instance_name(FN, TPs, B, Name),
+    cpp_instantiate_function_(F, TPs, B, L, Sto, Ret, Ps0, V0, Body, Name).
+cpp_target_bindings(F, fn(R, Ps, V), NC, K, TPs, H) :-
+    findall(TPs0-Fn, ( cpp_template(F, TPs0, Item), cpp_fn_item(Item, Fn) ), Cands0), cpp_fn_merge_defaults(F, Cands0, Cands),
+    length(Cands, NC), cpp_target_candidate(Cands, 1, F, R, Ps, V, K, TPs, H).
+cpp_target_candidate([TPs-Fn|Cs], K, F, R, Ps, V, K1, TPs1, H) :-
+    Fn = function(_, _, Ret, _, Ps0, V0, _),
+    (   V0 == V, length(Ps0, N), length(Ps, N),
+        catch(( cpp_match_target_params(Ps0, Ps, TPs, [], B0), cpp_match_target(Ret, R, TPs, B0, B1), cpp_bind_defaults(TPs, B1, B), cpp_constraints_hold(F, TPs, B) ),
+              error(not_lowered(_), _), fail)
+    ->  K1 = K, TPs1 = TPs, H = h(Fn, B)
+    ;   K2 is K + 1, cpp_target_candidate(Cs, K2, F, R, Ps, V, K1, TPs1, H) ).
+cpp_match_target_params([], [], _, B, B).
+cpp_match_target_params([P|Ps], [Q|Qs], TPs, B0, B) :- cpp_param_type_of(P, PT), cpp_param_type_of(Q, QT), cpp_match_target(PT, QT, TPs, B0, B1), cpp_match_target_params(Ps, Qs, TPs, B1, B).
+cpp_match_target(ref(_, X), QT, TPs, B0, B) :- !, ( QT = ref(_, Y) -> true ; ccl_resolve_type(QT, ref(_, Y)) ), cpp_match(X, Y, TPs, B0, B).      % reference for reference: a target is matched exactly
+cpp_match_target(rref(_, X), QT, TPs, B0, B) :- !, ( QT = rref(_, Y) -> true ; ccl_resolve_type(QT, rref(_, Y)) ), cpp_match(X, Y, TPs, B0, B).
+cpp_match_target(PT, QT, TPs, B0, B) :- \+ QT = ref(_, _), \+ QT = rref(_, _), cpp_match(PT, QT, TPs, B0, B).
 cpp_holding_candidates([], _, _, _, _, []).
 cpp_holding_candidates([TPs-Fn|Cs], K, F, Explicit, As, Hs) :-
     Fn = function(_, _, Ret, _, Ps, Var, _), nb_setval('$cpp_last_refusal', failed), nb_setval('$cpp_conversions', 0),
@@ -2309,6 +2356,7 @@ cpp_params_accept([param(pack(_), _)|_], _, _) :- !.
 cpp_params_accept([P|Ps], [A|As], B) :- ( P = param(PT0, _) ; P = param(PT0, _, _) ), !,
     cpp_subst(PT0, B, PT), ( cpp_param_accepts(PT, A) -> true ; cpp_refuse(0, argument_mismatch) ), cpp_params_accept(Ps, As, B).
 cpp_params_accept([_|Ps], [_|As], B) :- cpp_params_accept(Ps, As, B).
+cpp_param_accepts(PT, A) :- cpp_fn_template_ref(A, F), !, cpp_fn_target(PT, FnT), cpp_target_deduces(F, FnT).   % a template's name: only a function-pointer parameter whose target deduces it
 cpp_param_accepts(PT, A) :- ( ccl_type_of(A, AT), AT \== unknown -> ccl_unref(PT, PT1), ccl_unref(AT, AT1), cpp_type_accepts(PT1, AT1) ; true ).
 cpp_type_accepts(PT, AT) :- cpp_type(PT, PT2), cpp_class_of_type(PT2, C), !, ( cpp_class_of_type(AT, D) -> ( D == C -> true ; cpp_class_fits(D, C), cpp_converted ) ; cpp_converting(C), cpp_converted ).
 cpp_type_accepts(PT, AT) :- ccl_resolve_type(PT, RP), cpp_scalar_mismatch(RP, AT), !, fail.   % NO STANDARD CONVERSION: a pointer to an arithmetic parameter (a bool takes one), an arithmetic value to a pointer parameter -- `cout << "hello"' took the CHAR inserter, `operator<<(basic_ostream<_CharT, _Traits> &, _CharT)', and passed the literal's address truncated to a byte
@@ -2400,6 +2448,7 @@ cpp_deduce_pack(T, ATs, TPs, B0, [P-pack(Es)|B0]) :-
 cpp_deduce_pack(_, _, _, B, B).
 cpp_pack_param_in(T, TPs, P) :- member(tparam(pack, P, _), TPs), cpp_names_in(T, P), !.
 cpp_deduce_args([_|Ps], [_|As], TPs, B0, B) :- cpp_deduce_args(Ps, As, TPs, B0, B).
+cpp_deduce_one(_, A, _, B, B) :- cpp_fn_template_ref(A, _), !.                                  % a template's name is a NON-DEDUCED CONTEXT ([temp.deduct.call]/6)
 cpp_deduce_one(PT, A, TPs, B0, B) :- ( ccl_type_of(A, AT), AT \== unknown -> cpp_match(PT, AT, TPs, B0, B) ; B = B0 ).
 cpp_match(base(_, [typedef(P)]), AT, TPs, B0, B) :- memberchk(tparam(type, P, _), TPs), !, ( memberchk(P-_, B0) -> B = B0 ; cpp_decayed(AT, AT1), B = [P-AT1|B0] ).
 cpp_match(base(_, [typedef(scoped(Path, _))]), _, TPs, B, B) :- cpp_path_dependent(Path, TPs), !.   % A NAME QUALIFIED BY A PARAMETER IS A NON-DEDUCED CONTEXT, whatever it names: `typename _IterOps<_AlgPolicy>::template __difference_type<_InIter> __n' binds nothing here and resolves once the others bind it (C++'s nested-name-specifier rule; 0.46 had it for a pattern); its last segment taken for a class template refused deduction_failed
@@ -2450,6 +2499,8 @@ cpp_type_key(ref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_r', K).
 cpp_type_key(rref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_rr', K).
 cpp_type_key(arr(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_a', K).
 cpp_type_key(tname(X), X) :- !.
+cpp_type_key(fn(R, Ps, V), K) :- !, cpp_type_key(R, RK), findall(PK, ( member(P, Ps), cpp_param_type_of(P, PT), cpp_type_key(PT, PK) ), PKs),   % a FUNCTION TYPE keys by its result and its parameters' types, never their names: `(*pf)(basic_ostream &)' declared and `(*__pf)(basic_ostream &__os)' defined are one
+    ( V == true -> Vs = [z] ; Vs = [] ), append(['fn', RK|PKs], Vs, Ks), atomic_list_concat(Ks, '_', K).
 cpp_type_key(int(N), N) :- !.
 cpp_type_key(uint(N), K) :- !, atom_concat(N, u, K).
 cpp_type_key(long(N), K) :- !, atom_concat(N, l, K).

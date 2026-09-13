@@ -559,6 +559,20 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The forty-second step DONE: `std::endl`.** A function template's name as
+  an argument has no type of its own: C++ deduces its template arguments
+  from the target, the function type a function-pointer parameter names, and
+  everywhere else the name is a non-deduced context. Typed by the inference as
+  the template's raw signature, `std::endl` had `basic_ostream<_CharT, _Traits>`
+  instantiated on its free names, seven minutes to the memory cap; now the
+  candidate whose function-pointer parameter deduces it scores it exact, no
+  other parameter takes it, and where the candidate is chosen the argument
+  becomes the instance's name -- `endl<char, char_traits<char>>` emitted from
+  libc++'s own body, `put`, `widen`, `flush` and the streambuf's `sync` behind
+  it. A function pointer takes only a function of its type, parameter for
+  parameter; a function type keys by its parameters' types, never their names.
+  `std::cout << "hello" << std::endl`, chained, and `std::flush`: clang++'s
+  lines. GREEN.
 * **The forty-first step DONE: `std::cout << "hello, cicili++\n"` RUNS.**
   The Itanium mangler's second half -- the substitution table (`S_`, `S0_`
   ...), nested names, template instances, `K` for a const method, `C1`/`D1`,

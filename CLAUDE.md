@@ -53,7 +53,7 @@ bin/cicili++             cicili for C++ (M5): the same, every input read as C++,
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
 test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME;
-                         test/cpp/run/stdcout.cpp is std::cout << "hello" built against libc++ and run
+                         test/cpp/run/stdcout.cpp and stdendl.cpp are std::cout << "hello" << std::endl built against libc++ and run
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2582,6 +2582,60 @@ std::copy); `std::endl', a number inserted (`num_put', walked and untested),
 `std::cin'; a function-type or array parameter in a mangled name; a null
 pointer converted to a base at an offset; explicit constructors in the
 acceptance test.
+
+**M6's forty-second step (0.74): `std::endl` -- A FUNCTION TEMPLATE'S NAME AS
+AN ARGUMENT.** `cout << "hello" << std::endl' hands `endl' -- a function
+TEMPLATE, `basic_ostream<C, T> &endl(basic_ostream<C, T> &)' -- to the member
+`operator<<(basic_ostream &(*)(basic_ostream &))', and C++ deduces the
+template's arguments from the TARGET, the function type the pointer parameter
+names ([temp.deduct.funcaddr]); everywhere else a template's name is a
+NON-DEDUCED CONTEXT ([temp.deduct.call]/6). Here the inference typed
+`std::endl' as the template's RAW signature (a function template is declared
+under it, 0.49), `basic_ostream<_CharT, _Traits>' with both names free, and
+`_Traits' met a stray BLOCK TYPEDEF of another template's body (`using _Traits
+= __segmented_iterator_traits<_SegmentedIterator>' in `__for_each_segment',
+in the unit-wide table since 0.43 kept a function's block typedefs there):
+`basic_ostream<_CharT, __segmented_iterator_traits<_SegmentedIterator>>' was
+instantiated on the free names, then `basic_ios', `basic_streambuf' after it,
+115,000 flattens and 412 s to the 2800 MB cap. THE RULE, at the one door an
+argument's type has (`cpp_arg_type`): a name that is a function template's
+and no local's (`cpp_fn_template_ref`, `id(F)' or `std::F') is `tmplfn(F)',
+no type of its own; a candidate's FUNCTION-POINTER parameter (or a reference
+to a function, or a function type) DEDUCES it -- `cpp_target_deduces`,
+`cpp_target_bindings`: the template's parameter types against the target's,
+reference for reference (`cpp_match_target`, since a target is matched
+exactly where a call's argument decays), then its result, the defaults and
+the constraints, the first candidate of the name that holds, a refusal
+inside being no candidate -- and scores it EXACT (`cpp_arg_fit_` 3,
+`cpp_arg_exact`, `cpp_param_accepts`); any other parameter takes it not at
+all (0); a call's deduction binds nothing from it (`cpp_deduce_one`); and
+where the candidate is chosen (`cpp_ref_args_`, the door the member call and
+the operator form share) the argument BECOMES THE INSTANCE'S NAME, emitted as
+any instance is (`cpp_deduce_target` -> `cpp_instantiate_function_`). Of
+basic_ostream's three manipulator inserters only the `basic_ostream &(*)
+(basic_ostream &)' one deduces `endl'; the `basic_ios &' and `ios_base &'
+ones refuse. TWO MORE it uncovered: A FUNCTION POINTER TAKES ONLY A FUNCTION
+OF ITS TYPE (`cpp_pointee_fit` through `cpp_fn_types_agree`: parameter for
+parameter and the result, the names dropped; a function DECAYS to a pointer
+in `cpp_pointerish`) -- 0.72's `cpp_pointer_fit` let a function pointer take
+any function, and `std::hex', `ios_base &(ios_base &)', would have gone to the
+first inserter and been called on the wrong sub-object; and A FUNCTION TYPE
+KEYS BY ITS RESULT AND ITS PARAMETERS' TYPES, never their names
+(`cpp_type_key(fn(...))', `fn_<result>_<params>_p') -- the generic flattening
+put the parameter NAMES in, so `(*pf)(basic_ostream &)' declared and
+`(*__pf)(basic_ostream &__os)' defined out of class were two members. WHAT
+RUNS: `endl' from its own body -- `__os.put(__os.widen('\n'))' through a
+sentry and an ostreambuf_iterator, `__os.flush()' through `rdbuf()->pubsync()'
+into the streambuf's virtual `sync' and libc++'s `__stdoutbuf' -- and the
+inserter's `return __pf(*this);', a call through a function-pointer
+parameter; `std::flush' is the same road. Gated by `test/cpp/run/stdendl.cpp`
+(after a literal, chained twice, `std::flush', `endl' alone), clang++'s lines;
+18 s and 917 MB warm, no more than the hello; the C++ gate GREEN at 1694 MB,
+the only gate the change touches. Reader version 51 and lowering version 28
+unchanged. NOT DONE: an OVERLOAD SET of plain functions as an
+argument (C++ picks by the target; here a name has the one declared type);
+`std::hex' and kin scored by type now but not gated; `<iomanip>''s
+manipulators, which are classes; a number inserted (`num_put'), `std::cin'.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
