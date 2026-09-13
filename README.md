@@ -559,6 +559,27 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The fortieth step DONE: the constexpr function, and the road to a
+  running `std::cout`.** A constexpr function of one `return` folds where a
+  constant is wanted -- its body read back from the emitted instance, its
+  parameters bound to the call's, the traits in it constants already -- which
+  is how libc++'s `pair` chooses every constructor
+  (`__enable_if_t<_CheckArgsDep::template __is_pair_constructible<_U1,
+  _U2>(), int>`), and `std::pair<char *, char *> q(p, p)` runs. Followed to
+  the link, twenty-three forms of the stream and locale machinery, each
+  gated: a lazy polymorphic class emits only what its table names (the hello
+  went from 363 instances to 113), the virtual destructor's two slots and
+  VIRTUAL INHERITANCE laid out as the ABI lays a complete object (`cout`'s own
+  shape), a dispatch through the object's own class's table, a declared-only
+  destructor by its Itanium name, a free operator that fits exactly over a
+  member's conversion, a class value in a boolean context through its
+  `operator bool`, a nested class defined out of its class template, and
+  more. `std::cout << "hello"` compiles, passes the safe part, lowers and
+  reaches the link FIVE SYMBOLS SHORT -- two members of the nested `sentry`
+  defined out of its class template, and three Itanium names the mangler's
+  second half must spell (a static member with substitutions, a member of a
+  template specialization, an instance noted and not emitted): the next
+  stretch, named. GREEN.
 * **The thirty-ninth step DONE: the road to `<iostream>`.** The whole
   stream and locale machinery -- 662 items -- read whole after eleven reader
   gaps closed by the census loop (`extern "C++"` transparent where `extern

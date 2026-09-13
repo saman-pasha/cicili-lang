@@ -2351,6 +2351,134 @@ constructor, the slot filled by the derived class), clang++'s numbers; and
 (the C++ one 2245 MB, the libc++ one 1743 MB with `<iostream>`; a cold read
 of `<iostream>` alone 2009 MB, under the 2800 MB cap the owner set).
 
+**M6's fortieth step (0.72): THE CONSTEXPR FUNCTION, and the road to a running
+`std::cout` -- `cicili: ok` to the link, five symbols short.** THE STEP ASKED
+FOR: a constexpr function of ONE `return' FOLDS where a constant is wanted
+(`cpp_const_value/2`, the door `cpp_targ_value` and `cpp_fold_static` now take
+constants through): the instance is emitted as any member template's is, its
+body read back from the emitted item (`'$cpp_out'`), already desugared in its
+class's words so the traits in it are constants, its parameters bound to the
+call's arguments (`cpp_param_binds`, `cpp_replace_ids`; `this' to the null it
+was passed), the return's expression folded -- bounded in depth, since such a
+function may call itself. With it, TWO READINGS the class knows better than
+the reader: `X::template f<U>()' in a template argument reads as a FUNCTION TYPE
+returning `X::f<U>' (the reader cannot know f is a member function template;
+the class can: `cpp_targ_value`'s `fn(scoped(_, tmpl(M, _)), [], false)`
+clause makes it the call), and a qualified member template call with its
+arguments given (`cpp_call`'s `scoped(Path, tmpl(M, TArgs))` clause). libc++'s
+`pair` chooses every constructor by `__enable_if_t<_CheckArgsDep::template
+__is_pair_constructible<_U1, _U2>(), int> = 0', and `std::pair<char *, char *>
+q(p, p)` runs. Gated by `test/cpp/run/constexprfn.cpp` (the shape on the
+program's own classes, a static const from a constexpr call with an argument,
+the same function called at run time) and `stdtraits.cpp`.
+THE ROAD, followed from there to the link, twenty-three forms, each with its
+reproduction: (1) a pack in a BUILTIN TRAIT's arguments expands
+(`type(pack(T))` in `cpp_subst_elems`: `__is_constructible(_Tp, _Args...)`);
+(2) an AGGREGATE TEMPORARY's `operator()` (`cpp_temp_call` for a compound
+literal: `_Algorithm()(a, b, c)`, its block made here) -- `aggcall.cpp`; (3)
+`__remove_cv`, `__remove_const`, `__remove_cvref` of a POINTER
+(`cpp_strip_quals`: they took only a specifier list, and `is_void<char *>` is
+`_BoolConstant<__is_same(__remove_cv(_Tp), void)>`); (4) `X::f(args)' ON A
+CLASS WITHOUT SUCH A MEMBER REFUSES (`no_member(C, M, K)`), the rejection the
+detection `decltype((void) pointer_traits<P>::to_address(...))` needs --
+flattened to a global name it was void either way and every pointer had a
+`to_address`; (5) `typename _Tp::x' WITH `_Tp` A SCALAR, a pointer, a reference,
+a function: the segment carries the type (`nonclass(A)`, `cpp_subst_path`) and
+resolving the name refuses (`cpp_type`, `cpp_expr`), where the parameter's name
+stayed in the path and flattened as a namespace into a FREE NAME (unique_ptr's
+deleter, a function pointer, asked for `::pointer`); (6) a `static' POINTER or
+ARRAY member is a static (`cpp_static_type`: the word sits in the innermost
+base's qualifiers, and `static const char __src[33]' was DATA, so a class of
+statics alone was no empty base) -- `staticbase.cpp`; (7) A LAZY POLYMORPHIC
+CLASS EMITS ONLY WHAT ITS TABLE NAMES (`cpp_slot_fns`: its own slot
+implementations, IN PROGRESS while their bodies are walked -- uflow calls
+underflow -- and noted after), where it emitted every member: `std::cout <<
+"hello"' walked 234 members, `operator<<(double)`, `swap`, the whole input
+side, and the run fell 363 -> 113 instances, 17 -> 6 s (the trace
+`make_lazy(Name)` says which member a program pulls in); (8) a slot's RESULT
+type resolved in its class (`cpp_slot_ret`: `virtual int_type uflow()` reached
+the lowering raw in the table's struct); (9) A DESTRUCTOR A LIBRARY HEADER
+DECLARES AND THE SHIPPED LIBRARY DEFINES is called by its Itanium name
+(`cpp_dtor_name`: `_ZNSt3__18ios_baseD1Ev`, `_ZNSt3__16localeD1Ev`, a nested
+class by its segments; a template instance's nested class keeps its own name,
+`cpp_plain_lib_class`); (10) THE VIRTUAL DESTRUCTOR TAKES TWO SLOTS
+(`'$dtor_del'`), the Itanium layout -- and it must, since a virtual call INTO an
+object the library made (cout's streambuf, its `overflow`) indexes that
+object's own table, and with one entry every slot past the destructor was off
+by one; (11) VIRTUAL INHERITANCE, as the ABI lays a COMPLETE OBJECT out
+(`'$cpp_vbase'`, `cpp_base_layout`): the class's own table pointer first, its
+own members, the shared base LAST -- `basic_ostream : virtual public basic_ios`,
+where cout is the ostream's vptr and the basic_ios at offset 8 (measured with
+clang++: 160 = 8 + 152) and every field we read sat eight bytes off; the
+class's table holds its own virtuals (`cpp_vbase_dtor_slots`: the base's
+virtual destructor makes its own slots, first), a destructor is virtual by
+`override' too, and a class with a virtual base and no destructor gets the
+implicit one (its base's runs on the sub-object where it lies); the reader
+KEEPS `virtual' on a base (`base(virtual(A), Q)`, reader version 48) --
+`virtualbase.cpp` (clang++'s offsets and size); (12) A DISPATCH READS THE
+OBJECT'S OWN CLASS'S TABLE (`cpp_dispatch` casts the pointer to `C.vt`, the
+tables laid out base first: `ctype<char>::widen` found no `do_widen` in
+`__shared_count.vt`); (13) `return { a, b }' builds the RESULT TYPE's object,
+through its constructor or as the aggregate; (14) A NESTED CLASS OF A LAZY
+CLASS IS LAZY (registered eagerly, `sentry' walked its constructor, which
+calls flush(), whose body declares a sentry -- mid-registration, so the ask
+failed and the local was a plain value), and `cpp_nested_ready` clears its
+in-progress mark on a throw (0.69's rule); (15) A NESTED CLASS DEFINED OUT OF
+ITS CLASS TEMPLATE, `template <...> class basic_ostream<_CharT,
+_Traits>::sentry { ... }' (`cpp_mdef_item`'s class clause, `cpp_member_shape`
+for `nested(...)`: kept by the class's name like a member's body and merged
+into the instance's forward declaration; reader version 49, since the index
+changed); (16) A POINTER PARAMETER TAKES BY WHAT IT POINTS TO
+(`cpp_pointer_fit`: `void *' any object pointer, a FUNCTION pointer only a
+function, a class one a class -- scored as any two pointers, the manipulator
+inserter `operator<<(basic_ostream &(*)(basic_ostream &))' took `cout <<
+"hello"', and the literal was CALLED: SIGBUS at the literal's address); (17) A
+FREE OPERATOR THAT FITS EXACTLY BEATS A MEMBER THAT NEEDS A CONVERSION
+(`cpp_member_exact`, `cpp_free_operator_call`: C++ weighs them together, and
+`cout << "hello"' is the free template over `const _CharT *', never the member
+over `const void *'); (18) A SCALAR PARAMETER NEVER TAKES A CLASS ARGUMENT
+without a conversion operator, in the arity-only last resort too
+(`cpp_args_no_clash`: `__s = std::copy(...)' on an ostreambuf_iterator took its
+`operator=(char)' and the struct was sign-extended to a byte); (19) A CLASS
+VALUE WHERE A BOOL IS WANTED converts through its `operator bool'
+(`cpp_to_bool`: if, while, do, for, `!', `&&', `||' -- the contextual
+conversions, an explicit one included: a stream's sentry, `if (__s)'); (20) THE
+SPECIALIZATION ORDERING takes a template-id over opaque names as an INCOMPLETE
+INSTANCE (`cpp_opaque_types`, 0.58's shape): `ostreambuf_iterator<$opaque._CharT,
+...>' instantiated refused, so that `__pad_and_output` was no more special than
+the generic one and the tie went to the first declared; (21) `__to_address` and
+`std::is_void` on pointers, `is_copy_assignable`, all C++'s answers now
+(`stdtraits.cpp`); (22) ON THE C SIDE, a global char array initialized from a
+SHORTER literal is zero-filled to its bound (`ir_str_tail`: `char s[33] =
+"abc"' was refused by LLVM, `[17 x i8]` into `[33 x i8]`); (23) the AST beside
+the summary bumped the reader version twice more, as the rule says; (24) IN THE
+LOWERING, A POINTER OR A REFERENCE TO A DERIVED OBJECT CONVERTS TO ITS BASE BY
+THE BASE'S OFFSET (`ir_convert`'s class-pointer clause, `ir_base_path`,
+`ir_base_hops` over the `$base' members; `ir_ref_to` at the three binds -- a
+local reference, a reference parameter, a cast to a reference): every base
+sat at offset 0 until now, so `A *base = &x' copied the pointer unchanged and
+`base->twice()' read `b''s bytes, the gate's first RED of this step; a null
+pointer is not spared the offset (not done). Lowering version 27 (the
+table's shape, the conversion). WHERE `std::cout << "hello"' STANDS: it
+desugars, passes the safe part, lowers and reaches the LINK -- `cicili: ok' up
+to it -- FIVE SYMBOLS SHORT, each named: the constructor and the destructor of
+`basic_ostream<char>::sentry`, members of a nested class DEFINED OUT OF ITS
+CLASS TEMPLATE (the member-definition index keys them under the nested name
+alone, and the merge does not reach into a nested class's members);
+`__num_put_base::__identify_padding(char *, char *, const ios_base &)`, a
+declared-only STATIC MEMBER of a plain class, shipped as
+`_ZNSt3__114__num_put_base18__identify_paddingEPcS1_RKNS_8ios_baseE` -- the
+SUBSTITUTIONS `S1_` and `NS_...E` that 0.61 left undone; `ctype<char>::do_narrow(char,
+char)`, a declared-only member of a template SPECIALIZATION,
+`_ZNKSt3__15ctypeIcE9do_narrowEcc` -- a template's instance in a mangled name,
+also undone since 0.61; and `__to_chars_integral`'s instance
+`.c1.unsigned_long.0`, noted and never emitted. The next stretch is the
+Itanium mangler's second half and the nested class's out-of-class members. The
+build is 11 s and about 1000 MB warm; the cold read of `<iostream>` 1425 MB.
+Gated by `test/cpp/run/constexprfn.cpp`, `aggcall.cpp`, `staticbase.cpp`,
+`virtualbase.cpp` and `stdtraits.cpp`, clang++'s numbers. Seven gates GREEN
+(the C++ one 1140 MB, the libc++ one 1811 MB).
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on

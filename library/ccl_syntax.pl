@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(47).
+ccl_reader_version(49).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1045,7 +1045,10 @@ ccl_class_qname(N, scoped(P, L), scoped([N|P], L)) :- !.
 ccl_class_qname(N, M, scoped([N], M)).
 ccl_class_tail(Env, K, N, T) --> ( ccl_id(final), ! ; [] ), ( ccl_p(':'), !, ccl_bases(Env, Bs) ; { Bs = [] } ),
     ( ccl_p('{'), !, ccl_class_members(Env, N, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, N, Bs, Ms, T) } ; { Bs == [], T =.. [K, N, none] } ).
-ccl_bases(Env, [base(A, Q)|Bs]) --> ( ccl_kw(virtual), ! ; [] ), ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ( ccl_kw(virtual), ! ; [] ), ccl_qname(Env, type, Q0), ccl_targ_pack(Q0, Q),
+ccl_base_virtual(virtual) --> ccl_kw(virtual), !.
+ccl_base_virtual(none) --> [].
+ccl_bases(Env, [base(A1, Q)|Bs]) --> ccl_base_virtual(V1), ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ccl_base_virtual(V2), ccl_qname(Env, type, Q0), ccl_targ_pack(Q0, Q),
+    { ( ( V1 == virtual ; V2 == virtual ) -> A1 = virtual(A) ; A1 = A ) },   % a VIRTUAL base is marked, `virtual(Access)': libc++'s basic_ostream shares its basic_ios so, and the desugaring lays it out as the ABI does
     ( ccl_p(','), !, ccl_bases(Env, Bs) ; { Bs = [] } ).
 ccl_class_members(Env, N, Ms) --> { ccl_class_push(N) }, ( ccl_members(Env, Ms), { ccl_class_pop }, ! ; { ccl_class_pop }, { fail } ).
 ccl_class_push(N) :- nb_getval('$ccl_class', S), nb_setval('$ccl_class', [N|S]).

@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(25).
+ccl_lowering_version(27).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -235,6 +235,12 @@ ir_run_map([lay(N, T, Off, bits(BOff, W, _))|Ls], Idx, Start, RunLL, [m(N, Idx, 
     ROff is Off * 8 + BOff - Start * 8, ( ir_signed(T) -> Signed = true ; Signed = false ),
     ir_run_map(Ls, Idx, Start, RunLL, Ms).
 %% a member's slot: an address, or bf(Address, RunLL, BitOff, Width, Signed) for a bitfield
+ir_class_pointee(T, Name) :- ccl_resolve_type(T, ptr(_, PT)), ccl_resolve_type(PT, base(_, [struct(Name, _)])), atom(Name).
+ir_base_path(D, A) :- ccl_members_of(base([], [struct(D, none)]), Ms), memberchk(member(MT, '$base', _), Ms), ccl_resolve_type(MT, base(_, [struct(B, _)])), ( B == A -> true ; ir_base_path(B, A) ).
+ir_base_hops(V, D, A, V1) :- ir_member_slot(V, base([], [struct(D, none)]), '$base', P, MT), ccl_resolve_type(MT, base(_, [struct(B, _)])), ( B == A -> V1 = P ; ir_base_hops(P, B, A, V1) ).
+%% ... and the same walk for a REFERENCE bound to a derived object (`const A &r = x', `f(x)' over an `A &'): the
+%% address the bind takes is the sub-object's
+ir_ref_to(E, RefT, P) :- ir_ref_of(E, P0), ( ccl_type_of(E, ET), ET \== unknown, ccl_unref(ET, ET1), ccl_resolve_type(ET1, base(_, [struct(D, _)])), ccl_unref(RefT, RT), ccl_resolve_type(RT, base(_, [struct(A, _)])), D \== A, ir_base_path(D, A) -> ir_base_hops(P0, D, A, P) ; P = P0 ).
 ir_member_slot(Base, ST, N, Slot, T) :-
     (   ir_is_union(ST) -> ( ccl_member_type(ST, N, T) -> Slot = Base ; ir_fail(no_member(N, ST)) )
     ;   ir_type(ST, SLL), nb_getval('$ir_maps', Maps), memberchk(SLL-shape(_, Map), Maps), memberchk(m(N, Idx, T, BF), Map)
@@ -384,6 +390,12 @@ ir_convert(V, From, To, V1) :- ir_type(From, FL), ir_type(To, TL), ir_convert(V,
 %% a REFERENCE where a value is wanted is read through: its value is an address (a cast to a reference type binds)
 ir_convert(V, From, _, To, TL, V1) :- ( From = ref(_, RT) ; From = rref(_, RT) ), \+ ( To = ref(_, _) ; To = rref(_, _) ), !,
     ccl_resolve_type(RT, T), ir_type(T, LL), ir_fresh(L), ir_ins([L, ' = load ', LL, ', ptr ', V]), ir_convert(L, T, LL, To, TL, V1).
+%% A POINTER TO A CLASS CONVERTS TO A POINTER TO ITS BASE BY THE BASE'S OFFSET: every base sat at offset 0 until
+%% 0.72, and a VIRTUAL base is placed after the class's own members (the ABI's complete-object layout), so `A *base
+%% = &x' copied the B * unchanged and base->twice() read b's bytes. The base sub-object is the `$base' member, or
+%% the `$base' of that, down to the one whose type is the target's (ir_base_path); a pointer to anything else, or
+%% to the class itself, converts as it did. A null pointer is not spared the offset (not done).
+ir_convert(V, From, ptr, To, ptr, V1) :- ir_class_pointee(From, D), ir_class_pointee(To, A), D \== A, ir_base_path(D, A), !, ir_base_hops(V, D, A, V1).
 ir_convert(V, From, FL, To, TL, V1) :-
     (   ir_is_bool(To), \+ ir_is_bool(From) -> ir_to_bool(V, From, FL, V1)   % C++: a bool is 0 or 1, whatever came
     ;   FL == TL -> V1 = V
@@ -523,7 +535,7 @@ ir_expr(postdec(E), V, T, LL) :- !, ir_step(E, sub, post, V, T, LL).
 %% A CAST TO A REFERENCE TYPE IS A BIND, never a conversion: `static_cast<_Tp &&>(__t)' is std::forward's whole
 %% body, and taken as a value conversion it loaded the int and made a pointer of it (`inttoptr'), so every element
 %% a libc++ container constructed held the low half of an address. The value of a reference is its address.
-ir_expr(cast(T, E), P, T, ptr) :- ( T = ref(_, _) ; T = rref(_, _) ), !, ir_ref_of(E, P).
+ir_expr(cast(T, E), P, T, ptr) :- ( T = ref(_, _) ; T = rref(_, _) ), !, ir_ref_to(E, T, P).
 ir_expr(cast(T, E), V, T, LL) :- !, ir_expr(E, V0, T0, L0), ( ccl_resolve_type(T, base(_, [void])) -> V = V0, LL = void ; ir_type(T, LL), ir_convert(V0, T0, L0, T, LL, V) ).
 ir_expr(sizeof(E), N, T, i64) :- !, ccl_size_type(T), ccl_type_of(E, ET), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof(E)) ).
 ir_expr(sizeof_type(ET), N, T, i64) :- !, ccl_size_type(T), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof_type(ET)) ).
@@ -710,8 +722,8 @@ ir_call_(Callee, RT, Ps, Var, Args, V) :-
         ;   V = R ) ).
 %% the arguments: each as its parts (a struct in pieces is several), and the plain type of each part
 ir_args_([], _, [], []).
-ir_args_([A|As], [param(PT0, _)|Ps], Parts, PLLs) :- ( PT0 = ref(_, _) ; PT0 = rref(_, _) ), !,   % C++: a reference parameter takes the argument's address
-    ir_ref_of(A, V), atomic_list_concat(['ptr ', V], P1), ir_args_(As, Ps, P2, PLLs2), Parts = [P1|P2], PLLs = [ptr|PLLs2].
+ir_args_([A|As], [param(PT0, _)|Ps], Parts, PLLs) :- ( PT0 = ref(_, _) ; PT0 = rref(_, _) ), !,   % C++: a reference parameter takes the argument's address -- of the base sub-object, for a derived object over a base at an offset
+    ir_ref_to(A, PT0, V), atomic_list_concat(['ptr ', V], P1), ir_args_(As, Ps, P2, PLLs2), Parts = [P1|P2], PLLs = [ptr|PLLs2].
 ir_args_([A|As], [param(PT0, _)|Ps], Parts, PLLs) :- !,
     ir_param_abi(PT0, PT, Abi), ir_expr(A, V0, T0, L0), ( Abi == scalar -> ir_type(PT, PL), ir_convert(V0, T0, L0, PT, PL, V) ; V = V0 ),
     ir_arg_parts(Abi, PT, V, P1, L1), ir_args_(As, Ps, P2, L2), append(P1, P2, Parts), append(L1, L2, PLLs).
@@ -775,7 +787,7 @@ ir_bind_ref(arrow(E, N), V) :- !, ir_expr(E, P, PT, _), ir_elem(PT, ST), ir_memb
 ir_bind_ref(member(E, N), V) :- !, ir_lval(E, Base, BT, _), ccl_resolve_type(BT, ST), ir_member_slot(Base, ST, N, Slot, _), ir_bind_into(Slot, V).
 ir_bind_into(Slot, V) :- ir_slot_addr(Slot, A), ir_ref_of(V, R), ir_ins(['store ptr ', R, ', ptr ', A]).
 ir_lval(ccast(_, T, E), S, T1, LL) :- !, ir_lval(cast(T, E), S, T1, LL).
-ir_lval(cast(T, E), P, RT, LL) :- ( T = ref(_, RT0) ; T = rref(_, RT0) ), !, ir_ref_of(E, P), ccl_resolve_type(RT0, RT), ir_type(RT, LL).   % the bind as a place
+ir_lval(cast(T, E), P, RT, LL) :- ( T = ref(_, RT0) ; T = rref(_, RT0) ), !, ir_ref_to(E, T, P), ccl_resolve_type(RT0, RT), ir_type(RT, LL).   % the bind as a place
 %% A STATEMENT EXPRESSION IS A PLACE when the expression it ends with is one -- which is what every temporary this
 %% compiler builds is (`({ C $tmp; ctor(&$tmp); $tmp; })'), so a reference to it binds to the OBJECT. Materialized
 %% as a prvalue instead, the temporary was copied and a class holding an owner had two holders, one of them freed.
@@ -886,7 +898,7 @@ ir_locals([var(N, T, Init)|Vs], Sto) :-
     (   ( T1 = ref(_, _) ; T1 = rref(_, _) )                             % C++: a reference, bound once to an address
     ->  nb_getval('$ir_reg', K), K1 is K + 1, nb_setval('$ir_reg', K1), atomic_list_concat(['%', N, '.', K1], Addr),
         ir_alloca_typed(Addr, T1), ir_local(N, T1, Addr),
-        ( Init == none -> ir_fail(reference_unbound(N)) ; ir_ref_of(Init, P), ir_ins(['store ptr ', P, ', ptr ', Addr]) )
+        ( Init == none -> ir_fail(reference_unbound(N)) ; ir_ref_to(Init, T1, P), ir_ins(['store ptr ', P, ', ptr ', Addr]) )   % of the base sub-object, for a derived object over a base at an offset (ir_ref_to)
     ;   T1 = fn(_, _, _) -> ir_note_extern(N, T)                         % a local prototype
     ;   Sto == extern -> ir_note_extern(N, T)
     ;   ir_sized_type(T, T1, Init, ST),                                     % int xs[] = {...}: sized by its initializer
@@ -1034,7 +1046,14 @@ ir_gconst(chr(C), _, C) :- !.
 ir_gconst(float(F), T, A) :- !, ( ccl_resolve_type(T, base(_, S)), memberchk(float, S) -> ir_fail(float_global) ; ir_double(F, A) ).
 ir_gconst(str(S), T, C) :- !,
     ccl_resolve_type(T, T1),
-    ( T1 = arr(_, _) -> ir_escape(S, Esc), atomic_list_concat(['c"', Esc, '\\00"'], C) ; ir_string(S, C) ).
+    ( T1 = arr(K, _) -> ir_escape(S, Esc), ir_str_tail(K, S, Tail), atomic_list_concat(['c"', Esc, Tail, '"'], C) ; ir_string(S, C) ).
+%% a literal shorter than its array is ZERO-FILLED to the bound (C's rule: `char s[33] = "abc"'), and one that fills
+%% it exactly has no terminator; a bound the literal alone gives takes its one `\00' -- the constant's type must be
+%% the global's, and `[17 x i8]' into a `[33 x i8]' was refused by LLVM (libc++'s __num_get_base::__src[33])
+ir_str_tail(int(K), S, Tail) :- length(S, L), Z is K - L, Z >= 0, !, ir_zeros(Z, Tail).
+ir_str_tail(_, _, '\\00').
+ir_zeros(0, '') :- !.
+ir_zeros(N, Z) :- N1 is N - 1, ir_zeros(N1, Z1), atom_concat('\\00', Z1, Z).
 ir_gconst(init(Items), T, C) :- !,
     ccl_resolve_type(T, T1),
     (   T1 = arr(int(K), E) -> ir_type(E, EL), ir_gitems(Items, K, E, EL, Parts), ir_join(Parts, ', ', Body), atomic_list_concat(['[', Body, ']'], C)
