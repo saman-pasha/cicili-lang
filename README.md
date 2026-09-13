@@ -574,6 +574,24 @@ what runs today.
   words, `bool` and pointers, `read`/`readsome`/`write`/`tellg`/`tellp`,
   `cerr`/`clog`, every `<ios>` manipulator and `<iomanip>`'s six, the stream's
   state: clang++'s lines, all five. GREEN.
+* **The forty-seventh step DONE: `std::map`, whole.** The int map's surface
+  (`operator[]`, `insert` of a braced list and a `make_pair`, `find`, `count`,
+  `erase`, `at`, `lower_bound`, `clear`, a range-for over the pairs, an
+  iterator loop), a map of strings walked by `for (const auto &[k, v] : w)`
+  and looked up with `const char *` keys, and `std::multimap` with its
+  `equal_range`, match clang++ line for line, and
+  `<map>` reads whole. Thirty-odd forms, each named in CLAUDE.md: structured
+  bindings deferred to the desugaring (a binding to a reference member is a
+  reference), the range-for over `begin()`/`end()`, inheriting and delegating
+  constructors, two of clang's builtin templates, deduction through an alias
+  and a trailing pack, a pack expansion that waits for a member template's own
+  pack, const methods told apart and chosen by the object's constness, a
+  returned value converted through the result's converting constructor, a
+  class converted to another through its conversion operator, sizeof of an
+  incomplete type as SFINAE, a template-id result substituted in the
+  immediate context, the copy pass on operator calls, the arity-only overload
+  last in the method road too, and a library class's value opaque to the safe
+  part. GREEN.
 * **The forty-fifth step DONE: `cin.get()` and the unformatted input
   family.** `get()` in its four forms, `gcount`, `peek`, `ignore`, `unget`,
   `putback`, `eof` and `fail` -- the shipped members of the library's
@@ -858,7 +876,7 @@ label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
 UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
 the extended floating-point suffixes, `[[assume]]` told to LLVM.
 **C++26**: its macros, so libc++ takes its paths, its forms still to
-come. The library itself: the reader reads `<vector>`, `<string>` and `<iostream>`
+come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>` and `<map>`
 whole, the desugaring registers a flattened header's items by name
 as a program asks for them, and `std::vector<int>` gets several
 classes deep before the next forms stop it -- under an instantiation

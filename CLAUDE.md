@@ -52,9 +52,10 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string> and <iostream> flattened and read WHOLE, under a fresh HOME;
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream> and <map> flattened and read WHOLE, under a fresh HOME;
                          test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
-                         the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip); a fixture's input is NAME.stdin
+                         the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
+                         containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap; a fixture's input is NAME.stdin
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -2858,6 +2859,231 @@ lowering version 29. Seven gates GREEN (the C++ one 2519 MB, 110 checks, 457 s;
 the libc++ one 1747 MB); the two input fixtures peak near 2.4 GB each, which is
 why the extractors and the stream's state are two fixtures and not one.
 
+**M6's forty-seventh step (0.79): `std::map`, whole -- the int map's surface, a
+map of strings walked by structured bindings, and `std::multimap`.** The owner's
+rule of 0.78 (a module at once, not function by function) applied to `<map>`:
+`test/cpp/run/stdmap.cpp` (`operator[]` reading and writing, `insert` of a braced
+list and of a `make_pair`, `find` with `->first`, `count`, `erase`, `size`,
+`empty`, `at`, `lower_bound`, `clear`, a range-for with `auto &`, an iterator
+loop `begin()`/`end()`/`++`/`->`) and `stdmapstring.cpp` (string keys, `+=` and
+`++` through `operator[]`, `for (const auto &[k, v] : w)`, `find` and `count`
+with a `const char *`, `erase`, and `std::multimap` with `insert({k, v})`,
+`count` and `equal_range` walked -- three fixtures, `stdmapstring.cpp` the
+writing half, `stdmapstring2.cpp` the reading half, `stdmultimap.cpp`, for the
+memory reason below) match clang++ line for line, and `<map>` is read WHOLE in
+`test/libcxx.pl`. What the two asked, thirty-odd forms, each with
+its reproduction (the piecewise `pair` probe first, then the map's own road):
+THE READER (version 57): (1) a STRUCTURED BINDING whose right side the reader
+cannot type -- unknown, dependent, or `auto` -- is DEFERRED to the desugaring
+(`bindings(L, Ref, Ns, E)`, `ccl_bind_names`, `ccl_declare_autos`, `ccl_auto_type`),
+where 0.44's read-time destructuring refused `cannot_infer(pattern)` on
+`auto [__parent, __child] = __find_equal(__key)`; and a binding may be a
+range-for's declaration (`ccl_range_decl(_, bindings(Ref, Ns))`); (2) a class
+member `using Base::Base;` keeps its name (`using(L, name(Q))`); (3) `const'
+KEPT on a member DEFINED OUT OF ITS CLASS, as `const(Sto)' in the storage slot
+(`ccl_sto_quals`; the desugaring's `cpp_sto_quals` reads it): dropped, the
+const overload's body attached itself to the non-const declaration; (4) a C++
+`constexpr' OBJECT is a `const' one, the C23 rule, and the clause sits BEFORE
+the qualifier clause that would take the word: `inline constexpr
+piecewise_construct_t piecewise_construct' carried `constexpr' in its TYPE, and
+`is_same<__remove_const_ref_t<decltype(piecewise_construct)>,
+piecewise_construct_t>' was false, so libc++'s key extraction for a map's
+piecewise emplace fell to its fallback.
+THE DESUGARING, the pair's piecewise road first: (5) the bindings statement
+(`cpp_stmt_(bindings)`: the value typed through `cpp_arg_type`, a temporary
+`$bind` -- a reference when `auto &' binds an lvalue -- and one `auto' (or
+`auto &') per name from its member by POSITION; A BINDING TO A REFERENCE
+MEMBER IS A REFERENCE, [dcl.struct.bind], `cpp_binding_vt`: libc++'s
+`__find_equal' answers `pair<__end_node_pointer, __node_base_pointer &>' and
+the tree STORES THE NEW NODE THROUGH `__child' -- copied, the pointer went
+nowhere and `__tree_balance_after_insert' walked a null root); (6) A RANGE-FOR
+OVER AN OBJECT WITH `begin()' AND `end()' is C++'s (`auto __b = r.begin(), __e
+= r.end(); for (; __b != __e; ++__b) { decl = *__b; body }', the iterator's `!=',
+`++' and `*' the class's own -- a map's are hidden friends), placed BEFORE
+0.38's `size()'/`[]' rewrite, which is this compiler's shortcut for a container
+indexed by position: a map has both, and indexed it would have inserted the
+keys 0, 1, 2; a prvalue range is bound to `auto &&' first, a structured binding
+as the declaration becomes the statement above; (7) INHERITING CONSTRUCTORS
+(`cpp_inherit_ctors`: one per base constructor but the copy and the move,
+handing its parameters to the base -- libc++'s tree node destructor is
+`struct __generic_container_node_destructor<...> : __tree_node_destructor<_Alloc>
+{ using __tree_node_destructor<_Alloc>::__tree_node_destructor; }'); (8) TWO
+OF CLANG'S BUILTIN TEMPLATES, `__make_integer_seq<S, T, N>' = `S<T, 0 .. N-1>'
+(libc++'s index sequences) and `__type_pack_element<I, Ts...>' = the I-th of Ts
+(tuple_element, which `get<I>' is typed by), in `cpp_instantiate_type`; (9) A
+CONSTRUCTOR TEMPLATE'S SIGNATURE IS CHECKED IN ITS CLASS (`cpp_try_ctor`, as a
+member template's is since 0.51; `unique_ptr''s `template <class _Deleter =
+deleter_type, ...>' bound its default unresolved), and every step of a
+candidate that FAILS says so under the trace (`ctor_candidate', `ctor_holds',
+`ctor_no', `member_refused', `member_error', `sig_failed(F, explicit | deduce |
+defaults | constraints | accept)'), where a candidate that neither held nor
+refused cost an afternoon; (10) A TRAILING PACK IN A TEMPLATE-ID ARGUMENT
+takes every argument left (`cpp_match_targs`: `tuple<_Args1...>' against
+`tuple<int &&>'), DEDUCTION THROUGH AN ALIAS (`cpp_alias_pattern`,
+`cpp_alias_binds`: `__index_sequence<_I1...>' is `__integer_sequence<size_t,
+_I1...>'), a specialization's pattern deducing through an alias of a class
+template-id too (`cpp_alias_through`: `__tuple_impl<__index_sequence<_Indx...>,
+_Tp...>' -- held non-deduced, the tuple's base stayed the declared-only
+primary, an incomplete type); A PACK BINDING HOLDS A LIST and an expansion
+`pack(id(_I1))' handed through an alias's own pack is an ELEMENT
+(`cpp_pack_list` asks `is_list'), and an expansion over packs of DIFFERENT
+LENGTHS REFUSES (`pack_lengths_differ') where it failed without a word; (11)
+A DELEGATING CONSTRUCTOR (`cpp_ctor_body`: the other constructor over `this'
+and nothing else initialized -- pair's piecewise one delegates to its private
+one with the index sequences); (12) THE TYPE AN ARGUMENT HAS, FOR DEDUCTION,
+comes through the desugaring where the inference cannot tell it
+(`cpp_deduce_type` over 0.68's `cpp_arg_type`, the temporaries that walk
+registers dropped again): `__index_sequence_for<_Args1...>()' is a call of an
+alias template's instance, and typed unknown its pack `_I1' stayed empty
+beside a bound `_Args1'; (13) AN EXPLICIT TEMPLATE ARGUMENT'S KIND IS CHECKED
+(`cpp_bind_explicit`, `kind_mismatch'): `get<0>(tup)' is no candidate of the
+by-TYPE `get', whose `_T1' bound to 0 instantiated
+`__find_exactly_one_t<0, ...>' without end (412 s to the cap); (14) AN UNNAMED
+TEMPLATE PARAMETER IS NAMED BY ITS POSITION at the three registration doors
+(`cpp_name_anon`, `$anon1' ...): libc++ forward-declares `template <size_t,
+class> struct tuple_element;' with neither named, and two bindings of one name
+`anon' answered the first to both, keying `tuple_element<0, tuple<int &&>>'
+as `tuple_element.tuple.int_rr.tuple.int_rr'; (15) AN EXPANSION OVER A CLASS'S
+PACK AND A MEMBER TEMPLATE'S OWN WAITS FOR THE MEMBER'S INSTANTIATION
+([temp.variadic]: every pack in one pattern expands together): the member's
+pack is marked `$later' when the class's bindings shadow it (`cpp_shadow`),
+and the pattern travels with the class's packs bound, `pack_zip(Bound, X)'
+(`cpp_subst_elems`), expanded once all are -- `__tuple_impl' constructs
+`__tuple_leaf<_Indx, _Tp>(std::forward<_Args>(__args))...' with `_Args' the
+constructor's own, and expanded over the class's packs alone the `...' was gone;
+(16) A LAMBDA'S OWN PARAMETER PACK expands with the enclosing template's
+bindings (`cpp_subst(lambda)`, `cpp_param_packs`): `[this](_Args &&...
+__args2) { ... }' inside `__tree::__emplace_unique'; (17) AN EMPTY MEMBER
+INITIALIZER VALUE-INITIALIZES ([dcl.init]/8: a scalar's zero, a class without
+constructors zero-filled), which pair's piecewise constructor writes as an
+empty pack expansion (`second()') -- left alone it was the member's garbage;
+(18) `x->m' WITH x A CLASS OBJECT goes through its `operator->', again until a
+pointer (`cpp_arrow_object`: a unique_ptr's node, `__h->__get_value()'); (19) A
+CALL WHOSE RESULT IS A REFERENCE NAMES AN OBJECT (`cpp_addressable`) and
+`decltype' OF A CALL IS THE FUNCTION'S DECLARED RESULT, its reference kept
+(`cpp_decltype_of`: `std::declval<T>()' is `T &&', and the inference DECAYS
+every reference, so declval gave the closure by value and its `operator()'
+found no object -- the type `__try_key_extraction' returns); (20) A C++ CAST TO
+A REFERENCE is typed as its object (`ccl_type_of(ccast)' unrefs, as every
+other lvalue is) and a cast to an lvalue reference is an lvalue
+(`cpp_lvalue(ccast)`): `std::addressof(const_cast<value_type &>(*__p))' had
+deduced `_Tp' as a reference and refused; (21) A VALUE OF THE CLASS ITSELF
+PLACED where the class writes no copy or move constructor of its own and holds
+nothing that needs one is the implicit copy of the bytes
+(`cpp_trivial_copy_init` in `cpp_new_at`): a map's node takes its
+`pair<int, int>' so through `std::__construct_at'; (22) A BRACED ARGUMENT to a
+class-typed parameter list-initializes a temporary of the class
+(`cpp_copies_`; scored as a class it constructs, or an `initializer_list<T>'
+whose items fit T, `cpp_arg_fit_`): `m.insert({4, 40})' builds the pair, an
+`initializer_list' argument the compiler alone can build is refused by name;
+(23) A FOR'S DECLARATION IS A DECLARATION IN THE FOR'S OWN SCOPE
+([stmt.for]/1: `{ init; for (; c; step) s }'), so `auto it2 = m.begin()' is
+deduced and a class local constructed there; (24) `sizeof' OF AN INCOMPLETE
+TYPE REFUSES (`cpp_incomplete_class`), which in a template argument is the
+substitution failure libc++'s `__has_default_three_way_comparator<L, R,
+sizeof(__default_three_way_comparator<L, R>) >= 0>' detects by, and A VALUE
+PATTERN NAMING A PARAMETER IS EVALUATED ONCE THE OTHERS BIND IT
+([temp.deduct.type]/5; `cpp_non_deduced`, `cpp_match_later`'s value branch)
+-- compared raw it folded to true for every pair of types, and the eager
+comparator called an `operator()' of nothing; (25) A TEMPLATE-ID RESULT TYPE
+IS SUBSTITUTED IN THE IMMEDIATE CONTEXT ([temp.deduct]/8, `cpp_sfinae_result`):
+libc++'s conjunction is `__expand_to_true<__enable_if_t<_Pred::value>...>
+__and_helper(int)' beside `false_type __and_helper(...)', and unresolved at
+the check the first held for a false predicate -- every `_And' was true; and A
+PARAMETER USED AS A PATH SEGMENT is seen by the expansion (`cpp_names_in`:
+`__enable_if_t<_Pred::value>...' names the pack); (26) a block alias CALLED
+OVER SEVERAL ARGUMENTS is the class's temporary (`cpp_subst`: `using _Pair =
+pair<...>; return _Pair(__end, __end->__left_);'); (27) A FREE OPERATOR SET'S
+NAME, `op.eq.2' exactly, IS ALWAYS AN OVERLOAD SET (`cpp_fn_overloaded`): the
+first hidden friend `operator==' registered -- `__tree_iterator''s, alone at
+that moment -- was declared under the bare name, and once the others arrived
+the call's `op.eq.2.<keys>' named nothing and `__i == end()' stayed a
+comparison of two structs; an INSTANCE of one, `op.lt.2.c21.char...', is one
+function under its own name; (28) A CONST METHOD IS ANOTHER FUNCTION
+([over.match.funcs]: the implicit object parameter differs): its name ends
+`.c' (`cpp_mangle_q`, at every door the plain name had; a shipped member keeps
+its Itanium symbol, which spells the const itself), the out-of-class merge
+matches constness (`cpp_member_const`), and the OVERLOAD IS CHOSEN BY THE
+OBJECT'S CONSTNESS where the parameters tie (`cpp_method_on`, `cpp_pick_q`,
+`'$cpp_obj_const'`: a non-const object takes the non-const overload, a const
+one the const overload; unsaid, the first declared) -- libc++ declares
+`iterator find(const key_type &)' beside `const_iterator find(const key_type &)
+const', and under one name the const one's result type was declared last and
+won every `auto it = m.find(3)' while the body emitted was the other's: a
+const_iterator cast from an iterator, which LLVM refused; (29) A VALUE OF
+ANOTHER TYPE RETURNED converts through the result class's converting
+constructor, as a call's argument does (`cpp_stmt_(return)`: `map::find'
+returns `__tree_.find(__k)', a `__tree_iterator' where its iterator is a
+`__map_iterator' holding one), a constructor TEMPLATE written over its own
+parameters converts through the template road (`cpp_converting_ctor`'s third
+clause: `pair(const pair<_U1, _U2> &)', no fit readable off the raw type) and
+an EXPLICIT constructor never converts implicitly ([class.conv.ctor]:
+`explicit basic_string(const _Tp &)' from a string_view); (30) A DERIVED OBJECT
+WHERE ITS BASE IS TAKEN BY VALUE IS SLICED to the base sub-object
+(`cpp_copies_`): `__priority_tag<1>()' to the `__priority_tag<0>' fallback of
+`__try_key_extraction_impl'; (31) A MEMBER TEMPLATE CALLED BARE WITH EXPLICIT
+ARGUMENTS passes `this' unless it is static (0.47's null was for the static
+detection helpers): `__lower_upper_bound_unique_impl<true>(__v)' inside
+`__tree' read the tree through a null this; (32) A CLASS VALUE WHERE ANOTHER
+CLASS IS WANTED converts through its CONVERSION OPERATOR, at the fit
+(`cpp_arg_fit_`), the clash (`cpp_args_no_clash`), a template's acceptance
+(`cpp_type_accepts`), the argument (`cpp_ref_args_`, `cpp_conv_to` to a class
+target too) and a temporary of the class from such a value (`cpp_temporary`,
+[over.match.copy]): `compare(__self_view(__str))' is basic_string's
+`operator basic_string_view()' -- taken for the `const char *' constructor,
+the string was cast to a pointer; and `typename X::y(args)', the reader's
+`construct/2' since 0.44, is desugared at last (the type resolved, then the
+type-call road); (33) TWO CLASS TYPES ARE THE SAME BY CLASS (`cpp_same_type`:
+a struct spec resolved by one road carries its members one way and by another
+another) and the remove-qualifier builtins keep a NAMED type; (34) the
+template acceptance looks through EVERY reference layer (`cpp_unref_all`: a
+forwarding `_Tp &&' bound to an lvalue is `T & &&' before it collapses); (35)
+THE COPY PASS RUNS ON AN OPERATOR'S CALL TOO (`cpp_operator`): `w["apple"]'
+hands `const char *' to `operator[](const key_type &)', which takes it only
+through the string's converting constructor -- passed raw, the key was a
+pointer read as a string; (36) IN THE METHOD ROAD THE ARITY ALONE IS THE LAST
+RESORT, after every member template (0.63's rule, which `cpp_ctor' had and
+`cpp_method' did not): basic_string's `compare(const _Tp &)' template takes a
+string_view, and the arity-only `compare(const basic_string &)' took it first
+and called itself. THE CHECK: A LIBRARY CLASS'S VALUE IS OPAQUE
+(`ck_carries_`, `ck_library_class`): its pointers are libc++'s own discipline,
+as its functions' bodies are since 0.45 -- a map's iterator, `auto it =
+m.find(3)', holds a node pointer the safe part cannot follow and need not,
+where it refused `no owner behind'; and THE ADDRESS OF A PATH UNDER A
+REFERENCE THE CHECK DOES NOT FOLLOW IS NO FRESH VALUE (`ck_ref_rooted` in
+`ck_fresh_value`): a reference bound to a call has no state, and `const auto
+&[k, v] = *it' binds v to a member of it -- a plain value, never a loose
+pointer refused at the scope's end. THE LOWERING: a global initialized by an
+EMPTY CLASS TEMPORARY (`ir_gconst(compound_lit(...))`: `inline constexpr
+piecewise_construct_t piecewise_construct = piecewise_construct_t();'), `int{}'
+a scalar's zero, and under the C++ trace the whole item the lowering refuses
+is printed (`ir_item_error`), which is how three of the above were found.
+Lowering version 30. Seven gates GREEN, twice: under cocolog 1.2.12 (the
+C++ one 2407 MB, 114 checks, 602 s; the libc++ one 1953 MB, `<map>` 430
+items) and, the module rebuilt, under 1.2.13 with its store compaction (the
+C++ one 1398 MB, 673 s; the libc++ one 1374 MB; the reader's 85 MB and 6 s
+where it was 329 MB and 39 s), every fixture's output the same; the int map builds in 18 s at about 1.1 GB, each string-map half in
+35 s at 1.0-1.4 GB. AND A FINDING THAT COST THE EVENING, and was read wrong here first: the
+string map's two halves were ONE fixture, which the gate's watchdog killed at
+2876 MB twice while the same file built alone at 1.7 GB by the same counter;
+four runs under `/usr/bin/time -l' gave 3252, 1821, 1728 and 3506 MB for
+identical work. I read a heap growing by doubling. cocolog's owner's session
+measured it: macOS's counters READ LOW after a realloc remap (the high number
+is the honest one), and the honest cost was 2.9 GB, half of it the STORE's
+dead rows -- a hundred thousand `nb_setval' overwrites whose old values
+nothing reclaimed -- which cocolog 1.2.13 compacts away (the finding below).
+The cap stays (the owner's rule); the fixture stays split near a gigabyte a
+half; the module is rebuilt against 1.2.13. NOT DONE: `emplace',
+`insert_or_assign', `try_emplace', `extract' and node handles, `merge',
+`std::set' and the unordered containers, a map of the program's own class, an
+`initializer_list' argument (refused by name), a class whose members need a
+MEMBERWISE copy placed by the implicit one (refused as `no_constructor'), an
+array member value-initialized, the `less<void>' transparent comparator's
+`operator()' emitted where a program never calls it, and the fallback
+key-extraction road (`__without_key', reached by `emplace' with non-key
+arguments), which crashed at a null before the piecewise candidate held and
+is untested since.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -3321,7 +3547,39 @@ module (a segfault that looked like the error path's). The build mirrors `module
   initialization only a bare `catch(nb_getval(K, V), _, fail)` may read a
   global, or the initialization re-enters itself without end (that
   runaway restarted the machine). Raise with cocolog's owner: a collector,
-  or `garbage_collect/0`.
+  or `garbage_collect/0`. SINCE cocolog 1.2.13 (2026-09-14) THE STORE RECLAIMS
+  ITSELF (the finding on the counters below): dead rows of `assertz`,
+  `retract` and `nb_setval` overwrites are compacted away at safe points,
+  `garbage_collect/0` forces it and `statistics(store_used, B)` reads it; the
+  HEAP still reclaims on backtracking only, so the `\+ \+` discipline stays.
+* **On macOS the memory counters READ LOW, and the store's dead rows were the
+  weight** (2026-09-14, with cocolog's owner's session). One identical C++
+  build measured four times with `/usr/bin/time -l` gave 3252, 1821, 1728 and
+  3506 MB, and ps's RSS spread 1.6 to 3.0 GB over fifteen runs of the same
+  work: Darwin's realloc extends a large block in place when the address space
+  after it is free and otherwise MOVES it by copy-on-write remap, and the moved
+  pages drop out of `maximum resident set size`, `peak memory footprint` and
+  ps's RSS until they are touched again (1024 MB written, 808 reported, all
+  1024 back once every page was read); whether a block moves depends on what
+  landed after it, so identical runs differ, and the HIGH reading is the honest
+  one (Linux's glibc mremaps and has neither effect). The honest cost of the
+  combined string-map fixture was about 2.9 GB: heap 1540 MB plus STORE 1323 MB,
+  of which 20 MB was live -- 105,049 `nb_setval` calls, 103,192 of them
+  overwrites, had left 1073 MB of old global values in the store and nothing
+  took them out, plus 236 MB of findall solutions. cocolog 1.2.13 COMPACTS THE
+  STORE (every reachable term copied into a fresh cell array at safe points,
+  once 32 MB of cells are dead and outnumber the live ones, or once the store
+  has grown by as much again as it held at the last compaction;
+  `garbage_collect/0` forces one; `statistics/2` answers cputime, inferences,
+  globalused, trailused, atoms, functors and store_used), and the fixture ends
+  at heap 1616 + store 53 + trail 29 MB. The HEAP is ours to shape: a
+  `nb_getval` copies the whole global onto the heap, and a read made at top
+  level stays until the query ends -- the driver's top-level loop putting each
+  declaration's work inside `\+ \+` with its results in the store would drop
+  the high-water to the biggest single region; a heap collector stays
+  cocolog's "not started" item. A watchdog on ps's RSS under-protects on macOS
+  (the number reads low); the cap stays, and `statistics/2` is the honest
+  question to ask from inside. The string map stays two fixtures.
 * **No cocolog run of mine is unguarded, not even a small fixture:**
   `scratchpad/guard.sh SECS MB LOG QUERY [HOME]` runs one query under
   `perl -e 'alarm N; exec @ARGV'` (SIGALRM survives exec, so the alarm
@@ -3342,7 +3600,8 @@ module (a segfault that looked like the error path's). The build mirrors `module
   which tripped a 2500 MB watchdog and read as a failure). Re-run before
   believing a RED that arrives with a version bump.
 * **After a cocolog update, REBUILD the module** (`module/build.sh`): the
-  engine went 1.2.5 -> 1.2.12 mid-work and 1.2.8 moved the globals table
+  engine went 1.2.5 -> 1.2.12 mid-work (and 1.2.13 on 2026-09-14, the store's
+  compaction), and 1.2.8 moved the globals table
   into the `coco_store` struct; the `.so` reads the SDK's structs by
   their layout at build time.
 * **A `catch/3` whose goal succeeds leaves a live frame: a later `throw/1`

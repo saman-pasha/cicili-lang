@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(52).
+ccl_reader_version(57).
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -814,9 +814,11 @@ ccl_auto_decl(L, N, E, R, D) :-
 %% `__exception_guard<_Rollback>', whose _Rollback is free here: deduced, it keyed an instance by that free name.
 ccl_dependent_type(T) :- compound(T), ( T = scoped(_, _) -> true ; ccl_free_name(T) -> true ; T =.. [_|As], member(A, As), ccl_dependent_type(A) ), !.
 ccl_free_name(typedef(N)) :- atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0, \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _).
+ccl_sto_quals(Sto, MQs, Sto1) :- ( memberchk(const, MQs) -> Sto1 = const(Sto) ; Sto1 = Sto ).
 
-ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto, Ret, Name, Params, Var, Body)) -->
-    ccl_declarator(Env, Base, Name, Type0), { Type0 = fn(_, _, _) }, ccl_attrs, ccl_method_quals(_), ccl_tie(Type0, Type), { Type = fn(Ret, Params, Var) }, ccl_peek(p, '{'),   % C++'s const/override after the parameters; no cut here, a prototype falls through
+ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto1, Ret, Name, Params, Var, Body)) -->
+    ccl_declarator(Env, Base, Name, Type0), { Type0 = fn(_, _, _) }, ccl_attrs, ccl_method_quals(MQs), ccl_tie(Type0, Type), { Type = fn(Ret, Params, Var) }, ccl_peek(p, '{'),   % C++'s const/override after the parameters; no cut here, a prototype falls through
+    { ccl_sto_quals(Sto, MQs, Sto1) },                                                                                        % `const' KEPT on a member defined out of its class (0.79): `const(Sto)' in the storage slot, which the desugaring reads (cpp_sto_quals) -- dropped, the const overload's body attached to the non-const declaration
     { ccl_note_if_template(Name), ccl_note_if_fn_template(Name) },
     { ccl_note_tags(Ret), ccl_note_params(Params), ccl_declare(Name, Type) },
     ccl_push_scope, { ccl_declare_params(Params) }, ccl_compound(Env, Body), ccl_pop_scope, !.
@@ -839,6 +841,7 @@ ccl_sto_pick(Ss, S) :- member(S, [typedef, static, extern, thread_local, '_Threa
 ccl_sto_pick([S|_], S).
 
 ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, ccl_kw(auto), !, ccl_specs(Env, Sc, St0, Q0, [auto], St, Q, S).   % C++: auto is a type to deduce (C's storage class it is not)
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_cpp, ccl_kw(constexpr), !, ccl_specs(Env, Sc, St0, [const|Q0], S0, St, Q, S).   % IN C++ TOO (0.79; BEFORE the qualifier clause below, which would take the word): a constexpr OBJECT is a const one; read as a qualifier of its own, `inline constexpr piecewise_construct_t piecewise_construct' carried `constexpr' in its TYPE, and `is_same<__remove_const_ref_t<decltype(piecewise_construct)>, piecewise_construct_t>' was false -- libc++'s key extraction for a map's piecewise emplace fell to its fallback
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_storage(K) }, !, ccl_specs(Env, Sc, [K|St0], Q0, S0, St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_qualifier(K) }, !, ccl_specs(Env, Sc, St0, [K|Q0], S0, St, Q, S).
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_id(own), !, ccl_specs(Env, Sc, St0, [own|Q0], S0, St, Q, S).   % the safe part's owner
@@ -1090,6 +1093,7 @@ ccl_member_decl(_, [friend(L, [])]) --> ccl_cpp, ccl_line(L), ccl_kw(friend), !,
 %% known to the members after it (the global env; a class's typedefs are C++'s, no struct of C has one)
 ccl_member_decl(Env, [typedef(L, Vs)]) --> ccl_cpp, ccl_line(L), ccl_kw(typedef), !, ccl_decl_specs(Env, member, _, Base), ccl_init_declarators(Env, Base, Vs), ccl_p(';'), { ccl_declared_names(Vs, Ns), ccl_add_envs(Ns) }.
 ccl_member_decl(Env, [typedef(L, [var(N, T, none)])]) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(N), ccl_attrs, ccl_p('='), !, ccl_type_name(Env, T), ccl_p(';'), { ccl_add_env(N) }.
+ccl_member_decl(Env, [using(L, name(Q))]) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_qname(Env, type, Q), ccl_p(';'), !.   % `using Base::Base;' -- an INHERITING CONSTRUCTOR, kept with its name for the desugaring (cpp_inherit_ctors); `using Base::f;' alike
 ccl_member_decl(_, [using(L)]) --> ccl_cpp, ccl_line(L), ccl_kw(using), !, ccl_skip_to_semi.
 ccl_member_decl(Env, [template(L, Ps, M)]) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, { nb_getval('$ccl_env', G0) }, ccl_tparams(Env, Ps, Env1),
     { ccl_tparams_enter(G0, Ps, New) }, ( ccl_member_decl(Env1, [M]), !, { ccl_tparams_leave(New) } ; { ccl_tparams_leave(New), fail } ),
@@ -1291,7 +1295,17 @@ ccl_block_item(Env, Env, D) --> ccl_c_or_cpp, ccl_line(L), ccl_kw(auto), ( ccl_p
 %% C++17: structured bindings, `auto [a, b] = e;' -- Cicili's pattern `{ a, b } := e' by another spelling, a declaration per
 %% name (a struct's members in order, an array's elements); `auto &[a, b]' binds references
 ccl_block_item(Env, Env, '$splice'(Ds)) --> ccl_cpp, ccl_line(L), ( ccl_kw(const) ; [] ), ccl_kw(auto), ( ccl_p('&&'), { Ref = yes } ; ccl_p('&'), { Ref = yes } ; { Ref = no } ),
-    ccl_p('['), ccl_pattern(Ps), ccl_p(']'), ccl_p('='), !, ccl_expr(E), ccl_p(';'), { ccl_destructure(L, Ps, E, Ds0), ( Ref == yes -> ccl_bind_refs(Ds0, Ds) ; Ds = Ds0 ) }.
+    ccl_p('['), ccl_pattern(Ps), ccl_p(']'), ccl_p('='), !, ccl_expr(E), ccl_p(';'),
+    { (   ccl_type_of(E, T0), T0 \== unknown, \+ ccl_dependent_type(T0), \+ ccl_auto_type(T0) -> ccl_destructure(L, Ps, E, Ds0), ( Ref == yes -> ccl_bind_refs(Ds0, Ds) ; Ds = Ds0 )
+      ;   ccl_bind_names(Ps, Ns), Ds = [bindings(L, Ref, Ns, E)], ccl_declare_autos(Ns) ) }.   % A BINDING THE READER CANNOT TYPE IS DEFERRED to the desugaring, as an `auto' it cannot infer is (0.49): libc++'s tree writes `auto [__parent, __child] = __find_equal(__key);', a member template's call no reader can type, and the read of <map> died on it
+ccl_auto_type(base(_, [auto])) :- !.                                                     % a local the reader left `auto' has no members to bind yet
+ccl_auto_type(T) :- compound(T), T =.. [_, _, T1], ccl_auto_type(T1).
+ccl_bind_names([], []).
+ccl_bind_names([bind(N)|Ps], [N|Ns]) :- !, ccl_bind_names(Ps, Ns).
+ccl_bind_names([skip|Ps], ['_'|Ns]) :- !, ccl_bind_names(Ps, Ns).
+ccl_bind_names([_|Ps], Ns) :- ccl_bind_names(Ps, Ns).
+ccl_declare_autos([]).
+ccl_declare_autos([N|Ns]) :- ( N == '_' -> true ; ccl_declare(N, base([], [auto])) ), ccl_declare_autos(Ns).
 ccl_block_item(Env0, [N|Env0], typedef(L, [var(N, T, none)])) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(N), ccl_attrs, ccl_p('='), !, ccl_type_name(Env0, T), ccl_p(';'),   % C++11: using T = type; in a block
     { ccl_add_env(N), ccl_note_item(typedef(L, [var(N, T, none)])) }.
 ccl_block_item(Env, Env, using(L, U)) --> ccl_cpp, ccl_line(L), ccl_kw(using), !, ( ccl_kw(namespace), !, ccl_qname(Env, type, Q), { U = namespace(Q) } ; ccl_kw(enum), !, ccl_qname(Env, type, Q), { U = enum(Q) } ; ccl_qname(Env, type, Q), { U = name(Q) } ), ccl_p(';').
@@ -1324,6 +1338,7 @@ ccl_statement(Env, S) --> ccl_line(L), ccl_kw(for), !, ccl_p('('), ccl_for_rest(
 ccl_for_rest(Env, L, block([Init1, for_each(L, Decl, R, S)])) --> ccl_cpp, ccl_for_init(Env, Init), ccl_range_decl(Env, Decl), ccl_p(':'), !, ccl_expr(R), ccl_p(')'), ccl_statement(Env, S), { ccl_init_stmt(L, Init, Init1) }.   % C++20: for (init; x : xs)
 ccl_for_rest(Env, L, for_each(L, Decl, R, S)) --> ccl_cpp, ccl_range_decl(Env, Decl), ccl_p(':'), !, ccl_expr(R), ccl_p(')'), ccl_statement(Env, S).
 ccl_for_rest(Env, L, for(L, Init, C, Step, S)) --> ccl_for_init(Env, Init), ccl_opt_expr(C), ccl_p(';'), ccl_opt_expr(Step), ccl_p(')'), ccl_statement(Env, S).
+ccl_range_decl(_, bindings(Ref, Ns)) --> ( ccl_kw(const) ; [] ), ccl_kw(auto), ( ccl_p('&&'), { Ref = yes } ; ccl_p('&'), { Ref = yes } ; { Ref = no } ), ccl_p('['), !, ccl_pattern(Ps), ccl_p(']'), { ccl_bind_names(Ps, Ns), ccl_declare_autos(Ns) }.   % `for (auto &[k, v] : m)': a structured binding as the declaration, deferred to the desugaring as bindings/4 (the element's type is the iterator's)
 ccl_range_decl(_, var(N, T, none)) --> ( ccl_kw(const) ; [] ), ccl_kw(auto), !, ( ccl_p('&&'), !, { T = rref([], base([], [auto])) } ; ccl_p('&'), !, { T = ref([], base([], [auto])) } ; ccl_p('*'), !, { T = ptr([], base([], [auto])) } ; { T = base([], [auto]) } ), ccl_id(N).
 ccl_range_decl(Env, var(N, T, none)) --> ccl_decl_specs(Env, block, _, Base), ccl_declarator(Env, Base, N, T).
 ccl_statement(Env, try(L, Body, Catches)) --> ccl_cpp, ccl_line(L), ccl_kw(try), !, ccl_compound(Env, Body), ccl_catches(Env, Catches).

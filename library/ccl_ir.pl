@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(29).
+ccl_lowering_version(30).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -75,7 +75,7 @@ ir_units([unit(Is)|Us]) :- ir_items(Is), ir_units(Us).
 ir_items([]).
 ir_items([I|Is]) :- ( catch(ir_item(I), E, ir_item_error(I, E)) -> true ; ir_item_name(I, W), ir_fail(item(W)) ), ir_items(Is).
 %% an error out of an item carries the ITEM with it, so a raw type_error says which one raised it
-ir_item_error(_, error(not_lowered(X), Y)) :- !, throw(error(not_lowered(X), Y)).
+ir_item_error(I, error(not_lowered(X), Y)) :- !, ( catch(nb_getval('$cpp_trace', yes), _, fail) -> write(item_failed(X, I)), nl, flush_output ; true ), throw(error(not_lowered(X), Y)).   % under the C++ trace, the whole item: which local, which cast carried the type it could not take
 ir_item_error(I, E) :- ir_item_name(I, W), ir_fail(item(W, raised(E))).
 %% which item the lowering could not take, when it merely FAILS: its shape and its name, not the whole term
 ir_item_name(function(_, _, _, N, _, _, B), function(N, BS)) :- !, ( B == none -> BS = none ; compound(B) -> functor(B, BF, BA), BS = BF/BA ; BS = B ).
@@ -1083,6 +1083,8 @@ ir_str_tail(int(K), S, Tail) :- length(S, L), Z is K - L, Z >= 0, !, ir_zeros(Z,
 ir_str_tail(_, _, '\\00').
 ir_zeros(0, '') :- !.
 ir_zeros(N, Z) :- N1 is N - 1, ir_zeros(N1, Z1), atom_concat('\\00', Z1, Z).
+ir_gconst(compound_lit(_, init(Items)), T, C) :- !, ir_gconst(init(Items), T, C).   % C++: a global of an EMPTY class made by its type's name, `inline constexpr piecewise_construct_t piecewise_construct = piecewise_construct_t();' (the desugaring's temporary of a class with nothing to construct is a compound literal)
+ir_gconst(init([]), T, Z) :- ccl_resolve_type(T, T1), \+ T1 = base(_, [struct(_, _)]), \+ T1 = base(_, [union(_, _)]), \+ T1 = arr(_, _), !, ir_type(T, LL), ir_zero(LL, Z).   % `int{}': the type's zero
 ir_gconst(init(Items), T, C) :- !,
     ccl_resolve_type(T, T1),
     (   T1 = arr(int(K), E) -> ir_type(E, EL), ir_gitems(Items, K, E, EL, Parts), ir_join(Parts, ', ', Body), atomic_list_concat(['[', Body, ']'], C)

@@ -245,7 +245,9 @@ ck_carries_type(T) :- ccl_resolve_type(T, T1), ck_carries_(T1).
 ck_carries_(ptr(_, _)) :- !.
 ck_carries_(block(_, _)) :- !.
 ck_carries_(arr(_, E)) :- !, ck_carries_type(E).
+ck_carries_(base(_, [struct(N, _)])) :- ccl_lang(cpp), ck_library_class(N), !, fail.   % A LIBRARY CLASS'S VALUE IS OPAQUE: its pointers are libc++'s own discipline, as its functions' bodies are (0.45) -- a map's iterator, `auto it = m.find(3)', holds a node pointer the safe part cannot follow and need not, since nothing here frees it
 ck_carries_(T) :- ccl_members_of(T, Ms), member(member(MT, _, _), Ms), ck_carries_type(MT), !.
+ck_library_class(N) :- atom(N), catch(cpp_lib_class(N), _, fail).
 
 %% the own fields of a variable: N->f under an own pointer to a struct, N.f in a
 %% struct held by value; a member held by value opens its own fields too
@@ -593,7 +595,16 @@ ck_tie_kept(St, P, Key, Form) :- ( ck_tied_to(P, T) -> ( Key \== none, ck_within
 ck_no_owner_behind(N, T, V, Form) :-
     (   ck_carries_type(T), \+ ck_is_pointer_type(T), \+ ck_declared_tie(N, _), ck_fresh_value(V) -> ck_fail(untied, N, Form)
     ;   true ).
-ck_fresh_value(V) :- V \== none, V \= init(_), \+ ck_null(V), \+ ck_static_value(V).
+ck_fresh_value(V) :- V \== none, V \= init(_), \+ ck_null(V), \+ ck_static_value(V), \+ ck_ref_rooted(V).
+%% C++: THE ADDRESS OF A PATH UNDER A REFERENCE THE CHECK DOES NOT FOLLOW is no fresh value -- a reference bound to
+%% a call (a container's element, `*it') has no state, and `const auto &[k, v] = *it' binds v to a member of it:
+%% nothing here is to be consumed, so the binding is a plain value, never a loose pointer (0.79)
+ck_ref_rooted(addr(P)) :- ck_path_root(P, R), ck_is_ref(R).
+ck_path_root(id(R), R).
+ck_path_root(member(X, _), R) :- ck_path_root(X, R).
+ck_path_root(arrow(X, _), R) :- ck_path_root(X, R).
+ck_path_root(index(X, _), R) :- ck_path_root(X, R).
+ck_path_root(deref(X), R) :- ck_path_root(X, R).
 %% a loose pointer's memory taken: by free, a return, a slot, an owner
 ck_consume_loose(St0, P, St) :- ck_set(St0, P, none, St1), ck_dangle(St1, P, St).
 ck_loose_taken(E, St0, St) :- ( ck_borrows_from(E, St0, P), ck_state(St0, P, loose) -> ck_set(St0, P, none, St) ; St = St0 ).

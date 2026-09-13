@@ -204,7 +204,7 @@ ccl_type_of(deref(E), T) :- !, ccl_type_of(E, ET), ccl_resolve_type(ET, ET1), ( 
 %% C++ (M6): a reference is the thing it refers to wherever a value is asked;
 %% a qualified name is its bare name (a namespace flattens); the casts, new
 ccl_type_of(scoped(_, N), T) :- !, ccl_type_of(id(N), T).
-ccl_type_of(ccast(_, T, _), T) :- !.
+ccl_type_of(ccast(_, T0, _), T) :- !, ccl_unref(T0, T).   % a C++ cast to a REFERENCE type names the object, as every other lvalue does: `const_cast<value_type &>(*p)' has the value's type here (deduction took the reference as the argument's type and addressof's `_Tp &' became a reference to a reference)
 ccl_type_of(new(T, _), ptr([], T)) :- !.
 ccl_type_of(new_at(_, N), T) :- !, ccl_type_of(N, T).                              % placement new: the type the plain one has
 ccl_type_of(new_array(T, _), ptr([], T)) :- !.
