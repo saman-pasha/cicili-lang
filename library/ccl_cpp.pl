@@ -604,16 +604,21 @@ cpp_args_fit([P|Ps], [A|As]) :- ( ( P = param(PT, _) ; P = param(PT, _, _) ) -> 
 cpp_method(C, M, Args, Name, Hops) :-
     cpp_class(C, cls(B, _, Ms, _, _, _)), length(Args, N),
     findall(Ps, ( member(method(_, _, _, M, Ps, _, _), Ms), cpp_arity_fits(Ps, N) ), Cands0),
-    ( findall(Ps, ( member(Ps, Cands0), cpp_args_fit(Ps, Args) ), [C1|Cs]) -> Cands = [C1|Cs] ; Cands = Cands0 ),
-    (   Cands \== [] -> cpp_pick(Cands, Args, Ps), cpp_mangle(C, M, Ps, Name), Hops = [], cpp_use_member(C, Name)
+    %% IN ITS OWN CLASS: a candidate's parameter type is written in the class's words and read at the CALL SITE,
+    %% where the context is the caller's or none at all -- libc++ gives `operator+=' an overload taking
+    %% `initializer_list<value_type>', and scoring it outside the class made an instance keyed by the free name
+    %% `value_type'. The rule a member template's signature has had since 0.51, for the plain overloads too.
+    cpp_in_class(C, ( ( findall(Ps, ( member(Ps, Cands0), cpp_args_fit(Ps, Args) ), [C1|Cs]) -> Cands = [C1|Cs] ; Cands = Cands0 ),
+                      ( Cands == [] -> true ; cpp_pick(Cands, Args, Ps1) ) )),
+    (   Cands \== [] -> Ps = Ps1, cpp_mangle(C, M, Ps, Name), Hops = [], cpp_use_member(C, Name)
     ;   cpp_member_template_call(C, M, [], Args, Name) -> Hops = []                              % a member template, deduced from the arguments
     ;   B \== none, cpp_method(B, M, Args, Name, Hops1), Hops = ['$base'|Hops1] ).
 %% an abstract class (a pure virtual method no class of the chain overrides) is declared, never constructed
 cpp_not_abstract(C) :- ( cpp_class(C, cls(_, _, _, _, _, Slots)), member(slot(M, K, _, _, _), Slots), \+ cpp_slot_impl(C, M, K, _) -> cpp_refuse(0, pure_virtual(C)) ; true ).
 cpp_ctor(C, Args, Name) :-
     cpp_not_abstract(C), cpp_class(C, cls(_, _, Ms, _, _, _)), length(Args, N),
-    findall(Ps, ( member(ctor(_, _, Ps, _, _), Ms), cpp_arity_fits(Ps, N), cpp_args_fit(Ps, Args) ), Cands), Cands \== [], !,
-    cpp_pick(Cands, Args, Ps), cpp_mangle(C, C, Ps, Name), cpp_use_member(C, Name).
+    cpp_in_class(C, findall(Ps, ( member(ctor(_, _, Ps, _, _), Ms), cpp_arity_fits(Ps, N), cpp_args_fit(Ps, Args) ), Cands)), Cands \== [], !,   % in its own class, as above
+    cpp_in_class(C, cpp_pick(Cands, Args, Ps)), cpp_mangle(C, C, Ps, Name), cpp_use_member(C, Name).
 cpp_ctor(C, Args, Name) :- \+ ( Args = [E], cpp_class_of_type_of(E, C) ), cpp_member_template_ctor(C, Args, Name), !.   % a constructor template, deduced -- never for the class's own value: that is the copy (implicit, or the class's own), as C++ prefers the non-template
 cpp_ctor(C, Args, Name) :-                                                                      % nothing fitted, no template held: the arity alone, as it always was
     cpp_not_abstract(C), cpp_class(C, cls(_, _, Ms, _, _, _)), length(Args, N),

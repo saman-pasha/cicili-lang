@@ -497,6 +497,15 @@ what runs today.
   program. The desugaring of that line: 2936 MB and 16 s become 495 MB and
   4 s; the string fixture's build 557 -> 422 MB; the C++ gate 1581 -> 752
   MB. GREEN.
+* **The thirty-third step DONE: a parameter is read in its own class's
+  words.** The last step stopped the loop and left its question: why was
+  `initializer_list<value_type>` asked for at all? Because overloads were
+  scored at the CALL SITE, where the class context is the caller's or none
+  -- and a parameter type is written in its own class's words. libc++ gives
+  `basic_string` an `operator+=(initializer_list<value_type>)`, and read in
+  `main` that `value_type` resolved to nothing. Scoring now runs inside the
+  class, the rule member templates have had since the twentieth step. Not
+  one instance keyed by a free name remains. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

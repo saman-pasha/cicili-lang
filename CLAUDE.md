@@ -2042,6 +2042,33 @@ loop is gone but the badly keyed instance remains; the reader's 1882 MB; and
 `s += "def"` still refuses, now by name (`undeclared('__func_')` in a scope
 guard), which is a form and no longer a wall.
 
+**M6's thirty-third step (0.65): A CANDIDATE'S PARAMETER TYPE IS READ IN ITS
+OWN CLASS'S WORDS.** 0.64 stopped the loop and left the question it hung on:
+why is `initializer_list<value_type>` asked for at all? THE INSTRUMENT first,
+since the obvious one lies: `cpp_where` keeps only the innermost breadcrumb, so
+a trace inside `cpp_instantiate_class` reports `in(class(initializer_list))` --
+the ask naming itself. Read BEFORE the wrap, with the class context beside it,
+it named the caller at once: `ask(initializer_list, [typedef(value_type)],
+from(stmt(expr, 3)), ctx(none))` -- the statement `s += "def"` in `main`, no
+class in context at all. THE CAUSE: libc++ gives `basic_string` five
+`operator+=` overloads, one of them `operator+=(initializer_list<value_type>)`,
+and `cpp_method` scored every candidate AT THE CALL SITE, where the context is
+the caller's or none. A parameter type is written in ITS CLASS's words:
+`value_type` there is `basic_string`'s, and read in `main` it resolved to
+nothing and instantiated `initializer_list` under the free name. The scoring
+and the pick now run inside `cpp_in_class(C, ...)` in `cpp_method` and
+`cpp_ctor` -- the rule a member template's signature has had since 0.51 ("a
+parameter written `const allocator_type &' is in the traits class's words, not
+the caller's"), for the plain overloads too. With it, `std::string s; s +=
+"def";` makes 45 instances and NOT ONE keyed by a free name (it asked for four
+before); its build is 495 -> 455 MB. The C++ gate goes the other way, 752 ->
+861 MB, and rightly: resolving a parameter in its class is real work that was
+being skipped. 0.64's self-typedef guard stays as the net under it. Gated by
+`test/cpp/run/classwords.cpp`, which EARNS its line -- without the fix the
+`List<char>` overload wins a `List<int>` argument (both candidates score zero,
+so the first declared takes it) and LLVM refuses the call; with it, clang++'s
+numbers.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
