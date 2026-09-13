@@ -613,10 +613,15 @@ cpp_args_fit([P|Ps], [A|As]) :- ( ( P = param(PT, _) ; P = param(PT, _, _) ) -> 
 %% THE ARITY ALONE IS THE LAST RESORT, but never a CLASS-typed parameter for an argument of ANOTHER known class:
 %% that is no conversion this compiler makes, and libc++'s copy constructor writes `__rep_(__str.__rep_)', whose
 %% `__rep' argument took `__rep(__short)' by arity and stored a union into a byte.
+%% ... the parameter read IN ITS OWN CLASS'S WORDS (cpp_param_ref, the door cpp_arg_fit uses since 0.66) and the
+%% argument's class through a move and, where the raw form cannot tell, the desugared one. libc++'s union-class
+%% writes `__rep(__short __r)' with its holder's nested names, which the INFERENCE cannot resolve, so the clash
+%% went unseen and `__rep_(std::move(__str.__rep_))' took `__rep(__short)' by arity -- a union into a byte.
 cpp_args_no_clash([], _) :- !.
 cpp_args_no_clash(_, []) :- !.
 cpp_args_no_clash([P|Ps], [A|As]) :-
-    \+ ( ( P = param(PT, _) ; P = param(PT, _, _) ), cpp_class_of_type(PT, C), cpp_init_arg_class(A, AC), AC \== C ),   % the argument's class through a move and, where the raw form cannot tell, the desugared one -- a member initializer is raw, and libc++ keeps `__rep_' inside its anonymous compressed pair
+    \+ ( ( P = param(PT0, _) ; P = param(PT0, _, _) ), cpp_param_ref(PT0, PT), cpp_class_of_type(PT, C), cpp_init_arg_class(A, AC), AC \== C,
+         \+ cpp_converting_ctor(C, A) ),   % ... unless a CONVERTING CONSTRUCTOR bridges it, which cpp_copies_ then builds: `__reset_internal_buffer(__long)' is `__rep(__long)'
     cpp_args_no_clash(Ps, As).
 cpp_method(C, M, Args, Name, Hops) :-
     cpp_class(C, cls(B, _, Ms, _, _, _)), length(Args, N),
@@ -1143,7 +1148,7 @@ cpp_copies_([], As, As).
 cpp_copies_(_, [], []).
 cpp_copies_([P|Ps], [A|As], [A1|Bs]) :-
     ( P = param(PT, _) ; P = param(PT, _, _) ), !,
-    (   cpp_class_of_type(PT, C), ccl_type_of(A, AT), AT \== unknown, \+ cpp_class_of_type_of(A, C), cpp_converting_ctor(C, A)   % the argument's type KNOWN and not the parameter's own class: what cannot be typed is never converted
+    (   cpp_param_takes_class(PT, C), ccl_type_of(A, AT), AT \== unknown, \+ cpp_class_of_type_of(A, C), cpp_converting_ctor(C, A)   % the argument's type KNOWN and not the parameter's own class: what cannot be typed is never converted
     ->  cpp_temporary(base([], [typedef(C)]), C, [A], A1)                                     % A CONVERTING CONSTRUCTOR at a call: libc++ hands a `__long' where a `__rep' is wanted, and `__rep(__long)' is how a string becomes long
     ;   cpp_class_of_type(PT, C), cpp_dtor(C, _), cpp_lvalue(A)
     ->  ( cpp_copy_ctor(C, ref) -> cpp_copy_temp(C, A, A1) ; cpp_refuse(0, class_with_destructor_by_value(C)) )
@@ -1153,8 +1158,17 @@ cpp_copies_([P|Ps], [A|As], [A1|Bs]) :-
 cpp_copies_([_|Ps], [A|As], [A|Bs]) :- cpp_copies_(Ps, As, Bs).
 %% a class with a constructor whose ONE parameter takes the argument -- checked in the class, whose words it is
 %% written in, and by the fit rather than the arity, since every class with a one-argument constructor would pass
+%% THE CLASS A PARAMETER TAKES: by value, or through a reference that may bind a TEMPORARY -- a const lvalue
+%% reference or an rvalue one, which C++ materializes one for. `v.push_back("alpha")' on a vector of strings takes
+%% `const_reference', and with only the by-value test the `const char *' went straight through as if it were one.
+cpp_param_takes_class(PT0, C) :- cpp_param_ref(PT0, PT), cpp_param_takes_(PT, T), cpp_class_of_type(T, C).
+cpp_param_takes_(ref(Q, T), T) :- !, ( memberchk(const, Q) -> true ; T = base(Q2, _), memberchk(const, Q2) ).
+cpp_param_takes_(rref(_, T), T) :- !.
+cpp_param_takes_(T, T).
 cpp_converting_ctor(C, A) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(ctor(_, _, Ps, _, _), Ms),
     cpp_arity_fits(Ps, 1), catch(cpp_in_class(C, cpp_args_fit(Ps, [A])), error(not_lowered(_), _), fail), !.   % the fit test resolves types and may REFUSE: a refusal here is no conversion, never the caller's error
+cpp_converting_ctor(C, A) :- '$cpp_mt'(C, ctor, _, ctor(_, _, Ps, _, _)), cpp_arity_fits(Ps, 1),
+    catch(cpp_in_class(C, cpp_args_fit(Ps, [A])), error(not_lowered(_), _), fail), !.   % ... or a constructor TEMPLATE, which is how libc++ writes `basic_string(const _CharT *, const _Allocator & = _Allocator())' -- the one every `v.push_back("alpha")' needs
 cpp_copy_temp(C, A, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]), expr(0, call(id(CName), [addr(id(Tmp)), A])), expr(0, id(Tmp))]))) :-
     T = base([], [typedef(C)]), cpp_ctor(C, [A], CName), ccl_gensym('$copy', Tmp).
 

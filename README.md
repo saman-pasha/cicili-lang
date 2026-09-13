@@ -559,6 +559,19 @@ what runs today.
   `basic_string`'s own move constructor was lost. `vector<string>` now
   compiles through the desugaring and the safe part whole and stops in the
   LLVM it emits, two defects further on. GREEN.
+* **The thirty-eighth step DONE: a vector of strings.** libc++ holding
+  libc++ -- each element owning a heap buffer of its own, constructed in the
+  container's raw memory, relocated when it grows and destroyed with it. Two
+  rules, both about reading a parameter for what it is: a member
+  initializer's overload choice reads its parameter in its own class's words
+  (libc++'s union-class names its holder's nested types, so a clash went
+  unseen and a union was stored into a byte), and a converting constructor
+  serves a parameter that binds a temporary -- a const reference or an
+  rvalue one -- template constructors included, which is the whole of how
+  `v.push_back("alpha")` makes a string out of a `const char *`. Four
+  strings, one past the short-string bytes, the buffer grown twice and the
+  strings relocated, walked by a range-for: clang++'s numbers, no leaks.
+  GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

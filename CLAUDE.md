@@ -2233,6 +2233,34 @@ bitwise copy is meant. The member-initializer overload choice is the next step.
 Seven gates GREEN; no new fixture, the libc++ fixtures being what these rules
 are measured by (each broke while they were wrong).
 
+**M6's thirty-eighth step (0.70): A VECTOR OF STRINGS -- libc++ holding
+libc++.** Two rules, both about reading a parameter for what it is. (1) A
+MEMBER INITIALIZER'S OVERLOAD CHOICE READS ITS PARAMETER IN ITS OWN CLASS'S
+WORDS. `cpp_args_no_clash`, the filter on the arity-only last resort, tested the
+RAW parameter type, and libc++'s union-class writes `__rep(__short __r)' with
+its holder's NESTED names -- which the inference cannot resolve, so
+`cpp_class_of_type` failed, the clash went unseen and
+`__rep_(std::move(__str.__rep_))' took `__rep(__short)' by arity: a union stored
+into a byte. It goes through `cpp_param_ref` now, the door `cpp_arg_fit` has
+used since 0.66 -- the same rule as 0.65's and 0.66's, in the one place that
+still missed it. (2) A CONVERTING CONSTRUCTOR SERVES A PARAMETER THAT BINDS A
+TEMPORARY, not only a by-value one: a const lvalue reference or an rvalue one,
+for which C++ materializes one (`cpp_param_takes_class/2`). And TEMPLATE
+constructors count (`cpp_converting_ctor`'s second clause, over `'$cpp_mt'`),
+since libc++ writes `basic_string(const _CharT *, const _Allocator & =
+_Allocator())' as one -- which is the whole of how `v.push_back("alpha")' makes
+a string out of a `const char *'; without it the `const char *' went to
+`push_back(const_reference)' as though it were a string, and the vector held a
+pointer to a literal. A clash that a converting constructor BRIDGES is no
+clash, which is what keeps `__reset_internal_buffer(__long)' -- `__rep(__long)'
+-- alive beside (1). Lowering version 24. WHAT RUNS: `std::vector<std::string>`
+pushes four strings, one of them past the short-string bytes, grows its buffer
+twice relocating them, subscripts, is walked by a RANGE-FOR and destroys them
+all -- clang++'s numbers, `leaks` finds none, 825 MB to build. Gated by
+`test/cpp/run/stdvectorstring.cpp`. Seven gates GREEN (the C++ one 805 MB).
+NOT DONE: `vector<string>`'s `insert`, `erase` and `resize`; a `string` as a
+class's member; `std::map` and the associative containers; `<iostream>`.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
