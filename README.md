@@ -465,6 +465,25 @@ what runs today.
   program's own objects pushes by move, grows and relocates, subscripts,
   is walked by a range-for and destroys them all -- clang++'s numbers, and
   no leaks. GREEN.
+* **The thirty-first step DONE: `std::string` compiles and runs.** The
+  short-string optimization is what the type is built on, and what it asked
+  for first: **a union with constructors is a class whose members share
+  storage** -- it goes a class's whole road while its layout stays a
+  union's. Twelve more forms came with it: a nested union as a type, a
+  layout over data members alone, a nested type registered on the first
+  ask, a class-scope enumerator as a constant of its class, a nested class
+  reading its enclosing class's statics, a scoped alias re-entering the
+  type hook (`std::string` is `basic_string<char>`), `= default` keeping a
+  class default-constructible, a candidate that fits nothing losing to a
+  constructor template, a default argument desugared where it is filled in,
+  a `const` local standing as a template argument, an explicit template
+  argument evaluated where it binds, and libc++'s own forward declaration
+  of `char_traits<char>` losing to its definition. A short string in the
+  object's own bytes and a long one in a buffer the destructor frees, with
+  `size`, `c_str`, `operator[]` and `empty` -- clang++'s numbers, no leaks.
+  The mutating operations (`+=`, `push_back`, comparison, copying) do not
+  fit in this machine's memory yet: not a runaway, but the accumulation of
+  a hundred library instantiations in a host without a collector. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

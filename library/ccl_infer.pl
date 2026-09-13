@@ -124,6 +124,7 @@ ccl_resolve_base([union(Tag, none)], Q, base(Q, [union(Tag, Ms)])) :- ccl_tag(Ta
 ccl_resolve_base(S, Q, base(Q, S)).
 %% what a C++ tag's name stands for, told by its members' shape: enumerators,
 %% plain members (a struct), or a class's (a constructor, a method, a label)
+ccl_tag_type(N, Ms0, Q, base(Q, [union(N, Ms)])) :- ccl_is_union_tag(Ms0), !, ccl_tag(N, Ms).   % a UNION with constructors: a class whose members share storage
 ccl_tag_type(N, Ms0, Q, base(Q, [enum(N, Ms)])) :- ccl_is_enum_tag(Ms0), !, ccl_tag(N, Ms).
 ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms2)])) :- member(M, Ms), M \= member(_, _, _), ccl_tag_struct(N, Ms2), !.   % the class desugared: its struct, noted beside the raw class
 ccl_tag_type(N, Ms, Q, base(Q, [class(class, N, [], Ms)])) :- member(M, Ms), M \= member(_, _, _), !.
@@ -132,6 +133,10 @@ ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms)])).
 %% (ccl_enum_members//3 in the reader) -- which is the only thing that tells `enum class C : size_t { }',
 %% libc++'s strong typedef for a count, from an empty struct. Asked wherever a tag's name is resolved,
 %% cast to, or taken as a scope.
+%% ... and a marker before them tells a UNION-CLASS from a struct, the same way: libc++'s `basic_string::__rep'
+%% is a union with four constructors -- a class whose members share storage, so its LAYOUT is a union's while its
+%% constructors and methods are a class's
+ccl_is_union_tag([union_tag|_]).
 ccl_is_enum_tag([enumerator(_, _)|_]).
 ccl_is_enum_tag([enum_base(_)|_]).
 ccl_tag_struct(N, Ms) :- ccl_cached_named('$ccl_ts:', N, Ms, ( nb_getval('$ccl_tags', L), member(N-Ms, L), \+ ( member(M, Ms), M \= member(_, _, _) ) )).
@@ -298,12 +303,16 @@ ccl_members_layout_([member(T, N, W0)|Ms], Bit0, Al0, Lays, Bits, Al) :-
             Bit1 is Start + W, Al1 is max(Al0, A),
             Lays = [lay(N, T, Off, bits(BOff, W, S))|Lays1] ) ),
     ccl_members_layout_(Ms, Bit1, Al1, Lays1, Bits, Al).
+%% A LAYOUT IS OVER DATA MEMBERS: a C++ class's tag carries its constructors, methods and typedefs beside them, and
+%% a nested one reaches the layout as the reader gave it -- libc++'s `union __rep' has three constructors.
+ccl_members_layout_([_|Ms], Bit0, Al0, Lays, Bits, Al) :- ccl_members_layout_(Ms, Bit0, Al0, Lays, Bits, Al).
 ccl_bit_width(int(W), W) :- !.
 ccl_bit_width(W, W) :- integer(W), !.
 ccl_bit_width(E, W) :- ccl_const_eval(E, W).
 ccl_union_layout([], S, Al, N, Al) :- ccl_round_up(S, Al, N).
 ccl_union_layout([member(T, _, _)|Ms], S0, Al0, N, Al) :-
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), S1 is max(S0, S), Al1 is max(Al0, A), ccl_union_layout(Ms, S1, Al1, N, Al).
+ccl_union_layout([_|Ms], S0, Al0, N, Al) :- ccl_union_layout(Ms, S0, Al0, N, Al).      % the data members alone, as above
 ccl_round_up(X, A, Y) :- Y is ((X + A - 1) // A) * A.
 
 %% ---- the tie operator, `<*>' --------------------------------------------------

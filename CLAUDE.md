@@ -1921,6 +1921,85 @@ with no arguments is refused by name), a temporary whose lifetime is extended
 by binding it to a named reference, a temporary in a loop's condition,
 `vector<vector<T>>`.
 
+**M6's thirty-first step (0.63): `std::string` from libc++, COMPILED FROM ITS
+OWN BODY.** The SHORT-STRING OPTIMIZATION is what the type is built on, and
+what it asked for first: `union __rep { __short __s; __long __l; }` with four
+constructors. (1) **A UNION WITH CONSTRUCTORS IS A CLASS whose members share
+storage**, so it goes a class's whole road -- registered, its methods emitted,
+its constructors chosen -- while its LAYOUT stays a union's. `'$cpp_union'(C)`
+says which, the class's tag carries the marker `union_tag` first and
+`ccl_is_union_tag/1` is the ONE test for it (as `enum_base` and
+`ccl_is_enum_tag` already told a scoped enum from an empty struct, 0.55); the
+emitted declaration is `union(C, [union_tag|Data])` so the tag noted FROM it
+agrees, `ccl_tag_type/4` answers a union spec, and `cpp_class_of_type_` takes
+that spec as its class all the same. A UNION'S CONSTRUCTOR initializes AT MOST
+ONE member and leaves the others alone (`cpp_union_inits`) -- they share the
+bytes, and default-constructing the rest would overwrite them and demand
+constructors none of them have. (2) A **NESTED UNION** is a nested TYPE of its
+holder (`cpp_nested_name`, `cpp_nested_spec`): with constructors it is the
+class above, with only data members a plain union emitted once under the
+mangled name. (3) A **LAYOUT IS OVER DATA MEMBERS**: a C++ class's tag carries
+its constructors, methods and typedefs beside them, and a nested one reaches
+`ccl_members_layout_`/`ccl_union_layout` as the reader gave it -- both skip
+what is not a `member/3` now. (4) A **NESTED TYPE NAMED AS A TYPE is registered
+on the first ask**, whatever its kind (`cpp_type`, `'$cpp_nested'`): a LAZY
+library instance never runs the enclosing class's nested registrations, and
+`basic_string` names its own `__rep` as a template argument -- that union's
+members name `__short` and `__long`, two more of its nested types. (5) A
+**CLASS-SCOPE ENUMERATOR is a constant of the class**, as a static const is
+(`cpp_class_enums`, kept RAW and folded in the class's words like a static's):
+`enum { __min_cap = (sizeof(__long) - 1) / sizeof(value_type) > 2 ? ... : 2 }`
+is named bare in members and in an array's bound. (6) A **NESTED CLASS SEES THE
+ENCLOSING CLASS'S STATICS**, as it already saw its types (`cpp_static_const`
+through `'$cpp_enclosing'`): `__long`'s constructor divides by its holder's
+`__endian_factor`. (7) A **SCOPED NAME, FLATTENED, GOES THROUGH THE TYPE HOOK
+AGAIN**: `std::string` is an ALIAS of a template-id, and flattened to the bare
+name and left there it reached the lowering as `basic_string<char>` itself.
+(8) **`C() = default;` IS the implicit default constructor** and keeps the
+class default-constructible where its other constructors would have suppressed
+it (`'$cpp_default_ctor'`, `cpp_trivial_default`) -- `__rep` writes it beside
+three others. (9) A **CANDIDATE WHOSE ARGUMENT DOES NOT FIT IS TRIED LAST**,
+after every template (`cpp_args_fit` in `cpp_method` and `cpp_ctor`; the
+arity-only set stays the last resort, so nothing that resolved before resolves
+differently): libc++ writes `explicit basic_string(const allocator_type &)`
+beside the constructor TEMPLATE that takes a `const char *`, and the plain one,
+alone in fitting the ARITY, won every `std::string s = "abc"' -- which came out
+empty. (10) A **DEFAULT ARGUMENT IS DESUGARED WHERE IT IS FILLED IN**, which is
+where C++ evaluates it (`cpp_fill_defaults`): it is kept raw from the
+declaration, and `const _Allocator & __a = _Allocator()` on that same template
+reached the lowering as a call to a type; `cpp_subst` turns a bound `T()` into
+the type's name called, the temporary road a class's name already takes.
+(11) A **`const` LOCAL OF INTEGRAL TYPE WITH A CONSTANT INITIALIZER IS A
+CONSTANT EXPRESSION**, as C++ has had it since C++98 (`cpp_note_const`, noted
+after the initializer is DESUGARED, since the class constants in it fold only
+then; C gained this at C23, `ccl_note_constants`). (12) An **EXPLICIT TEMPLATE
+ARGUMENT IS EVALUATED WHERE IT BINDS** (`cpp_bind_explicit`, `cpp_bind_targs_`
+through `cpp_targ_value`), whatever road brought it: the class path evaluated
+first and the FUNCTION and MEMBER template paths handed the argument over raw,
+so `__align_it<__boundary>(n)` -- libc++'s alignment step over that `const`
+local -- keyed its instance by the NAME and left it in the body. (13) A
+**SPECIALIZATION'S DEFINITION BEATS ITS OWN FORWARD DECLARATION**
+(`cpp_pick_spec`, through `cpp_template_class_def`): libc++ declares
+`struct char_traits<char>;` early and defines it later, both matching `[char]`
+and equally specialized, so the empty one won and every `traits_type::copy`
+was a call to nothing; a declared-only specialization still stands where none
+is defined (0.58's incomplete type). The alias resolution TRACES what it
+catches (`alias_refused(N, W)`), which is how (8) was found -- it had been
+swallowed into a silent fallback. Lowering version 17. Gated by
+`test/cpp/run/stdstring.cpp`: a SHORT string in the object's own bytes and a
+LONG one in a buffer the destructor frees, `size`, `c_str`, `operator[]`,
+`empty` -- clang++'s numbers, `leaks` finds none, 557 MB to build. Seven gates
+GREEN (the C++ one 1581 MB).
+NOT DONE, AND MEASURED: **the MUTATING operations do not fit in memory here.**
+`s += "def"` alone peaks past 2800 MB in 17 s and was killed -- and it is no
+runaway: 120 instantiations, 46 of them distinct, with
+`__allocator_traits_base.allocator.char` asked 283 times and
+`allocator_traits.allocator.char` 267. It is the no-GC accumulation of the
+finding below over a hundred library instantiations, not a loop, so the way
+through is the compile's memory and not a budget. Also not done: `push_back`,
+`operator==`, a string COPIED, `operator+`, `substr`, `find`, iterators,
+`std::string` as a member or in a container.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
