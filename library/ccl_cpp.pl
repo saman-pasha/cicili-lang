@@ -93,7 +93,7 @@ cpp_register_units(Units) :-
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
     cpp_reset('$cpp_lib'/1), cpp_reset('$cpp_libfn'/1), nb_setval('$cpp_in_lib', no),
-    cpp_reset('$cpp_fn'/5), cpp_reset('$cpp_nested'/5), cpp_reset('$cpp_nested_out'/1), cpp_reset('$cpp_union'/1), cpp_reset('$cpp_default_ctor'/1), nb_setval('$cpp_nesting', []), cpp_reset('$cpp_hdr_ns'/2), dynamic('$cpp_hdr_ast_ns'/2), nb_setval('$cpp_cnames', []), nb_setval('$cpp_fn_refusal', none),
+    cpp_reset('$cpp_fn'/5), cpp_reset('$cpp_nested'/5), cpp_reset('$cpp_nested_out'/1), cpp_reset('$cpp_union'/1), cpp_reset('$cpp_default_ctor'/1), cpp_reset('$cpp_iname'/3), nb_setval('$cpp_nesting', []), cpp_reset('$cpp_hdr_ns'/2), dynamic('$cpp_hdr_ast_ns'/2), nb_setval('$cpp_cnames', []), nb_setval('$cpp_fn_refusal', none),
     ( catch(nb_getval('$cpp_trace', _), _, fail) -> true ; nb_setval('$cpp_trace', no) ),
     forall(member(unit(Is), Units), cpp_note_fns(Is)),                                 % the free functions FIRST: a name is overloaded or not before any call to it is read
     forall(member(unit(Is), Units), cpp_register_(Is)).
@@ -1462,7 +1462,12 @@ cpp_type(base(Q, [typedef(scoped(Path, N))]), T) :- atom(N), !,
 cpp_type(base(Q, [S]), base(Q, [S])) :- cpp_nested_tag(S, N), '$cpp_nested'(N, _, _, _, _), !, ( cpp_nested_ready(N) -> true ; true ).
 cpp_nested_tag(typedef(N), N) :- atom(N).
 cpp_nested_tag(union(N, _), N) :- atom(N).
-cpp_type(base(Q, [typedef(N)]), T) :- atom(N), cpp_class_ctx(C), cpp_class_typedef(C, N, T0, Def), !, cpp_in_class(Def, cpp_type(T0, T1)), cpp_merge_quals(Q, T1, T).   % value_type inside its class: class scope before namespace scope, as C++ looks names up; a base's typedef in the base's words
+%% A TYPEDEF THAT IS ITS OWN DEFINITION IS LEFT ALONE, never followed: an instance keyed by a FREE name gives its
+%% class `typedef value_type value_type' (libc++'s `initializer_list<_Ep>' with `_Ep' unresolved), and resolving
+%% that name in that class asked for itself without end -- no refusal, no trace, just terms until the machine gave
+%% out. cocolog reclaims nothing along the way, so a loop here is the whole memory (the finding below).
+cpp_self_typedef(N, base(_, [typedef(N)])).
+cpp_type(base(Q, [typedef(N)]), T) :- atom(N), cpp_class_ctx(C), cpp_class_typedef(C, N, T0, Def), \+ cpp_self_typedef(N, T0), !, cpp_in_class(Def, cpp_type(T0, T1)), cpp_merge_quals(Q, T1, T).   % value_type inside its class: class scope before namespace scope, as C++ looks names up; a base's typedef in the base's words
 cpp_type(base(Q, [typedef(N)]), T) :- atom(N), ccl_typedef_of(N, base(_, [typedef(X)])), cpp_template_id(X, _, _), !,   % `typedef integral_constant<bool, false> false_type', a LIBRARY header's alias
     ( catch(cpp_type(base([], [typedef(X)]), T1), error(not_lowered(W), _), ( cpp_trace(alias_refused(N, W)), fail )) -> cpp_merge_quals(Q, T1, T) ; T = base(Q, [typedef(N)]) ).   % of a template-id: the INSTANCE, not the name -- the passes rebuild the table from the summary, where the alias is raw, so a note behind the name does not survive to the lowering (the program's own typedef item is walked and does). Only an alias whose WHOLE definition is a template-id: a name like `type' is a class's, and the global table's entry for it is some other class's
 cpp_type(base(Q, S), base(Q, S)) :- !.
@@ -1505,11 +1510,19 @@ cpp_shallower :- nb_getval('$cpp_depth', D), D1 is D - 1, nb_setval('$cpp_depth'
 cpp_instantiate_class(N, Args, Name) :- cpp_where(class(N), cpp_instantiate_class__(N, Args, Name)).
 cpp_instantiate_class__(N, Args, Name) :-
     cpp_deeper(N), ( catch(cpp_instantiate_class_(N, Args, Name), E, (cpp_shallower, throw(E))) -> cpp_shallower ; cpp_shallower, fail ).
+%% AN INSTANCE ASKED FOR AGAIN ANSWERS ITS NAME AND NOTHING ELSE. A clause retrieval COPIES the term it answers
+%% (the finding below, for globals; a fact's body is no different), and a template's item is its whole class --
+%% hundreds of members for one of libc++'s containers. Every ask fetched that item to compute a name it had
+%% computed before: `std::string s; s += "x";' asks for `allocator_traits<allocator<char>>' 267 times and for
+%% `__allocator_traits_base' 283, and the desugaring took 2.9 GB where the read took 48 MB. Args are compared with
+%% `==', never unified, so an unbound argument matches nothing.
+cpp_instantiate_class_(N, Args, Name) :- '$cpp_iname'(N, A, Name0), A == Args, !, Name = Name0.
 cpp_instantiate_class_(N, Args, Name) :-
     ( cpp_class_template(N, TPs, Item) -> true ; cpp_refuse(0, template_without_body(N)) ),
     ( cpp_bind_targs(TPs, Args, B) -> true ; cpp_trace(bind_failed(N)), fail ),
     cpp_constraints_hold(N, TPs, B),
     ( cpp_instance_name(N, TPs, B, Name) -> cpp_trace(want(Name)) ; cpp_trace(name_failed(N)), fail ),
+    assertz('$cpp_iname'(N, Args, Name)),
     (   cpp_instance_done(Name) -> true
     ;   cpp_spend(instance(Name)), cpp_full_args(TPs, B, FullArgs), cpp_instance_note(Name, inst(N, FullArgs)),
         Self = N-base([], [typedef(Name)]),                                                                        % the injected class name: inside its body, `vector' is this instance

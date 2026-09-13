@@ -484,6 +484,19 @@ what runs today.
   The mutating operations (`+=`, `push_back`, comparison, copying) do not
   fit in this machine's memory yet: not a runaway, but the accumulation of
   a hundred library instantiations in a host without a collector. GREEN.
+* **The thirty-second step DONE: the compile's memory.** The last step read
+  `s += "def"` at 2.8 GB as accumulation. Measured, it was a loop: the read
+  phase is 48 MB, the desugaring is all of the rest, and the trace at a low
+  cap named what was in flight -- an instance keyed by a free name, whose
+  substitution turned libc++'s `typedef _Ep value_type` into `typedef
+  value_type value_type`, a typedef that is its own definition and was
+  followed for ever. Such a typedef is left alone now, and whatever needs
+  it refuses by name. With it, an instance asked for again answers its name
+  without fetching the template's whole body again -- a retrieval copies
+  what it answers, and `allocator_traits` was asked 267 times for one
+  program. The desugaring of that line: 2936 MB and 16 s become 495 MB and
+  4 s; the string fixture's build 557 -> 422 MB; the C++ gate 1581 -> 752
+  MB. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

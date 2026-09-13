@@ -2000,6 +2000,48 @@ through is the compile's memory and not a budget. Also not done: `push_back`,
 `operator==`, a string COPIED, `operator+`, `substr`, `find`, iterators,
 `std::string` as a member or in a container.
 
+**M6's thirty-second step (0.64): THE COMPILE'S MEMORY -- a loop, not a
+weight.** 0.63 left `s += "def"` peaking past 2800 MB in 17 s on a 16 GB
+machine, and read it as the no-GC accumulation of a hundred library
+instantiations. MEASURED, it was nothing of the kind. THE PHASES, taken apart
+(`cicili++ -fsyntax-only` against the whole build, then `ccl_cpp_units` alone
+under the guard): the READ is 48 MB and 0.9 s, and the DESUGARING is all 2900
+of the rest -- so the question was never the reader's. Two guesses failed
+before the measurement paid: scoping every class instantiation inside `\+ \+`
+moved the peak by nothing (its results are facts and globals, which survive a
+scope, and its intermediates were not the weight), and the desugaring's lookup
+tables are SMALL (`'$cpp_class_types'` 127 entries after a `std::string` build,
+`'$cpp_lazy'` 51). What found it was the trace at a LOW cap, which names what
+is in flight when the memory goes: the last event was always
+`instance(initializer_list.value_type)` -- an instance keyed by a FREE NAME,
+0.49's defect once more -- and then silence while the machine filled. THE
+CAUSE: substituting `_Ep := value_type` into `initializer_list<_Ep>` turns its
+own `typedef _Ep value_type` into **`typedef value_type value_type`**, a
+typedef that IS its own definition, and `cpp_type`'s class-scope clause
+resolved that name in that class by asking for itself, without end and without
+a trace. A TYPEDEF THAT IS ITS OWN DEFINITION IS NOW LEFT ALONE
+(`cpp_self_typedef/2`, the guard on that clause): the name stays as written and
+whatever needs it refuses by name, as everything else here does. 2936 MB and
+16 s become 495 MB and 4 s. AND AN INSTANCE ASKED FOR AGAIN ANSWERS ITS NAME
+AND NOTHING ELSE (`'$cpp_iname'(N, Args, Name)`, the arguments compared with
+`==` so an unbound one matches nothing): a clause retrieval COPIES the term it
+answers, and `cpp_instantiate_class_` fetched a template's whole item -- one of
+libc++'s containers is hundreds of members -- to recompute a name it had
+computed before, 267 times for `allocator_traits<allocator<char>>` alone. The
+asks fall from 550 to 51 and the peak by a further tenth. WHAT IT BOUGHT, all
+measured on this machine: the desugaring of `s += "def"` 2936 -> 495 MB;
+`test/cpp/run/stdstring.cpp` built through `cicili++` 557 -> 422 MB; THE C++
+GATE 1581 -> 752 MB. The libc++ gate stays at 1882 MB, the biggest number left
+and the READER's -- a flatten and a parse of `<vector>` and `<string>` under a
+fresh HOME, one-time per header and cached after. Lowering version 18. Seven
+gates GREEN; no new fixture, since the shape that looped needs an argument no
+valid C++ can write, and the gates' peaks are the measurement. NOT DONE: why
+`initializer_list<value_type>` is asked with a free name at all (the class-scope
+typedef did not resolve where `basic_string` declares that constructor) -- the
+loop is gone but the badly keyed instance remains; the reader's 1882 MB; and
+`s += "def"` still refuses, now by name (`undeclared('__func_')` in a scope
+guard), which is a form and no longer a wall.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
