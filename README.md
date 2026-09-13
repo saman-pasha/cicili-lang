@@ -547,6 +547,18 @@ what runs today.
   parameter -- libc++'s SFINAE guard -- no longer takes whatever binding is
   first and names one instance two ways. `vector<string>` still does not
   run: it reaches one named defect now instead of the memory. GREEN.
+* **The thirty-seventh step DONE: a name is noted when it is emitted, not
+  before.** The last step left `vector<string>` calling a member template
+  that was noted as an instance and never emitted. The reason: such an
+  instance is made wherever its call is met, and that can be inside another
+  candidate's signature check, whose catch rejects the candidate -- SFINAE,
+  by design -- while the note taken before the emission survived the
+  abandonment. A name is in progress while it is made, which is all a
+  recursive ask needs, and noted only once it is done. The same shape sat in
+  the lazy emission of a library class's member, which is how
+  `basic_string`'s own move constructor was lost. `vector<string>` now
+  compiles through the desugaring and the safe part whole and stops in the
+  LLVM it emits, two defects further on. GREEN.
 * **C23 DONE (`-std=c23`).** C's own level, which is not C++'s: the
   preprocessor answers `__STDC_VERSION__` 202311L there, and the forms the
   level added are read -- `bool`, `true`, `false` and `nullptr` as the

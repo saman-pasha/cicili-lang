@@ -88,7 +88,7 @@ cpp_instance_note(Name, What) :- assertz('$cpp_inst'(Name, What)).
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
     cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_mdef'/5),
-    nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0), nb_setval('$cpp_closure_this', []), nb_setval('$cpp_temps', none),
+    nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0), nb_setval('$cpp_closure_this', []), nb_setval('$cpp_temps', none), nb_setval('$cpp_making', []),
     nb_setval('$cpp_concepts', []),
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
@@ -311,10 +311,19 @@ cpp_lazy_instance(yes, Name) :- \+ cpp_is_lazy(Name), !, nb_getval('$cpp_lazy', 
 cpp_lazy_instance(_, _).
 %% a member of a lazy class, first used: its function emitted now
 cpp_use_member(C, Name) :-
-    (   cpp_is_lazy(C), \+ cpp_instance_done(Name),
+    (   cpp_is_lazy(C), \+ cpp_instance_done(Name), \+ cpp_making(Name),
         cpp_class(C, cls(Base, _, Ms, _, Defaults, _)), member(M, Ms), cpp_member_mangled(C, M, Name)
-    ->  cpp_instance_note(Name, C), cpp_as_lib(yes, ( cpp_isolated(cpp_in_class(C, cpp_member_fns([M], C, Base, Defaults, Fns))), cpp_add_instance_items(Fns) ))   % lazy: a header's
+    ->  cpp_make_lazy(Name, C, Base, Defaults, M)                                                       % lazy: a header's
     ;   true ).
+%% ... and NOTED only once it is EMITTED, as a member template's instance is (cpp_make_member): the emission can
+%% run inside another candidate's signature check, whose catch rejects that candidate and leaves the note behind.
+%% `std::vector<std::string>' lost `basic_string''s move constructor exactly so.
+cpp_make_lazy(Name, C, Base, Defaults, M) :-
+    nb_getval('$cpp_making', M0), nb_setval('$cpp_making', [Name|M0]),
+    (   catch(cpp_as_lib(yes, ( cpp_isolated(cpp_in_class(C, cpp_member_fns([M], C, Base, Defaults, Fns))), cpp_add_instance_items(Fns) )),
+              E, ( nb_setval('$cpp_making', M0), throw(E) ))
+    ->  nb_setval('$cpp_making', M0), cpp_instance_note(Name, C)
+    ;   nb_setval('$cpp_making', M0), cpp_refuse(0, member_not_emitted(Name)) ).
 cpp_member_mangled(C, method(_, _, _, M, Ps, _, _), Name) :- cpp_mangle(C, M, Ps, Name).
 cpp_member_mangled(C, ctor(_, _, Ps, _, _), Name) :- cpp_mangle(C, C, Ps, Name).
 cpp_member_mangled(C, dtor(_, _, _), Name) :- atomic_list_concat([C, '.dtor.0'], Name).
@@ -598,13 +607,13 @@ cpp_static_member(C, N, Name) :- cpp_class(C, cls(B, _, _, Ss, _, _)), ( memberc
 %% `explicit basic_string(const allocator_type &)' beside the constructor TEMPLATE that takes a `const char *', and
 %% the plain one -- alone in fitting the ARITY -- won every `std::string s = "abc"', which came out empty. The
 %% arity-only set is still the last resort, so nothing that resolved before resolves differently.
-cpp_args_fit([], _).
-cpp_args_fit(_, []).
+cpp_args_fit([], _) :- !.
+cpp_args_fit(_, []) :- !.
 cpp_args_fit([P|Ps], [A|As]) :- ( ( P = param(PT, _) ; P = param(PT, _, _) ) -> cpp_arg_fit(PT, A, S), S > 0 ; true ), cpp_args_fit(Ps, As).
 %% THE ARITY ALONE IS THE LAST RESORT, but never a CLASS-typed parameter for an argument of ANOTHER known class:
 %% that is no conversion this compiler makes, and libc++'s copy constructor writes `__rep_(__str.__rep_)', whose
 %% `__rep' argument took `__rep(__short)' by arity and stored a union into a byte.
-cpp_args_no_clash([], _).
+cpp_args_no_clash([], _) :- !.
 cpp_args_no_clash(_, []) :- !.
 cpp_args_no_clash([P|Ps], [A|As]) :-
     \+ ( ( P = param(PT, _) ; P = param(PT, _, _) ), cpp_class_of_type(PT, C), cpp_init_arg_class(A, AC), AC \== C ),   % the argument's class through a move and, where the raw form cannot tell, the desugared one -- a member initializer is raw, and libc++ keeps `__rep_' inside its anonymous compressed pair
@@ -882,11 +891,12 @@ cpp_norm_inits([I|Is], [I|Js]) :- cpp_norm_inits(Is, Js).
 %% through the DESUGARED form. A member initializer and a call's arguments are both raw when they are scored, and
 %% libc++ writes `__rep_(std::move(__str.__rep_))' -- whose type the inference cannot tell, so every candidate
 %% scored the 1 that an unknown type earns and the FIRST constructor won, `__rep(__short)' for a `__rep'.
+cpp_arg_type(move(X), T) :- !, cpp_arg_type(X, T).                       % THE MOVE FORMS FIRST: <utility> comes in with
+cpp_arg_type(call(scoped(_, move), [X]), T) :- !, cpp_arg_type(X, T).   % every container, so `std::move' is a declared template whose RAW result type would otherwise win
 cpp_arg_type(A, T) :- ccl_type_of(A, T0), T0 \== unknown, !, T = T0.
-cpp_arg_type(move(X), T) :- !, cpp_arg_type(X, T).
-cpp_arg_type(call(scoped(_, move), [X]), T) :- !, cpp_arg_type(X, T).
 cpp_arg_type(A, T) :- catch(cpp_expr(none, A, A1), _, fail), A1 \== A, ccl_type_of(A1, T0), T0 \== unknown, T = T0.
-cpp_init_arg_class(E, C) :- cpp_arg_type(E, T), ccl_unref(T, T1), cpp_class_of_type(T1, C).
+cpp_init_arg_class(E, C) :- cpp_arg_type(E, T), ccl_unref(T, T1), cpp_class_of_type(T1, C), !.
+cpp_init_arg_class(E, C) :- catch(cpp_expr(none, E, E1), _, fail), E1 \== E, cpp_class_of_type_of(E1, C).   % a type that is KNOWN but names no class -- a library template's raw result -- still leaves the DESUGARED form to ask
 %% ... and where the RAW form cannot tell, the desugared one can: libc++'s copy constructor writes
 %% `__alloc_(__alloc_traits::select_on_container_copy_construction(__str.__alloc_))', a static member call whose
 %% result is the member's own class, and unasked it read as a member with no constructor to take it. Only the
@@ -2047,6 +2057,23 @@ cpp_member_template_call_(C, M, Explicit, As, Name) :-
     findall(X, ( member(X, Cands0), \+ cpp_variadic_member(X) ), Plain),      % an ELLIPSIS is C++'s worst match: `test(...)' only where nothing else fits
     findall(X, ( member(X, Cands0), cpp_variadic_member(X) ), Var), append(Plain, Var, Cands),
     cpp_try_member(Cands, C, Explicit, As, Name).
+%% A NAME NOTED DONE BEFORE ITS EMISSION SURVIVES THAT EMISSION'S ABANDONMENT. A member template's instance is
+%% made wherever its call is met, and that can be INSIDE another candidate's signature check, whose catch swallows
+%% the refusal and rejects the candidate (SFINAE, by design) -- and the note was left behind, so every later ask
+%% answered with a definition that had never been emitted: `std::vector<std::string>' called
+%% `allocator<string>::construct' and the linker's own complaint arrived as `undeclared'. The name is IN PROGRESS
+%% while the emission runs, which is all a recursive ask needs, and NOTED only once it is done; a throw clears it,
+%% as cpp_isolated and cpp_in_class already restore what they set aside.
+cpp_making(Name) :- nb_getval('$cpp_making', L), memberchk(Name, L).
+cpp_make_member(Name, C, L, Qs, Ret1, MName, Ps1, V, Body1) :-
+    nb_getval('$cpp_making', M0), nb_setval('$cpp_making', [Name|M0]),
+    M = method(L, Qs, Ret1, MName, Ps1, V, Body1),
+    (   catch(( cpp_class(C, cls(Base, _, _, _, Defaults, _)), ( cpp_lib_class(C) -> Lib = yes ; Lib = no ),
+                cpp_as_lib(Lib, ( cpp_isolated(cpp_in_class(C, ( cpp_declare_members([M], C), cpp_member_fns([M], C, Base, Defaults, Fns) ))),
+                                  cpp_add_instance_items(Fns) )) ),
+              E, ( nb_setval('$cpp_making', M0), throw(E) ))
+    ->  nb_setval('$cpp_making', M0), cpp_instance_note(Name, C)
+    ;   nb_setval('$cpp_making', M0), cpp_refuse(L, member_instance_not_emitted(Name)) ).
 cpp_variadic_member(_-method(_, _, _, _, _, true, _)).
 cpp_try_member([], _, _, _, _) :- fail.
 cpp_try_member([TPs-method(L, Qs, Ret, M, Ps, V, Body)|Cs], C, Explicit, As, Name) :-
@@ -2054,12 +2081,8 @@ cpp_try_member([TPs-method(L, Qs, Ret, M, Ps, V, Body)|Cs], C, Explicit, As, Nam
     ->  cpp_instance_name(M, TPs, B, MName), cpp_subst(method(L, Qs, Ret, M, Ps, V, Body), B, method(_, _, Ret1, _, Ps1, _, Body1)),
         cpp_mangle(C, MName, Ps1, Name),
         (   cpp_instance_done(Name) -> true
-        ;   cpp_instance_note(Name, C),
-            (   cpp_class(C, cls(Base, _, _, _, Defaults, _)), ( cpp_lib_class(C) -> Lib = yes ; Lib = no ),
-                cpp_as_lib(Lib, ( cpp_isolated(cpp_in_class(C, ( cpp_declare_members([method(L, Qs, Ret1, MName, Ps1, V, Body1)], C), cpp_member_fns([method(L, Qs, Ret1, MName, Ps1, V, Body1)], C, Base, Defaults, Fns) ))),
-                                  cpp_add_instance_items(Fns) ))
-            ->  true
-            ;   cpp_refuse(L, member_instance_not_emitted(Name)) ) )   % the name is noted DONE BEFORE it is emitted, so anything that merely FAILED on the way left every later ask a call to nothing: 0.46's rule, now for a member template's instance and everything its emission needs
+        ;   cpp_making(Name) -> true                                    % in progress: the NAME is all a recursive ask needs
+        ;   cpp_make_member(Name, C, L, Qs, Ret1, MName, Ps1, V, Body1) )
     ;   cpp_try_member(Cs, C, Explicit, As, Name) ).
 cpp_member_template_ctor(C, As, Name) :-
     findall(TPs-Mem, '$cpp_mt'(C, ctor, TPs, Mem), Cands), Cands \== [],

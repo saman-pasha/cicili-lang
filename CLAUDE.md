@@ -2197,6 +2197,42 @@ starts. AND A LESSON FROM THE SAME AFTERNOON: two further rules tried here --
 `stdstring.cpp` and were reverted. The overload rules interact, and a change to
 one is worth no more than the gate it passes. Seven gates GREEN.
 
+**M6's thirty-seventh step (0.69): A NAME IS NOTED WHEN IT IS EMITTED, NOT
+BEFORE.** 0.68 left `std::vector<std::string>` stopping at
+`undeclared('allocator<string>::construct...')` -- the member template NOTED as
+an instance and never EMITTED -- and the refusal added there did not fire,
+which said the emission was not failing but being SKIPPED. THE ANSWER: a
+member template's instance is made wherever its call is MET, and that can be
+INSIDE another candidate's signature check, whose catch swallows the refusal
+and rejects the candidate -- SFINAE, by design, since 0.44. The note was taken
+BEFORE the emission (to stop a recursive ask looping) and SURVIVED the
+abandonment, so every later ask answered with a definition that had never been
+emitted and the lowering met a call to nothing. The name is IN PROGRESS while
+the emission runs -- which is all a recursive ask needs -- and NOTED only once
+it is done; a throw clears it, as `cpp_isolated` and `cpp_in_class` already
+restore what they set aside (`'$cpp_making'`, `cpp_make_member/9`). THE SAME
+SHAPE SAT IN `cpp_use_member`, a LAZY class's member emitted where it is first
+named (`cpp_make_lazy/5`): that is how `basic_string`'s own MOVE CONSTRUCTOR
+was lost. TWO MORE from the same probe. A type that is KNOWN but names no class
+-- a library template's raw, unsubstituted result -- no longer hides the
+DESUGARED form from `cpp_init_arg_class`, which 0.66 taught to ask it and 0.68's
+`cpp_arg_type` had short-circuited. And the MOVE FORMS come before the general
+type lookup in `cpp_arg_type`: `<utility>` arrives with every container, so
+`std::move` is a DECLARED template whose raw result type would otherwise win --
+tried in 0.68, reverted with an innocent change beside it, and measured alone
+here. AND BOTH CANDIDATE FILTERS ARE DETERMINISTIC NOW: `cpp_args_fit` and
+`cpp_args_no_clash` each had two base clauses that matched the empty case, so
+`findall` returned a candidate TWICE -- 0.66's lesson (`cpp_keep_defaults`) in
+two more places. Lowering version 23. WHERE IT STANDS:
+`std::vector<std::string>` compiles through the desugaring AND the safe part
+whole, in 10 s at 713 MB, emitting `allocator<string>::construct` and
+`basic_string`'s move constructor -- two defects further than 0.68 -- and stops
+in the LLVM it emits, inside that move constructor: `__rep_(std::move(
+__str.__rep_))` still picks `__rep(__short)` by arity where the implicit
+bitwise copy is meant. The member-initializer overload choice is the next step.
+Seven gates GREEN; no new fixture, the libc++ fixtures being what these rules
+are measured by (each broke while they were wrong).
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
