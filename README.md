@@ -742,6 +742,21 @@ what runs today.
   time; a `.pl` included is a set of macros over ASTs with type inference.
   80 checks GREEN, including five real C files from the neighbours read
   entirely with their system headers.
+* **The forty-eighth step DONE: `std::set`, whole.** An int set's surface
+  (`insert`, `find`, `count`, `erase`, the bounds, `clear`, a loop, an
+  initializer list, a vector's range), a set of strings, a set copied and
+  compared, `emplace`, a hint insert, `swap`, `std::greater` as the comparator,
+  `key_comp()` called, the reverse iterators, `insert(first, last)`,
+  `emplace_hint`, `merge`, `<` on two sets, a transparent `std::less<>` looked
+  up with `const char *` keys, and `std::multiset` match clang++ line for
+  line, and `<set>` reads whole. Ten forms named in CLAUDE.md: an initializer
+  list built by the compiler, `= default` copy and move constructors made
+  memberwise, a call returning a class called at once, a closure without an
+  implicit constructor, an assignment through a converting constructor, a free
+  operator with the class on the right, `decltype` of an lvalue a reference --
+  and the compile's memory measured honestly and cut tenfold: every emission
+  road, every lowered item and every checked function inside `\+ \+`. Not
+  yet: node handles (`extract`), which want `<optional>`.
 
 ## The `cicili` command
 
@@ -876,7 +891,7 @@ label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
 UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
 the extended floating-point suffixes, `[[assume]]` told to LLVM.
 **C++26**: its macros, so libc++ takes its paths, its forms still to
-come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>` and `<map>`
+come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>` and `<set>`
 whole, the desugaring registers a flattened header's items by name
 as a program asks for them, and `std::vector<int>` gets several
 classes deep before the next forms stop it -- under an instantiation

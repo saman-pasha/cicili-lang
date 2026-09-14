@@ -140,7 +140,7 @@ ck_units([]).
 ck_units([unit(Is)|Us]) :- ck_items(Is), ck_units(Us).
 ck_items([]).
 ck_items([function(L, _, Ret, Name, Params, _, Body)|Is]) :- !,
-    ( ccl_lang(cpp), cpp_library_function(Name) -> true ; ck_function(L, Ret, Name, Params, Body) ),   % a library header's function: C++'s rules, not these (ccl_cpp)
+    ( ccl_lang(cpp), cpp_library_function(Name) -> true ; \+ \+ ck_function(L, Ret, Name, Params, Body) ),   % a library header's function: C++'s rules, not these (ccl_cpp); inside `\+ \+', so a function's walk is reclaimed
     ck_items(Is).
 ck_items([_|Is]) :- ck_items(Is).
 

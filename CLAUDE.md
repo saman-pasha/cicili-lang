@@ -52,10 +52,11 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream> and <map> flattened and read WHOLE, under a fresh HOME;
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map> and <set> flattened and read WHOLE, under a fresh HOME;
                          test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
                          the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
-                         containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap; a fixture's input is NAME.stdin
+                         containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap,
+                         stdset, stdsetstring, stdset2, stdset3; a fixture's input is NAME.stdin
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -3083,6 +3084,95 @@ array member value-initialized, the `less<void>' transparent comparator's
 key-extraction road (`__without_key', reached by `emplace' with non-key
 arguments), which crashed at a null before the piecewise candidate held and
 is untested since.
+
+**M6's forty-eighth step (0.80): `std::set`, whole -- and the compile's memory
+taken apart again, honestly this time.** THE MODULE: `test/cpp/run/stdset.cpp`
+(an int set: `insert`, `size`, `empty`, `count`, `find`, `erase` by key and by
+iterator, `lower_bound`, `upper_bound`, `clear`, a loop over `begin()`/`end()`,
+a set from an initializer list and from a vector's range, `std::multiset` with
+`equal_range`), `stdsetstring.cpp` (string keys), `stdset2.cpp` (a set COPIED,
+`==` and `!=`, `emplace`, a hint insert, an erase over a range, `swap`,
+`std::greater<int>` as the comparator, `key_comp()` called, `rbegin()`/`rend()`,
+a multiset's `emplace` and `rbegin`) and `stdset3.cpp` (`insert(first, last)`,
+`insert({...})`, `emplace_hint`, `cbegin`, `crbegin`/`crend`, `<` on two sets,
+`value_comp`, `max_size`, `merge`, a TRANSPARENT comparator `std::less<>` on a
+set of strings looked up with `const char *` keys, `equal_range`,
+`erase(begin())`) match clang++ line for line, and `<set>` is read WHOLE in the
+libc++ gate. THE FORMS, each named: (1) AN INITIALIZER LIST IS BUILT BY THE
+COMPILER (`cpp_init_list`): a backing array `$il_k[N]` of the element type and
+libc++'s private two-argument constructor over its address and its length,
+where `initializer_list_argument` had been refused by name; a class with a
+constructor taking one (`cpp_il_ctor`) takes a braced initializer and a braced
+argument through it (`cpp_ctor_args`), an item of another type converts
+through the element class's converting constructor (`cpp_il_item`: `{"bob",
+"amy"}' for strings, the temporaries dying with the statement as the array does
+in C++), and the items are collected ONCE -- a `findall' over a goal with a
+second answer registered a second temporary and the array held both, one of
+them declared nowhere; (2) `C(const C &) = default' and `C(C &&) = default'
+ARE MEMBERWISE (`memberwise(S, Kind)' in the constructor's initializer slot at
+`cpp_norm_members`, `cpp_ctor_body`: every data member from the source's,
+moved under a move, a union as one assignment), where the dropped declaration
+left `set(const set &) = default' to the rule that refuses a copy of a class
+with a destructor; `cpp_user_ctor` tells such a marker from a written one
+(`cpp_trivial_class`, `cpp_note_nontrivial`); (3) A PARAMETER'S CLASS WITH A
+CONSTRUCTOR TAKING THE ARGUMENT'S CLASS accepts it (`cpp_class_converts` in
+`cpp_type_accepts`; [over.ics.user]): libc++'s tree copies itself through
+`unique_ptr<__node, __tree_deleter>(node, __node_alloc_)', the deleter made of
+the allocator; (4) `__builtin_invoke(f, args...)' is the call (`cpp_builtin_call`),
+which `__invoke_result_impl' asks; (5) A CALL RETURNING A CLASS BY VALUE,
+CALLED -- `g.key_comp()(3, 1)' -- materializes the prvalue in a temporary of
+the statement and calls its `operator()' over it (`cpp_temp_call`'s third
+clause), where the lowering met a call whose callee was a call; (6) A CLOSURE
+HAS NO IMPLICIT CONSTRUCTOR (`cpp_closure_class`, in `cpp_implicit_ctor_needed`):
+it is built from its captures, and libc++'s `[this, __p]' captures an iterator
+BY VALUE, a class with constructors, whose implicit one was walked under the
+closure's `this' -- the enclosing object's -- and named a member the tree has
+not; (7) AN ASSIGNMENT FROM ANOTHER CLASS CONVERTS through the target's
+converting constructor (`cpp_expr(assign)`, as an argument and a return do):
+`__f = erase(__f)' stores an `iterator' into a `const_iterator', and taken raw
+the lowering cast one struct to the other; (8) A FREE OPERATOR SERVES A CLASS
+ON EITHER SIDE (`cpp_free_operator_call`): `"amy" < s' is
+`operator<(const _CharT *, const basic_string &)', which the transparent
+comparator writes as `std::forward<_T1>(__t) < std::forward<_T2>(__u)', and
+with the class on the right only the form stayed raw -- a pointer compared with
+a struct; (9) THE COPY AND THE MOVE CONSTRUCTOR CONVERT NOTHING
+(`cpp_own_class_param` in `cpp_converting_ctor`): `__self_view(__str)' fitted
+string_view's defaulted copy constructor (now synthesized, (2)) THROUGH the
+string's conversion operator, and the copy took the string's bytes for a
+string_view's -- `memcmp' at a wild address; the conversion operator is the
+road; (10) `decltype(*p)' AND `decltype(a[i])' ARE `T &' ([dcl.type.decltype],
+`cpp_decltype_of`): `using __reference = decltype(*__first)' is
+`const string &', and read as the plain type the range insert's
+`forward<__reference>' handed an rvalue on and the MOVE constructor took each
+element out of the caller's range. THE MEMORY, measured with cocolog 1.2.13's
+`statistics/2' -- `globalused', `store_used', the honest instrument where the
+process's RSS read low (0.79's finding) -- printed on every trace line
+(`cpp_trace_mem`, `ir_mem`, `kb(Heap, Store)') and at each phase
+(`phase(check)', `phase(lowering)', `phase(assemble)' in `ccl_ir_units`, and
+`lower(Item, Mem)' per item): stdset2's desugaring left 1.85 GB of heap behind
+it, and the check and the lowering added ten megabytes -- a deterministic run
+keeps every intermediate (the no-GC finding), and 0.68 had scoped only a class
+instantiation. EVERY EMISSION ROAD RUNS INSIDE `\+ \+' NOW: a lazy member
+(`cpp_make_lazy`), a header's free function (`cpp_use_fn`), a function
+template's instance (`cpp_instantiate_function_`), a member template's
+(`cpp_make_member`), a nested class (`cpp_nested_class`) and a header's load
+(`cpp_hdr_load`) -- their results are facts and globals, which survive the
+scope, and their walks are reclaimed; so does each lowered item (`ir_items`)
+and each checked function (`ck_items`), and a function's text is a global of
+its own (`'$ir_fdef:K'`, `ir_add_fdef`), where a list of every text so far was
+copied at each addition. 1.85 GB -> 186 MB at the check, and the build's RSS
+2.8 GB (killed at the cap twice) -> 650 MB. `stmt_out(S)' traces the program's
+own statements as they come out. NOT DONE: node handles (`extract',
+`insert(node_type &&)') hold a `std::optional<allocator>', and `<optional>' is
+a module of its own (`base_constructor(__optional_iterator_base)' is where it
+stops); C++20's `contains' and `erase_if' (the level's fixtures); a lambda as
+the comparator; a program's constructor taking `std::initializer_list<std::string>'
+is keyed by the raw template-id (`typedefscopedstdtmplinitializerlist...'), which
+works and is ugly. Seven gates GREEN (the reader's 94 checks, 6 s and 78 MB;
+the compile gate's 73 at 213 MB; the driver's 23; the objects' 29; the proof;
+the C++ one 118 checks, 798 s, 1220 MB; the libc++ one 279 s and 1269 MB,
+`<set>` read whole, 426 items); the four set fixtures build in 40 to 90 s at
+630 to 920 MB each.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

@@ -8,7 +8,7 @@
 
 libcxx_main :-
     nb_setval('$lx_fail', 0),
-    forall(member(H-Min, [vector-400, string-400, iostream-600, map-400]), libcxx_header(H, Min)),
+    forall(member(H-Min, [vector-400, string-400, iostream-600, map-400, set-400]), libcxx_header(H, Min)),
     nb_getval('$lx_fail', N),
     ( N =:= 0 -> write('GREEN: libc++ (the reader)') ; write('RED: '), write(N), write(' failure(s)') ), nl.
 

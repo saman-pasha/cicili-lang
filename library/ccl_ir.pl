@@ -53,10 +53,13 @@ ccl_ir_units(Units0, IR) :-
     ->  ( ccl_cpp_units(Units0, Units) -> true ; ir_fail(phase(desugaring)) ),   % each phase says its own name when it merely FAILS, or the driver can only say `without saying why'
         ccl_scope_init, ir_note_units(Units), ir_cpp_prelude              % then the table again from what came out; new and delete are malloc and free
     ;   Units = Units0 ),
+    ir_cpp_trace(phase(check)),
     ( ccl_check_noted(Units) -> true ; ir_fail(phase(check)) ),          % the safe part first: a violation is a compile error
-    nb_setval('$ir_fdefs', []), nb_setval('$ir_gdefs', []),
+    nb_setval('$ir_fdefs', 0), nb_setval('$ir_gdefs', []),               % a function's text is a global of its own, `'$ir_fdef:K'' (below): a list of every text so far was COPIED at each addition
     ir_drain_functions(Drains), ccl_items_note(Drains),                 % one drain per struct with an own array (below)
+    ir_cpp_trace(phase(lowering)),
     ( ( ir_units(Units), ir_items(Drains) ) -> true ; ir_fail(phase(lowering)) ),
+    ir_cpp_trace(phase(assemble)),
     ir_assemble(IR).
 
 %% C++ (M6): `new T' is malloc(sizeof(T)) and `delete p' free(p) -- declared
@@ -73,7 +76,11 @@ ir_note_units([unit(Is)|Us]) :- ccl_items_note(Is), ir_note_units(Us).
 ir_units([]).
 ir_units([unit(Is)|Us]) :- ir_items(Is), ir_units(Us).
 ir_items([]).
-ir_items([I|Is]) :- ( catch(ir_item(I), E, ir_item_error(I, E)) -> true ; ir_item_name(I, W), ir_fail(item(W)) ), ir_items(Is).
+ir_items([I|Is]) :- ( catch(nb_getval('$cpp_trace', yes), _, fail) -> ir_item_name(I, W0), ir_mem(M), write(lower(W0, M)), nl, flush_output ; true ),   % under the C++ trace, each item as it is taken, with the heap and the store in KB: which one a silent runaway is in
+    ( catch(\+ \+ ir_item(I), E, ir_item_error(I, E)) -> true ; ir_item_name(I, W), ir_fail(item(W)) ), ir_items(Is).   % INSIDE `\+ \+': an item's text goes to the globals, and every intermediate of its lowering is reclaimed (cocolog reclaims on backtracking and by nothing else)
+%% the phases named under the C++ trace, so a run killed for its memory says which pass it was in
+ir_cpp_trace(T) :- ( catch(nb_getval('$cpp_trace', yes), _, fail) -> ir_mem(M), write(T-M), nl, flush_output ; true ).
+ir_mem(kb(G, S)) :- ( catch(( statistics(globalused, G0), statistics(store_used, S0) ), _, fail) -> G is G0 // 1024, S is S0 // 1024 ; G = 0, S = 0 ).   % cocolog 1.2.13's honest instrument (the process's RSS reads low on Darwin after a remap)
 %% an error out of an item carries the ITEM with it, so a raw type_error says which one raised it
 ir_item_error(I, error(not_lowered(X), Y)) :- !, ( catch(nb_getval('$cpp_trace', yes), _, fail) -> write(item_failed(X, I)), nl, flush_output ; true ), throw(error(not_lowered(X), Y)).   % under the C++ trace, the whole item: which local, which cast carried the type it could not take
 ir_item_error(I, E) :- ir_item_name(I, W), ir_fail(item(W, raised(E))).
@@ -983,7 +990,7 @@ ir_item(method(_, _, _, N, _, _, _)) :- !, ir_fail(method(N)).
 ir_item(function(_, _, _, Name, _, _, none)) :- atom(Name), !.                 % a PROTOTYPE: nothing to define, and its `declare' line comes from the externals a call names (declval and kin, declared and never defined)
 ir_item(function(_, Sto, Ret, Name, Params, Var, Body)) :- !,
     ir_function(Sto, Ret, Name, Params, Var, Body, Text),
-    nb_getval('$ir_fdefs', Fs), nb_setval('$ir_fdefs', [Text|Fs]),
+    ir_add_fdef(Text),
     nb_getval('$ir_defined', Ds), nb_setval('$ir_defined', [Name|Ds]).
 ir_item(declaration(_, Sto, _, Vs)) :- !, ir_globals(Vs, Sto).
 ir_item(extern_c(_, Is)) :- !, ir_items(Is).                              % C++ (M6): C linkage is what every name has
@@ -1143,10 +1150,15 @@ ir_assemble(IR) :-
     nb_getval('$ir_structs', Ss), ir_struct_defs(Ss, SDefs),
     nb_getval('$ir_strings', Strs), reverse(Strs, Strings),
     nb_getval('$ir_gdefs', Gs0), reverse(Gs0, Gs),
-    nb_getval('$ir_fdefs', Fs0), reverse(Fs0, Fs),
+    nb_getval('$ir_fdefs', NF), ir_fdef_texts(1, NF, Fs),
     nb_getval('$ir_externs', Es), nb_getval('$ir_defined', Ds), ir_declares(Es, Ds, Decls),
     append(['; cicili-lang', ''|SDefs], Strings, L1), append(L1, Gs, L2), append(L2, [''|Fs], L3), append(L3, Decls, L4),
     ir_join(L4, '\n', IR).
+%% a function's text under its own key: `nb_getval/2' copies what it answers, and a list of every function's text
+%% so far, read and written once per function, was quadratic over libc++'s six hundred items
+ir_add_fdef(Text) :- nb_getval('$ir_fdefs', N), N1 is N + 1, nb_setval('$ir_fdefs', N1), atomic_list_concat(['$ir_fdef:', N1], K), nb_setval(K, Text).
+ir_fdef_texts(I, N, []) :- I > N, !.
+ir_fdef_texts(I, N, [T|Ts]) :- atomic_list_concat(['$ir_fdef:', I], K), nb_getval(K, T), I1 is I + 1, ir_fdef_texts(I1, N, Ts).
 ir_struct_defs([], []).
 ir_struct_defs([_-pending|T], D) :- !, ir_struct_defs(T, D).
 ir_struct_defs([_-Def|T], [Def|D]) :- ir_struct_defs(T, D).
