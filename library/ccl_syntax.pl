@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(57).
+ccl_reader_version(59).   % 58: a member template's name noted before its class's members are read; 59: a method's ref-qualifier kept
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1064,7 +1064,44 @@ ccl_base_virtual(none) --> [].
 ccl_bases(Env, [base(A1, Q)|Bs]) --> ccl_base_virtual(V1), ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ccl_base_virtual(V2), ccl_qname(Env, type, Q0), ccl_targ_pack(Q0, Q),
     { ( ( V1 == virtual ; V2 == virtual ) -> A1 = virtual(A) ; A1 = A ) },   % a VIRTUAL base is marked, `virtual(Access)': libc++'s basic_ostream shares its basic_ios so, and the desugaring lays it out as the ABI does
     ( ccl_p(','), !, ccl_bases(Env, Bs) ; { Bs = [] } ).
-ccl_class_members(Env, N, Ms) --> { ccl_class_push(N) }, ( ccl_members(Env, Ms), { ccl_class_pop }, ! ; { ccl_class_pop }, { fail } ).
+ccl_class_members(Env, N, Ms) --> { ccl_class_push(N) }, ccl_member_templates_ahead, ( ccl_members(Env, Ms), { ccl_class_pop }, ! ; { ccl_class_pop }, { fail } ).
+%% A MEMBER TEMPLATE IS A TEMPLATE THROUGHOUT ITS CLASS'S BODY ([class.mem]: a member function's body is a
+%% complete-class context), so its name is noted BEFORE the members are read, by a scan of the body's tokens at
+%% the class's own depth: `template < ... >' skipped to its close, then the identifier before the first `(' at
+%% angle depth 0 (the declarator-id; an `operator' or a `;' first is no function). libc++ writes `__rehash<true>(__n)'
+%% at line 906 of its hash table and declares `template <bool> void __rehash(size_type)' at line 1010, and read in
+%% order the call was the comparison `(__rehash < true) > (__n)'.
+ccl_member_templates_ahead(S, S) :- ( S = [tok(p, '{', _)|R] -> ccl_scan_mts(R, 1) ; ccl_scan_mts(S, 1) ).
+ccl_scan_mts([], _) :- !.
+ccl_scan_mts(_, 0) :- !.
+ccl_scan_mts([tok(p, '{', _)|Ts], D) :- !, D1 is D + 1, ccl_scan_mts(Ts, D1).
+ccl_scan_mts([tok(p, '}', _)|Ts], D) :- !, D1 is D - 1, ccl_scan_mts(Ts, D1).
+ccl_scan_mts([tok(kw, template, _), tok(p, '<', _)|Ts], 1) :- !,
+    ( ccl_scan_close(Ts, 0, Rest), ccl_scan_did(Rest, 0, none, N) -> ccl_note_template(N) ; true ), ccl_scan_mts(Ts, 1).
+ccl_scan_mts([_|Ts], D) :- ccl_scan_mts(Ts, D).
+ccl_scan_close([tok(p, '>', _)|Ts], 0, Ts) :- !.
+ccl_scan_close([tok(p, '<', _)|Ts], D, R) :- !, D1 is D + 1, ccl_scan_close(Ts, D1, R).
+ccl_scan_close([tok(p, '>', _)|Ts], D, R) :- !, D1 is D - 1, ccl_scan_close(Ts, D1, R).
+ccl_scan_close([tok(p, '>>', _)|Ts], 1, Ts) :- !.
+ccl_scan_close([tok(p, '>>', _)|Ts], D, R) :- !, D1 is D - 2, ccl_scan_close(Ts, D1, R).
+ccl_scan_close([_|Ts], D, R) :- ccl_scan_close(Ts, D, R).
+ccl_scan_did([tok(p, '(', _)|Ts], 0, tok(_, W, _), N) :- ccl_scan_group_word(W), !, ccl_scan_parens(Ts, 0, Rest), ccl_scan_did(Rest, 0, none, N).   % `__attribute__((...))', `alignas(...)', `decltype(...)': a group, not the declarator; libc++ writes three attributes before every member's type
+ccl_scan_did([tok(p, '[', _), tok(p, '[', _)|Ts], D, _, N) :- !, ccl_scan_attr(Ts, Rest), ccl_scan_did(Rest, D, none, N).   % `[[...]]'
+ccl_scan_did([tok(p, '(', _)|_], 0, tok(id, N, _), N) :- !.
+ccl_scan_did([tok(p, '(', _)|_], 0, _, _) :- !, fail.
+ccl_scan_did([tok(p, P, _)|_], 0, _, _) :- memberchk(P, [';', '{', '}']), !, fail.
+ccl_scan_did([tok(kw, K, _)|_], _, _, _) :- memberchk(K, [operator, template]), !, fail.
+ccl_scan_did([T|Ts], D, _, N) :- T = tok(p, '<', _), !, D1 is D + 1, ccl_scan_did(Ts, D1, T, N).
+ccl_scan_did([T|Ts], D, _, N) :- T = tok(p, '>', _), !, D1 is max(0, D - 1), ccl_scan_did(Ts, D1, T, N).
+ccl_scan_did([T|Ts], D, _, N) :- T = tok(p, '>>', _), !, D1 is max(0, D - 2), ccl_scan_did(Ts, D1, T, N).
+ccl_scan_did([T|Ts], D, _, N) :- ccl_scan_did(Ts, D, T, N).
+ccl_scan_group_word(W) :- memberchk(W, ['__attribute__', alignas, decltype, noexcept, '__declspec', sizeof, typeof, '__typeof__', alignof, '__alignof__', static_assert, requires]).
+ccl_scan_parens([tok(p, ')', _)|Ts], 0, Ts) :- !.
+ccl_scan_parens([tok(p, '(', _)|Ts], D, R) :- !, D1 is D + 1, ccl_scan_parens(Ts, D1, R).
+ccl_scan_parens([tok(p, ')', _)|Ts], D, R) :- !, D1 is D - 1, ccl_scan_parens(Ts, D1, R).
+ccl_scan_parens([_|Ts], D, R) :- ccl_scan_parens(Ts, D, R).
+ccl_scan_attr([tok(p, ']', _), tok(p, ']', _)|Ts], Ts) :- !.
+ccl_scan_attr([_|Ts], R) :- ccl_scan_attr(Ts, R).
 ccl_class_push(N) :- nb_getval('$ccl_class', S), nb_setval('$ccl_class', [N|S]).
 ccl_class_pop :- nb_getval('$ccl_class', [_|S]), nb_setval('$ccl_class', S).
 %% the class a constructor is known by: its BARE name, through a template-id and through the qualified name an
@@ -1117,6 +1154,8 @@ ccl_member_prefix([K|Qs]) --> ccl_kw(K), { memberchk(K, [virtual, static, explic
 ccl_member_prefix(Qs) --> ccl_gnu_attr, !, ccl_member_prefix(Qs).                           % an attribute among the words
 ccl_member_prefix([]) --> [].
 ccl_method_quals([const|Qs]) --> ccl_kw(const), !, ccl_method_quals(Qs).
+ccl_method_quals([refq(lvalue)|Qs]) --> ccl_p('&'), !, ccl_method_quals(Qs).      % the REF-QUALIFIERS ([dcl.fct]/6): `T &get() &', `T &&get() &&' -- dropped, libc++'s optional storage had four `__get' overloads on one name
+ccl_method_quals([refq(rvalue)|Qs]) --> ccl_p('&&'), !, ccl_method_quals(Qs).
 ccl_method_quals(Qs) --> ccl_kw(volatile), !, ccl_method_quals(Qs).
 ccl_method_quals([override|Qs]) --> ccl_id(override), !, ccl_method_quals(Qs).
 ccl_method_quals([final|Qs]) --> ccl_id(final), !, ccl_method_quals(Qs).

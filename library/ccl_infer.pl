@@ -227,7 +227,10 @@ ccl_type_of(compound_lit(T, _), T) :- !.
 ccl_type_of(assign(_, L, _), T) :- !, ccl_type_of(L, T).
 ccl_type_of(comma(_, B), T) :- !, ccl_type_of(B, T).
 ccl_type_of(cond(_, A, B), T) :- !, ccl_type_of(A, AT), ccl_type_of(B, BT),
-    ( ccl_is_arith(AT), ccl_is_arith(BT) -> ccl_usual(AT, BT, T) ; AT \== unknown -> T = AT ; T = BT ).
+    (   ccl_is_arith(AT), ccl_is_arith(BT) -> ccl_usual(AT, BT, T)
+    ;   A == nullptr -> T = BT          % a null pointer constant takes the OTHER arm's type ([expr.cond]), unknown included: typed `void *' by its
+    ;   B == nullptr -> T = AT          % nullptr while the other arm was still unknown, `__nbc > 0 ? allocate(...) : nullptr' chose unique_ptr's `reset(nullptr_t)' and dropped the buckets
+    ;   AT \== unknown -> T = AT ; T = BT ).
 ccl_type_of(stmt_expr(block(Is)), T) :- !,            % its declarations are in scope for its last expression
     ccl_scope_push, ccl_note_items(Is),
     ( append(_, [expr(_, E)], Is) -> ccl_type_of(E, T) ; T = base([], [void]) ),

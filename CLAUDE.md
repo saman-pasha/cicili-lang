@@ -52,11 +52,12 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map> and <set> flattened and read WHOLE, under a fresh HOME;
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set> and <optional> flattened and read WHOLE, under a fresh HOME;
                          test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
                          the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
                          containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap,
-                         stdset, stdsetstring, stdset2, stdset3; a fixture's input is NAME.stdin
+                         stdset, stdsetstring, stdset2, stdset3, stdunorderedmap, stdunorderedmapstring, stdunorderedmap2,
+                         stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2; a fixture's input is NAME.stdin
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -3173,6 +3174,168 @@ the compile gate's 73 at 213 MB; the driver's 23; the objects' 29; the proof;
 the C++ one 118 checks, 798 s, 1220 MB; the libc++ one 279 s and 1269 MB,
 `<set>` read whole, 426 items); the four set fixtures build in 40 to 90 s at
 630 to 920 MB each.
+
+**M6's forty-ninth step (0.81): THE UNORDERED CONTAINERS, whole.** THE MODULE:
+`test/cpp/run/stdunorderedmap.cpp` (an int map: `operator[]` writing and
+reading, `insert({k, v})`, `find`, `count`, `erase`, `size`, `empty`, a
+range-for, `at`, `+=` through `operator[]`, `bucket_count`, `clear`),
+`stdunorderedmapstring.cpp` (string keys: `operator[]`, `+=` and `++`, `find`
+and `count` with a `const char *`, `erase`, `at` with a string, a range-for),
+`stdunorderedset.cpp` (`unordered_set<int>` from an initializer list, `insert`,
+`count`, `erase`, a range-for, `find`; `unordered_set<std::string>`: `insert`,
+`count`, `erase`, `empty`, `clear`), `stdunorderedmap2.cpp` (a map from an
+initializer list, COPIED, `==`, `emplace`, `insert` returning its pair,
+`erase(iterator)` returning the next, `insert(first, last)` from a vector of
+pairs, `reserve`, `bucket_count`, `load_factor`, `rehash`, `unordered_multimap`
+with `equal_range`, `clear`) and `stdunorderedset2.cpp` (`unordered_multiset`:
+an initializer list, `insert`, `emplace`, `count`, `equal_range`, `erase`; a set
+of strings copied and compared, `erase(find(...))`, `reserve`) match clang++
+line for line, and `<unordered_map>` and `<unordered_set>` are read WHOLE in
+the libc++ gate. THE FORMS, each named: (1) THE LOCALS DECLARED ON THE WAY TO
+THE FIRST RETURN are in scope when a lambda's or an `auto' method's result is
+deduced (`cpp_declare_before`, in `cpp_lambda_ret` and `cpp_method_ret`): the
+hash table's emplace lambda writes `pair<iterator, bool> __r = ...; if (...)
+...; return __r;', and with the parameters alone declared `__r' had no type
+(`lambda_result_type'); every declaration before the return -- in its block,
+the blocks around it, a for's own -- is desugared for its declarations only,
+and the refusal behind such a failure is traced (`lambda_ret_refused'); (2)
+THE MATH BUILTINS ARE LIBM'S FUNCTIONS (`cpp_builtin_call` through
+`cpp_math_fn`, a table of stems and their arities): libc++'s `<cmath>` wrappers
+are `inline float ceil(float __x) { return __builtin_ceilf(__x); }', which
+the rehash calls, the prototype is emitted once where no header declared it
+(`cpp_math_declared`, as a mangled declaration is), and the long double form
+goes to the double one (a long double is lowered as a double here); (3) A
+MEMBER TEMPLATE IS A TEMPLATE THROUGHOUT ITS CLASS'S BODY ([class.mem]: a
+member function's body is a complete-class context) -- THE READER (version
+58, `ccl_member_templates_ahead`) scans the class body's tokens for `template
+< ... >' declarators before the members are read, attributes and `[[...]]'
+skipped, and notes each name: libc++ calls `__rehash<true>(__n)' a hundred
+lines before it declares `template <bool> void __rehash(size_type)', and read
+in order the call was the comparison `(__rehash < true) > (__n)'; (4) `void()'
+IS THE VOID VALUE (the reader's functional cast of nothing, `cpp_expr`):
+`for (__pp = __cp, void(), __cp = ...)' keeps an overloaded comma out, and
+desugared to nothing the lowering met a missing operand; (5) A CONDITIONAL
+WITH A `nullptr' ARM TAKES THE OTHER ARM'S TYPE ([expr.cond],
+`ccl_type_of(cond)`), unknown included: typed `void *' by its nullptr while
+the other arm was still unknown, `__nbc > 0 ? allocate(...) : nullptr' chose
+the array unique_ptr's `reset(nullptr_t)' and the buckets were never kept; (6)
+THE ARGUMENTS ARE TYPED IN THE CALLER'S WORDS (`cpp_as_callee` at every
+overload door, `cpp_caller_ctx` in `cpp_arg_type`): a candidate's parameters
+are read in the callee's class (0.65's rule) and an argument that must be
+DESUGARED to be typed is read in the caller's -- `__pointer_alloc_traits::
+allocate(__npa, __nbc)' names the hash table's own alias, which resolved to
+nothing in unique_ptr's words; (7) `nullptr_t' TAKES A NULL POINTER CONSTANT
+AND NOTHING ELSE ([conv.ptr]; `cpp_nullptr_param` in `cpp_arg_fit` and
+`cpp_args_no_clash`): resolved to `void *' it took every pointer; (8) A MEMBER
+CLASS TEMPLATE, WITH ITS PARTIAL SPECIALIZATIONS (`cpp_nested_template_put`,
+`'$cpp_nested_tmpl'`, `cpp_nested_template`; refused as
+`template_without_body' since the fourth step): `template <class _From> struct
+_CheckArrayPointerConversion : is_same<_From, pointer> {};' and its
+`<_FromElem *>' specialization guard the array unique_ptr's `reset(_Pp)'; it is
+a class template under the enclosing class's name (`C.N', as a nested class
+is named), its specializations with it, the bare name resolves in the class,
+its nested classes and its bases AT THE INSTANTIATION DOOR ITSELF
+(`cpp_instantiate_type`, since the scope walk of `_CheckArrayPointerConversion<
+_Pp>::value' asks there and not through `cpp_type`), and an instance is
+ENCLOSED by the class, so `pointer' and `element_type' are in scope in its
+members; (9) A MEMBER OF A CONST OBJECT IS CONST ([dcl.type.cv],
+`cpp_obj_const`): `__table_.begin()' inside `unordered_map::begin() const' is
+the const begin, where the member's own type -- no const of its own -- chose
+the non-const one and a `__hash_iterator' was stored as a const one; a
+REFERENCE member keeps its referent's own constness (`cpp_member_own_const`);
+(10) THE OBJECT'S CONSTNESS ORDERS THE MEMBER TEMPLATES too (`cpp_prefer_const`,
+0.79's rule for the plain overloads): libc++ writes `template <class _Key>
+iterator find(const _Key &)' beside its const twin, and `find' inside
+`unordered_map::find(...) const' took the non-const one first. The unordered
+map's `__try_key_extraction', its `__hash_value_type', the bucket list as an
+array `unique_ptr' with its deallocator, `__constrain_hash', the rehash
+loop and `std::hash<std::string>' (libc++'s murmur, compiled from the header)
+all went through the rules already there. Seven gates GREEN (the reader's 94
+checks, 37 s and 277 MB cold after the version bump; the compile gate's 73;
+the driver's 23; the objects' 29; the proof; the C++ one 123 checks, 1111 s,
+1258 MB; the libc++ one 357 s and 1344 MB, `<unordered_map>` 322 items and
+`<unordered_set>` 318 read whole); the five fixtures build in 50 to 95 s at
+620 to 1200 MB each, the string-keyed ones the heaviest. NOT DONE: `std::hash' of
+a program's own type (a specialization the program writes), `extract' and
+node handles (`<optional>', as `<set>''s), the bucket interface (`begin(n)',
+`bucket_size', `bucket'), `max_load_factor' set, C++20's `contains'.
+
+**M6's fiftieth step (0.82): `std::optional`, whole.** THE MODULE:
+`test/cpp/run/stdoptional.cpp` (an `optional<int>`: empty and engaged,
+`has_value`, `*`, `value`, `value_or`, assigned a value, `reset`, returned
+from a function as a value and as `std::nullopt`, `emplace`, compared with a
+value, COPIED, `==` and `<` on two optionals, tested in an `if`),
+`stdoptionalstring.cpp` (an `optional<std::string>`: a long string engaged,
+`->`, `value_or` with a `const char *`, assigned a literal, `reset`
+destroying the string, returned, `emplace("...")`, copied and compared,
+`std::make_optional`, `swap`) and `stdoptional2.cpp` (an optional of the
+program's own struct returned by `return P{n, n * 2}`, of a `double`, of a
+`pair` from `make_pair`, assigned `nullopt`, compared with `nullopt`,
+assigned an optional temporary, MOVED from, `>` with a value) match clang++
+line for line, and `<optional>` is read WHOLE in the libc++ gate. THE FORMS,
+each named: (1) A MEMBER ALIAS TEMPLATE NAMED BARE IN ITS CLASS resolves
+(`cpp_nested_alias` at the instantiation door, as a member class template
+does since 0.81): optional's `_CheckOptionalArgsCtor<_Up>::template
+__enable_implicit<_Up>()' guards every converting constructor, and 0.47 had
+resolved such an alias only through `C::template _Select<A, B>'; (2) THE
+IMPLICIT COPY AND MOVE CONSTRUCTORS ARE MADE ON DEMAND, memberwise
+([class.copy.ctor]; `cpp_implicit_copy_ctor` in the constructor road,
+`'$cpp_implicit_copy'`, the marker of 0.80's `= default' synthesis, so they
+count as no user-written special member): optional's `__optional_iterator_base'
+inherits its base's constructors, which brings no copy constructor, and the
+memberwise copy of `optional' asked its base for one; (3) A CONSTRUCTOR
+INITIALIZER NAMING THE BASE THROUGH AN ALIAS (`cpp_alias_base_init`): `using
+__base = __optional_iterator_base<_Tp>; ... : __base(in_place, ...)' -- dropped,
+the base was default-constructed and the optional never engaged; (4)
+INHERITING CONSTRUCTORS TAKE THE BASE'S CONSTRUCTOR TEMPLATES TOO
+(`cpp_inherit_ctors`, `cpp_named_params_t`; [namespace.udecl]), a pack
+forwarded as an expansion: the storage chain inherits `template <class...
+_Args> __optional_destruct_base(in_place_t, _Args &&...)' level by level, and
+`using __base::__base;' through the class's own alias (`cpp_alias_names_base`);
+(5) AN ANONYMOUS UNION'S MEMBER INITIALIZED BY NAME (`cpp_member_inits`,
+`cpp_union_member_init`): `union { char __null_state_; value_type __val_; };
+... : __val_(std::forward<_Args>(__args)...), __engaged_(true)' named no
+member of the class itself, the initializer was dropped and the value read
+back was garbage; (6) A HEADER'S INLINE GLOBAL OF AN EMPTY CLASS IS ITS ZERO
+BYTES, its constructor not run (`cpp_lazy_inline_var`): `inline constexpr
+nullopt_t nullopt{nullopt_t::__secret_tag{}, nullopt_t::__secret_tag{}}' is a
+tag with nothing to construct, and this compiler runs no dynamic
+initialization; (7) A CAST TO A CLASS IS ITS CONVERTING CONSTRUCTOR
+([expr.static.cast]/4; `cpp_cast_to`): `value_or' returns
+`static_cast<value_type>(std::forward<_Up>(__v))', a string from a `const char
+*', which the lowering met as a pointer cast to a struct; (8) A RETURN OF A
+CONDITIONAL OVER CLASS ARMS RETURNS EACH ARM ON ITS OWN ([class.copy.elision]:
+the chosen arm's prvalue IS the result object; `cpp_stmt_(return)`): `return
+has_value() ? __get() : static_cast<value_type>(...)' as one value copied the
+lvalue arm BITWISE and destroyed the temporary arm under the caller; (9) A
+FORWARDING REFERENCE'S ARGUMENT IS JUDGED ON ITS DESUGARED FORM
+(`cpp_lvalue_deep` in `cpp_deduce_one` and the pack road of `cpp_deduce_args`):
+`std::forward<_That>(__opt).__get()' is a member call whose instance returns
+`const value_type &', read raw it was no lvalue, `_Args' deduced the plain
+string and the copy of an optional MOVED the source's string out (its size read
+0 after the copy); (10) REF-QUALIFIED MEMBER FUNCTIONS ([dcl.fct]/6,
+[over.match.funcs]/5): the reader keeps `&' and `&&' after the parameters
+(`refq(lvalue | rvalue)' in the qualifiers, `ccl_method_quals`, reader version
+59), the name carries them (`.r', `.rr' after the `.c', `cpp_mangle_q`), and
+the overload is chosen by the OBJECT'S VALUE CATEGORY (`cpp_obj_cat`,
+`cpp_ref_bonus` in `cpp_best_q`, `'$cpp_obj_cat'` beside the constness; a
+member template alike in `cpp_prefer_const`): optional's storage writes
+`__get() &', `const &', `&&' and `const &&', and on one name the last
+declared won -- `const &&', whose result no lvalue test took for one. Reader
+version 59; the module rebuilt as 0.82. Seven gates GREEN (the reader's 94
+checks, 39 s and 224 MB cold; the compile gate's 73; the driver's 23; the
+objects' 29; the proof; the C++ one 126 checks, 1127 s, 1013 MB; the libc++
+one 366 s and 1356 MB, `<optional>` read whole, 222 items); the three optional
+fixtures build in 12 to 24 s at 240 to 460 MB. NOT DONE: node handles
+(`set::extract', `map::extract', `insert(node_type &&)'): with `<optional>`
+through, the probe builds `<set>`, `<map>` and `<string>` together in 189 s
+at 1.26 GB and stops at `no_constructor(pair<string, int>, 1)' inside
+`std::__construct_at' -- the map's node handle placing its value with `_Args'
+deduced as `const pair *', a POINTER where the value was meant (the trace:
+`call_types(__construct_at, [__p - pair *, forward<pair *>(__args$1) - const
+pair *])') -- which is the next thing; `optional<T &>' (C++26), `and_then',
+`transform', `or_else' (C++23), `std::hash<optional>', `bad_optional_access'
+caught (exceptions are off: it aborts with its message).
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

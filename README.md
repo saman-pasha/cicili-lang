@@ -757,6 +757,34 @@ what runs today.
   and the compile's memory measured honestly and cut tenfold: every emission
   road, every lowered item and every checked function inside `\+ \+`. Not
   yet: node handles (`extract`), which want `<optional>`.
+* **The forty-ninth step DONE: the unordered containers, whole.** An int
+  `unordered_map`'s surface, a string-keyed one, `unordered_set` of ints and
+  of strings, a map copied and compared, `emplace`, `insert` with its pair,
+  `erase(iterator)`, `insert(first, last)`, `reserve`, `load_factor`,
+  `rehash`, `unordered_multimap` and `unordered_multiset` with `equal_range`
+  match clang++ line for line, and `<unordered_map>` and `<unordered_set>`
+  read whole. Ten forms named in CLAUDE.md: a member template known
+  throughout its class's body (the reader, version 58), member class
+  templates with their partial specializations, the math builtins as libm's
+  functions, `void()`, a conditional with a `nullptr` arm, arguments typed in
+  the caller's words, `nullptr_t` taking only a null constant, a member of a
+  const object being const, and the object's constness ordering member
+  templates. Not yet: `std::hash` of a program's own type, node handles, the
+  bucket interface.
+* **The fiftieth step DONE: `std::optional`, whole.** An `optional<int>`'s
+  surface (`has_value`, `*`, `value`, `value_or`, assignment, `reset`,
+  `emplace`, `nullopt`, returned from a function, copied and compared), an
+  `optional<std::string>` (a long string engaged, `->`, `make_optional`,
+  `swap`, copied and compared) and optionals of a struct, a double and a
+  pair match clang++ line for line, and `<optional>` reads whole. Ten forms
+  named in CLAUDE.md: ref-qualified member functions (the reader keeps `&`
+  and `&&`, version 59, the object's value category chooses), the implicit
+  copy and move constructors made memberwise on demand, inherited
+  constructor templates, a base named through an alias in an initializer, an
+  anonymous union's member initialized by name, a cast to a class through
+  its converting constructor, a return of a conditional over class arms, a
+  forwarding reference judged on the desugared argument, an inline tag
+  global. Not yet: node handles, C++23's `and_then` family.
 
 ## The `cicili` command
 
@@ -891,7 +919,7 @@ label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
 UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
 the extended floating-point suffixes, `[[assume]]` told to LLVM.
 **C++26**: its macros, so libc++ takes its paths, its forms still to
-come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>` and `<set>`
+come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>` and `<optional>`
 whole, the desugaring registers a flattened header's items by name
 as a program asks for them, and `std::vector<int>` gets several
 classes deep before the next forms stop it -- under an instantiation
