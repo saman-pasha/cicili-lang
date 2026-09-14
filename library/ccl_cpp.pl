@@ -1003,6 +1003,7 @@ cpp_class_of_type_(base(_, [typedef(C)]), C) :- cpp_class(C, _), !.
 cpp_class_of_type_(base(_, [typedef(X)]), C) :- cpp_template_id(X, N, Args), !, cpp_targ_values(Args, Args1), cpp_instantiate_type(N, Args1, T), cpp_class_of_type(T, C).   % a template-id the table still holds raw
 cpp_class_of_type_(base(_, [typedef(scoped(_, C))]), C) :- cpp_class(C, _), !.
 cpp_pointee_class(T, C) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, E) ; T1 = arr(_, E) ), cpp_class_of_type(E, C).
+cpp_class_of_type_of(move(X), C) :- !, cpp_class_of_type_of(X, C).
 cpp_class_of_type_of(X, C) :- ccl_type_of(X, T), T \== unknown, ccl_unref(T, T1), cpp_class_of_type(T1, C).   % the class an EXPRESSION has: through a reference, since `declval<C &>()' names C's members (the TYPE-level test keeps its reference, where the value category depends on it)
 cpp_pointee_class_of(X, C) :- ccl_type_of(X, T), T \== unknown, cpp_pointee_class(T, C).
 %% the members: data (own and inherited, with the hops through '$base'), the statics, methods, constructors, the destructor
@@ -1069,6 +1070,11 @@ cpp_implicit_copy_ctor(C, Kind, Name) :- cpp_class(C, cls(Base, _, _, _, Default
 cpp_extra_method(C, M, Args, Name, Hops) :- '$cpp_extra'(C, Es), member(E, Es), cpp_method(E, M, Args, Name, Hops), !.   % an EMPTY base has no sub-object: the object's own address is the base's
 %% an abstract class (a pure virtual method no class of the chain overrides) is declared, never constructed
 cpp_not_abstract(C) :- ( cpp_class(C, cls(_, _, _, _, _, Slots)), member(slot(M, K, _, _, _), Slots), \+ cpp_slot_impl(C, M, K, _) -> cpp_refuse(0, pure_virtual(C)) ; true ).
+cpp_ctor(C, [E0], Name) :- ( E0 = move(E) -> true ; E = E0 ), cpp_class_of_type_of(E, C), !,   % THE CLASS'S OWN VALUE takes its COPY or MOVE constructor, written or implicit, and never another constructor taking a class ([over.best.ics]): `ostreambuf_iterator(ostream_type &)' had taken an ostreambuf_iterator in the copy road's aggregate, and the stream buffer's pointer was the iterator's bytes
+    cpp_not_abstract(C),
+    (   cpp_class(C, cls(_, _, Ms, _, _, _)), findall(Ps, ( member(ctor(_, _, Ps, _, _), Ms), cpp_copy_or_move(C, Ps) ), Cands), Cands \== []
+    ->  cpp_as_callee(C, cpp_pick(Cands, [E0], Ps)), cpp_mangle(C, C, Ps, Name), cpp_use_member(C, Name)
+    ;   ( E0 = move(_) -> Kind = move ; Kind = copy ), cpp_implicit_copy_ctor(C, Kind, Name) ).
 cpp_ctor(C, Args, Name) :-
     cpp_not_abstract(C), cpp_class(C, cls(_, _, Ms, _, _, _)), length(Args, N),
     cpp_as_callee(C, findall(Ps, ( member(ctor(_, _, Ps, _, _), Ms), cpp_arity_fits(Ps, N), cpp_args_fit(Ps, Args) ), Cands)), Cands \== [], !,   % in its own class, as above
@@ -1487,7 +1493,11 @@ cpp_norm_inits([I|Is], [I|Js]) :- cpp_norm_inits(Is, Js).
 cpp_arg_type(move(X), T) :- !, cpp_arg_type(X, T).                       % THE MOVE FORMS FIRST: <utility> comes in with
 cpp_arg_type(call(scoped(_, move), [X]), T) :- !, cpp_arg_type(X, T).   % every container, so `std::move' is a declared template whose RAW result type would otherwise win
 cpp_arg_type(A, tmplfn(F)) :- cpp_fn_template_ref(A, F), !.               % A FUNCTION TEMPLATE'S NAME has no type of its own: a target type gives it one (cpp_deduce_target)
-cpp_arg_type(A, T) :- ccl_type_of(A, T0), T0 \== unknown, !, T = T0.
+cpp_arg_type(A, T) :- ccl_type_of(A, T0), T0 \== unknown, \+ cpp_raw_type(T0), !, T = T0.   % ... but never a type that names a template's own parameter: a call of a FUNCTION TEMPLATE is typed by the inference from the raw signature the summary declares it under (0.49), `std::exchange(__other.__alloc_, nullopt)' as `_T1', and optional's `optional(_Up &&)' then deduced `_Up' as that free name (an allocator built from a `_T1' in the node handle's move constructor); the desugaring below instantiates the call and types it
+cpp_raw_type(base(_, [typedef(N)])) :- atom(N), \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _), \+ cpp_class(N, _), \+ cpp_template(N, _, _), !.
+cpp_raw_type(ref(_, T)) :- cpp_raw_type(T).
+cpp_raw_type(rref(_, T)) :- cpp_raw_type(T).
+cpp_raw_type(ptr(_, T)) :- cpp_raw_type(T).
 cpp_arg_type(A, T) :- cpp_caller_ctx(Ctx, Class), catch(cpp_in_class(Class, cpp_expr(Ctx, A, A1)), _, fail), A1 \== A, ccl_type_of(A1, T0), T0 \== unknown, T = T0.   % in the CALLER's words (cpp_as_callee)
 cpp_init_arg_class(E, C) :- cpp_arg_type(E, T), ccl_unref(T, T1), cpp_class_of_type(T1, C), !.
 cpp_init_arg_class(E, C) :- catch(cpp_expr(none, E, E1), _, fail), E1 \== E, cpp_class_of_type_of(E1, C).   % a type that is KNOWN but names no class -- a library template's raw result -- still leaves the DESUGARED form to ask
@@ -1501,6 +1511,9 @@ cpp_member_inits([member(_, '$vptr', _)|Ds], Inits, Defaults, L, Pre, Body) :- !
 %% __val_; }; ... : __val_(std::forward<_Args>(__args)...), __engaged_(true)', and `__val_' named no member of the
 %% class itself, so the initializer was dropped and the value read back was garbage. The place is reached through
 %% the member the union became (cpp_data_member's hop); a class constructs, a scalar is assigned, `m()' zeroes.
+cpp_member_inits([member(MT, A, _)|Ds], Inits, Defaults, L, [expr(L, call(id(memcpy), [addr(arrow(this, A)), addr(Src), sizeof_type(MT)]))|Pre], Body) :-
+    MT = base(_, [union(anon, _)]), memberchk(init(A, [Src]), Inits), !,   % the memberwise copy of an ANONYMOUS UNION is its bytes (the union of optional's storage, copied by the implicit copy constructor): as an assignment the lowering converted the union's bytes as a pointer
+    cpp_member_inits(Ds, Inits, Defaults, L, Pre, Body).
 cpp_member_inits([member(base(_, [union(anon, Ns)]), A, _)|Ds], Inits, Defaults, L, Pre, Body) :-
     member(member(MT, N, _), Ns), memberchk(init(N, Args), Inits), !,
     cpp_union_member_init(L, member(arrow(this, A), N), MT, Args, Pre, Pre1), cpp_member_inits(Ds, Inits, Defaults, L, Pre1, Body).
@@ -1707,6 +1720,9 @@ cpp_lvalue(index(_, _)).
 cpp_stmt_(Ctx, return(L, init(Items)), return(L, E2)) :- nb_getval('$cpp_ret', Ret), Ret \== none, !,
     findall(V, member(item(_, V), Items), Vs0), cpp_exprs(Ctx, Vs0, Vs),
     (   cpp_class_of_type(Ret, C), cpp_has_ctors(C) -> cpp_temporary(Ret, C, Vs, E0)
+    ;   cpp_class_of_type(Ret, C), cpp_class(C, cls(_, Data, _, _, _, _)), member(member(MT, _, _), Data), cpp_class_of_type(MT, MC), cpp_has_ctors(MC)   % AN AGGREGATE WHOSE MEMBER CONSTRUCTS is built member by member (cpp_aggregate_inits, 0.41's road for a local): the tree's `return _InsertReturnType{end(), false, _NodeHandle()}' put a `__tree_iterator' into a `__tree_const_iterator' member bitwise, where its converting constructor was meant
+    ->  cpp_type(Ret, T), ccl_gensym('$ret', Tmp), ccl_declare(Tmp, T), cpp_aggregate_inits(Data, Vs, id(Tmp), L, Inits),
+        append([declaration(L, none, T, [var(Tmp, T, none)])|Inits], [expr(L, id(Tmp))], Ss), E0 = stmt_expr(block(Ss))
     ;   findall(item([], V), member(V, Vs), Items1), E0 = compound_lit(Ret, init(Items1)) ),
     cpp_temp_elide(E0, E2).
 cpp_stmt_(Ctx, return(L, cond(C, A, B)), Out) :- nb_getval('$cpp_ret', Ret), Ret \== none, cpp_class_of_type(Ret, _), !,   % A RETURN OF A CONDITIONAL OVER CLASS ARMS returns each arm on its own ([expr.cond], [class.copy.elision]: the chosen arm's prvalue IS the result object): optional's `value_or' is `return has_value() ? __get() : static_cast<value_type>(...)', and as one value the lvalue arm was copied BITWISE and the temporary arm destroyed under the caller
@@ -1714,10 +1730,10 @@ cpp_stmt_(Ctx, return(L, cond(C, A, B)), Out) :- nb_getval('$cpp_ret', Ret), Ret
 cpp_stmt_(Ctx, return(L, E), return(L, E2)) :- !, cpp_expr(Ctx, E, E0), cpp_temp_elide(E0, E1),
     (   nb_getval('$cpp_ret', Ret), Ret \== none, cpp_class_of_type(Ret, C), ccl_type_of(E1, AT), AT \== unknown, \+ cpp_class_of_type_of(E1, C), cpp_converting_ctor(C, E1)   % A VALUE OF ANOTHER TYPE RETURNED converts through the result class's converting constructor, as a call's argument does (0.66): libc++'s `map::find' returns `__tree_.find(__k)', a __tree_iterator where its iterator is a __map_iterator holding one
     ->  cpp_temporary(base([], [typedef(C)]), C, [E1], E2a), cpp_temp_elide(E2a, E2)
-    ;   nb_getval('$cpp_ret', Ret), Ret \== none, cpp_class_of_type(Ret, C), cpp_dtor(C, _), cpp_lvalue(E1)   % by value, of a class with a destructor, an object that is destroyed here
-    ->  (   ( cpp_copy_ctor(C, rref), Arg = move(E1) ; cpp_copy_ctor(C, ref), Arg = E1 )                     % C++'s implicit move out of a local, else its copy
+    ;   nb_getval('$cpp_ret', Ret), Ret \== none, cpp_class_of_type(Ret, C), cpp_dtor(C, _), ( E1 = move(EL), cpp_lvalue(EL) -> true ; cpp_lvalue(E1), EL = E1 )   % by value, of a class with a destructor, an object that is destroyed here (`return std::move(x)' the same, the move kept now)
+    ->  (   ( cpp_copy_ctor(C, rref), Arg = move(EL) ; cpp_copy_ctor(C, ref), Arg = EL )                     % C++'s implicit move out of a local, else its copy
         ->  T = base([], [typedef(C)]), cpp_ctor(C, [Arg], CName), ccl_gensym('$ret', Tmp),
-            E2 = stmt_expr(block([declaration(L, none, T, [var(Tmp, T, none)]), expr(L, call(id(CName), [addr(id(Tmp)), E1])), expr(L, id(Tmp))]))
+            E2 = stmt_expr(block([declaration(L, none, T, [var(Tmp, T, none)]), expr(L, call(id(CName), [addr(id(Tmp)), EL])), expr(L, id(Tmp))]))
         ;   cpp_refuse(L, return_of_a_class_with_destructor(C)) )
     ;   E2 = E1 ).
 cpp_stmt_(Ctx, label(L, N, S), label(L, N, S1)) :- !, cpp_stmt(Ctx, S, S1).
@@ -1861,6 +1877,8 @@ cpp_init_list(ET, Items, stmt_expr(block([declaration(0, none, ET, [var(Arr, arr
 %% an item of another type converts through the element class's converting constructor, as a call's argument does
 %% (0.66): `std::set<std::string> names = {"bob", "amy"}' builds its backing array of strings from literals, and
 %% taken raw the lowering cast a pointer to a string. The temporary dies with the statement, as the array does in C++.
+cpp_il_item(ET, init(Items), E2) :- cpp_class_of_type(ET, C), cpp_has_ctors(C), !,   % a BRACED item of a class with constructors list-initializes a temporary through them ([dcl.init.list]): `std::map<std::string, int> m = {{"a", 1}, {"b", 2}}' builds each `pair<const string, int>' from `{"a", 1}', which as an aggregate of the backing array stored the literal's pointer into the string
+    findall(V, member(item(_, V), Items), Vs), cpp_temporary(ET, C, Vs, E2).
 cpp_il_item(ET, E1, E2) :- cpp_class_of_type(ET, C), ccl_type_of(E1, AT), AT \== unknown, \+ cpp_class_of_type_of(E1, C), cpp_converting_ctor(C, E1), !, cpp_temporary(ET, C, [E1], E2).
 cpp_il_item(_, E, E).
 cpp_il_ctor(C, ET) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(ctor(_, _, [param(PT0, _)|_], _, _), Ms),
@@ -1869,6 +1887,8 @@ cpp_copies_([P|Ps], [A|As], [A1|Bs]) :-
     ( P = param(PT, _) ; P = param(PT, _, _) ), !,
     (   cpp_param_takes_class(PT, C), ccl_type_of(A, AT), AT \== unknown, \+ cpp_class_of_type_of(A, C), cpp_converting_ctor(C, A)   % the argument's type KNOWN and not the parameter's own class: what cannot be typed is never converted
     ->  cpp_temporary(base([], [typedef(C)]), C, [A], A1)                                     % A CONVERTING CONSTRUCTOR at a call: libc++ hands a `__long' where a `__rep' is wanted, and `__rep(__long)' is how a string becomes long
+    ;   cpp_class_of_type(PT, C), cpp_dtor(C, _), A = move(X), cpp_lvalue(X), cpp_copy_ctor(C, _)   % `f(std::move(s))' with `f(string)': the MOVE constructor into the callee's copy, else the copy one over the object; a class with NEITHER (Cicili's own, over own pointers) keeps the lowering's move, which nulls the source's owners
+    ->  ( cpp_copy_ctor(C, rref) -> cpp_move_temp(C, X, A1) ; cpp_copy_temp(C, X, A1) )
     ;   cpp_class_of_type(PT, C), cpp_dtor(C, _), cpp_lvalue(A)
     ->  ( cpp_copy_ctor(C, ref) -> cpp_copy_temp(C, A, A1) ; cpp_refuse(0, class_with_destructor_by_value(C)) )
     ;   cpp_class_of_type(PT, C), cpp_class_of_type_of(A, D), D \== C, cpp_base_hops(D, C, Hops), Hops \== []   % A DERIVED OBJECT WHERE ITS BASE IS TAKEN BY VALUE is SLICED to the base sub-object ([conv.ptr]/[class.copy]): libc++'s `__priority_tag<1>()' handed to the `__priority_tag<0>' fallback of __try_key_extraction_impl
@@ -1896,6 +1916,8 @@ cpp_converting_ctor(C, A) :- '$cpp_mt'(C, ctor, _, ctor(_, Qs, Ps, _, _)), \+ me
     catch(cpp_member_template_ctor(C, [A], _), error(not_lowered(_), _), fail).
 cpp_copy_temp(C, A, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]), expr(0, call(id(CName), [addr(id(Tmp)), A])), expr(0, id(Tmp))]))) :-
     T = base([], [typedef(C)]), cpp_ctor(C, [A], CName), ccl_gensym('$copy', Tmp).
+cpp_move_temp(C, X, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]), expr(0, call(id(CName), [addr(id(Tmp)), X])), expr(0, id(Tmp))]))) :-   % the move constructor chosen over `move(x)', the object itself handed to its reference parameter
+    T = base([], [typedef(C)]), cpp_ctor(C, [move(X)], CName), ccl_gensym('$copy', Tmp).
 
 %% ---- expressions, bottom up ----------------------------------------------------------
 cpp_exprs(_, [], []).
@@ -2006,7 +2028,7 @@ cpp_expr(Ctx, compound_lit(T0, I), compound_lit(T, I1)) :- !, cpp_type(T0, T), c
 cpp_expr(Ctx, delete(X), E) :- !, cpp_expr(Ctx, X, X1), cpp_delete(X1, E).
 cpp_expr(Ctx, ccast(functional, base(Q, [typedef(C)]), X), E) :- cpp_class(C, _), !, cpp_expr(Ctx, X, X1), cpp_temporary(base(Q, [typedef(C)]), C, [X1], E).
 cpp_expr(Ctx, ccast(K, T0, X), ccast(K, T, X2)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1), cpp_cast_to(X1, T, X2).
-cpp_expr(Ctx, move(X), E) :- !, cpp_expr(Ctx, X, X1), ( ccl_type_of(X1, T), T \== unknown, cpp_holds_owners(T) -> E = move(X1) ; E = X1 ).   % move of an int is the int (a template's T)
+cpp_expr(Ctx, move(X), E) :- !, cpp_expr(Ctx, X, X1), ( ccl_type_of(X1, T), T \== unknown, ( cpp_holds_owners(T) ; ccl_unref(T, T1), cpp_class_of_type(T1, _) ) -> E = move(X1) ; E = X1 ).   % move of an int is the int (a template's T); OF A CLASS VALUE IT STAYS ([expr.xvalue]): the value category is what overload resolution reads, and dropped here `t.insert(std::move(nh))' found no `insert(node_type &&)' and took `insert(const value_type &)' through the handle's `operator bool'
 cpp_expr(Ctx, stmt_expr(block(Is)), stmt_expr(block(Js))) :- !, ccl_scope_push, cpp_stmts(Ctx, Is, Js), ccl_scope_pop.
 cpp_expr(Ctx, lambda(Caps, Ps, Ret, Body), E) :- !, cpp_lambda(Ctx, Caps, Ps, Ret, Body, E).
 cpp_expr(_, str(S), str(S)) :- !.
@@ -2243,17 +2265,25 @@ cpp_addressable(index(_, _)).
 cpp_addressable(call(id(F), _)) :- atom(F), ccl_declared(F, fn(R, _, _)), ( R = ref(_, _) ; R = rref(_, _) ), !.   % a call whose result is a REFERENCE names an object: `std::declval<_WithoutKey>()(args...)', the type libc++'s __try_key_extraction returns
 %% a temporary of the class: constructed in a statement expression, its value the last expression
 cpp_temporary(T, C, [A], E1) :- cpp_class_of_type_of(A, D), D \== C, \+ cpp_converting_ctor(C, A), cpp_conv_to(A, T, E1), E1 \== A, !.   % `__self_view(__str)': the class has no constructor taking the argument, and the argument's class CONVERTS to it -- the operator's result is the temporary ([over.match.copy])
+cpp_temporary(T, C, As, stmt_expr(block(Ss))) :- cpp_not_abstract(C), \+ cpp_has_ctors(C), As \== [],   % AN AGGREGATE WHOSE MEMBER CONSTRUCTS is built member by member (cpp_aggregate_inits, 0.41's road for a local): the tree's `_InsertReturnType{end(), false, _NodeHandle()}' put a `__tree_iterator' into a `__tree_const_iterator' member bitwise, where its converting constructor was meant
+    cpp_class(C, cls(_, Data, _, _, _, _)), member(member(MT, _, _), Data), cpp_class_of_type(MT, MC), cpp_has_ctors(MC), !,
+    ccl_gensym('$tmp', Tmp), ccl_declare(Tmp, T), cpp_aggregate_inits(Data, As, id(Tmp), 0, Inits),
+    (   cpp_dtor(C, Dtor), ccl_global('$cpp_temps', Ts, none), is_list(Ts) -> nb_getval('$cpp_temps', Ts1), nb_setval('$cpp_temps', [tmp(Tmp, T, Dtor)|Ts1]), Ss0 = Inits   % declared by the statement, destroyed with it (or elided into a result)
+    ;   Ss0 = [declaration(0, none, T, [var(Tmp, T, none)])|Inits] ),
+    append(Ss0, [expr(0, id(Tmp))], Ss).
 cpp_temporary(T, C, As, compound_lit(T, init(Items))) :- cpp_not_abstract(C), \+ cpp_has_ctors(C), !, findall(item([], A), member(A, As), Items).   % an AGGREGATE, `__allocation_result{p, n}': braced, no constructor
 cpp_temporary(T, C, [], compound_lit(T, init([]))) :- cpp_not_abstract(C), cpp_trivial_default(C), !.   % `__less<>()': nothing to construct, as a member and a local already had it
 %% A TEMPORARY OF A CLASS WITH A DESTRUCTOR is declared by the STATEMENT that holds it, never here: its slot and
 %% its defer belong to the full expression's scope (cpp_stmt), and only the construction stays in place, where the
 %% evaluation order puts it. Outside a statement walk ('$cpp_temps' unset) it is declared here as it always was.
-cpp_temporary(T, C, As, stmt_expr(block([expr(0, call(id(Name), [addr(id(Tmp))|As1])), expr(0, id(Tmp))]))) :-
+cpp_temporary(T, C, As, stmt_expr(block([expr(0, Call), expr(0, id(Tmp))]))) :-
     cpp_not_abstract(C), cpp_dtor(C, Dtor), ccl_global('$cpp_temps', Ts, none), is_list(Ts), !,
     length(As, N), ( cpp_ctor(C, As, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As0), cpp_ref_args_of(Name, As0, As1),
-    ccl_gensym('$tmp', Tmp), ccl_declare(Tmp, T), nb_setval('$cpp_temps', [tmp(Tmp, T, Dtor)|Ts]).   % DECLARED here as well as by the statement that holds it: its block no longer carries the declaration, so nothing else could type the value the block yields
-cpp_temporary(T, C, As, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]), expr(0, call(id(Name), [addr(id(Tmp))|As1])), expr(0, id(Tmp))]))) :-
-    cpp_not_abstract(C), length(As, N), ( cpp_ctor(C, As, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As0), cpp_ref_args_of(Name, As0, As1), ccl_gensym('$tmp', Tmp).
+    cpp_copies(call(id(Name), [addr(id(Tmp))|As1]), Call),   % THE COPY PASS ON A TEMPORARY'S CONSTRUCTOR CALL TOO: `pair<const string, int>("a", 1)' takes `pair(const T1 &, const T2 &)', and the literal went raw into the `const string &' -- the map's keys were the pointer's bytes
+    ccl_gensym('$tmp', Tmp), ccl_declare(Tmp, T), nb_getval('$cpp_temps', Ts1), nb_setval('$cpp_temps', [tmp(Tmp, T, Dtor)|Ts1]).   % the register READ AGAIN here: the copy pass above may have registered a temporary of its own (a string for a `const string &' parameter), and the list read at the head would have dropped it (undeclared('$tmp_8')); DECLARED here as well as by the statement that holds it: its block no longer carries the declaration, so nothing else could type the value the block yields
+cpp_temporary(T, C, As, stmt_expr(block([declaration(0, none, T, [var(Tmp, T, none)]), expr(0, Call), expr(0, id(Tmp))]))) :-
+    cpp_not_abstract(C), length(As, N), ( cpp_ctor(C, As, Name) -> true ; cpp_refuse(0, no_constructor(C, N)) ), cpp_fill_defaults(Name, As, As0), cpp_ref_args_of(Name, As0, As1), ccl_gensym('$tmp', Tmp),
+    cpp_copies(call(id(Name), [addr(id(Tmp))|As1]), Call).
 %% an operator on a class-typed left operand: the class's member operator, else a free one declared, else the form as it is
 cpp_operator(Op, A, Args, Plain, E) :-
     (   cpp_class_of_type_of(A, C), cpp_method_on(A, C, operator(Op), Args, Name, Hops)
@@ -2915,7 +2945,7 @@ cpp_params_accept([_|Ps], [_|As], B) :- cpp_params_accept(Ps, As, B).
 cpp_param_accepts(PT, A) :- cpp_fn_template_ref(A, F), !, cpp_fn_target(PT, FnT), cpp_target_deduces(F, FnT).   % a template's name: only a function-pointer parameter whose target deduces it
 cpp_param_accepts(PT, A) :- ( ccl_type_of(A, AT), AT \== unknown -> cpp_unref_all(PT, PT1), cpp_unref_all(AT, AT1), cpp_type_accepts(PT1, AT1) ; true ).
 cpp_unref_all(T, T1) :- ( ccl_unref(T, T0), T0 \== T -> cpp_unref_all(T0, T1) ; T1 = T ).   % EVERY reference layer: a forwarding `_Tp &&' bound to an lvalue is `T & &&' before it collapses, and one layer off it was a reference to a class and no class -- libc++'s piecewise key extraction refused argument_mismatch on its piecewise_construct_t
-cpp_type_accepts(PT, AT) :- cpp_type(PT, PT2), cpp_class_of_type(PT2, C), !, ( cpp_class_of_type(AT, D) -> ( D == C -> true ; cpp_class_fits(D, C) -> cpp_converted ; cpp_conv_result(D, PT2, _) -> cpp_converted ; cpp_class_converts(C, D), cpp_converted ) ; cpp_converting(C), cpp_converted ).
+cpp_type_accepts(PT, AT) :- cpp_type(PT, PT2), cpp_class_of_type(PT2, C), !, ( cpp_class_of_type(AT, D) -> ( D == C -> true ; cpp_class_fits(D, C) -> cpp_converted ; cpp_conv_result(D, PT2, _) -> cpp_converted ; cpp_class_converts(C, D), cpp_converted ) ; cpp_converting(C, AT), cpp_converted ).
 %% ... or the parameter's class has a constructor that takes the argument's class ([over.ics.user]): libc++'s tree
 %% copies itself through `unique_ptr<__node, __tree_deleter>(node, __node_alloc_)', the deleter made of the allocator
 cpp_class_converts(C, D) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(ctor(_, Qs, Ps, _, _), Ms), \+ memberchk(explicit, Qs), cpp_arity_fits(Ps, 1), Ps = [P|_],
@@ -2928,7 +2958,15 @@ cpp_scalar_mismatch(RP, AT) :- RP = ptr(_, PE), \+ ccl_resolve_type(PE, fn(_, _,
 cpp_scalar_mismatch(RP, AT) :- RP = ptr(_, PE), ccl_resolve_type(PE, fn(_, _, _)), ccl_resolve_type(AT, RA), RA = ptr(_, AE), \+ ccl_resolve_type(AE, fn(_, _, _)), !.   % nor an object pointer for a function pointer
 cpp_class_fits(C, C) :- !.
 cpp_class_fits(D, C) :- cpp_class(D, cls(B, _, _, _, _, _)), B \== none, cpp_class_fits(B, C).
-cpp_converting(C) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(ctor(_, _, [_], _, _), Ms), !.
+%% ... AND A NON-CLASS ARGUMENT CONVERTS ONLY THROUGH A CONSTRUCTOR WHOSE PARAMETER TAKES ITS KIND: any one-argument
+%% constructor let `const pair *' pass for a map's `const_iterator' (a class built from a tree iterator), so
+%% `insert(__il.begin(), __il.end())' in the map's initializer-list constructor took `insert(const_iterator, _Pp &&)'
+%% over the range template, and a node was constructed from a pointer to a pair
+cpp_converting(C, AT) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(ctor(_, Qs, [P|Rest], _, _), Ms), \+ memberchk(explicit, Qs), cpp_arity_fits([P|Rest], 1),
+    ( P = param(PT0, _) ; P = param(PT0, _, _) ), catch(cpp_in_class(C, cpp_param_ref(PT0, PT)), _, fail), ccl_unref(PT, PT1),
+    \+ cpp_class_of_type(PT1, _), \+ ( ccl_resolve_type(PT1, RP), cpp_scalar_mismatch(RP, AT) ), !.
+cpp_converting(C, _) :- '$cpp_mt'(C, ctor, _, ctor(_, Qs, Ps, _, _)), \+ memberchk(explicit, Qs), cpp_arity_fits(Ps, 1), !.   % a constructor template takes what deduces
+cpp_converting(C) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(ctor(_, _, [_], _, _), Ms), !.   % the type-only question (a trait's `is_convertible' with no argument in hand): any one-argument constructor
 cpp_has_conversion(D) :- cpp_class(D, cls(_, _, Ms, _, _, _)), member(method(_, _, _, operator(conv(_)), _, _, _), Ms), !.
 %% A FUNCTION TEMPLATE'S INSTANCE IS NOTED WHEN IT IS EMITTED, NOT BEFORE -- 0.69's rule, which the member template
 %% and the lazy member got and this road kept the old way: the note was taken first, an emission abandoned by a
@@ -3268,7 +3306,7 @@ cpp_try_member([], _, _, _, _) :- fail.
 cpp_try_member([TPs-method(L, Qs, Ret, M, Ps, V, Body)|Cs], C, Explicit, As, Name) :-
     (   catch(cpp_as_callee(C, cpp_signature_holds(M, TPs, Ps, V, Explicit, As, B)), error(not_lowered(W), _), ( cpp_trace(member_refused(C, M, W)), fail ))   % IN ITS OWN CLASS: a parameter written `const allocator_type &' is in the traits class's words, not the caller's
     ->  cpp_instance_name(M, TPs, B, MName), cpp_subst(method(L, Qs, Ret, M, Ps, V, Body), B, method(_, _, Ret1, _, Ps1, _, Body1)),
-        cpp_mangle_q(C, MName, Qs, Ps1, Name),
+        cpp_mangle_q(C, MName, Qs, Ps1, Name), cpp_trace(member_holds(C, Name)),   % the member template's instance chosen, with its deduced keys
         (   cpp_instance_done(Name) -> true
         ;   cpp_making(Name) -> true                                    % in progress: the NAME is all a recursive ask needs
         ;   cpp_make_member(Name, C, L, Qs, Ret1, MName, Ps1, V, Body1) )

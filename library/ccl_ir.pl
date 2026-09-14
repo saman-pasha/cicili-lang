@@ -791,6 +791,7 @@ ir_lval(call(F, Args), Addr, T, LL) :- !,                                 % C++:
 ir_ref_slot(A0, T0, A, T) :- ( T0 = ref(_, T) ; T0 = rref(_, T) ), !, ir_fresh(A), ir_ins([A, ' = load ptr, ptr ', A0]).
 ir_ref_slot(A, T, A, T).
 %% what a reference is bound to: an lvalue's address, or a call's reference result as it is
+ir_ref_of(move(E), R) :- !, ir_ref_of(E, R).   % a reference bound to `std::move(x)' binds x (the move stays on a class value since 0.83)
 ir_ref_of(E, P) :- ir_lvalue_form(E), !, ir_lval(E, P, _, _).
 ir_ref_of(ccast(_, T, E), P) :- !, ir_ref_of(cast(T, E), P).                          % a C++ cast keeps its word to here
 ir_ref_of(cast(T, E), P) :- ( T = ref(_, _) ; T = rref(_, _) ), !, ir_ref_of(E, P).   % the bind again: no temporary between

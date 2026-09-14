@@ -785,6 +785,19 @@ what runs today.
   its converting constructor, a return of a conditional over class arms, a
   forwarding reference judged on the desugared argument, an inline tag
   global. Not yet: node handles, C++23's `and_then` family.
+* **The fifty-first step DONE: node handles.** `set::extract`, `map::extract`,
+  a handle's `empty`, `value`, `key` and `mapped`, `insert(node_type &&)`
+  into another container, and a map of strings from an initializer list of
+  braced pairs match clang++ line for line. Eight forms named in CLAUDE.md,
+  the first the one that matters everywhere: `std::move` of a class value
+  keeps its move through to overload resolution, so an rvalue overload is
+  chosen and a moved-from object is moved from; also a non-class argument
+  converting to a class parameter only through a constructor that takes its
+  kind, braced initializer-list items constructed, the copy pass on a
+  temporary's constructor call, an aggregate with constructing members built
+  member by member, an anonymous union copied as its bytes, a value of the
+  class itself taking only its copy or move constructor, and an argument
+  typed by a function template's raw signature not counting as typed.
 
 ## The `cicili` command
 

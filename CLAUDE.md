@@ -57,7 +57,8 @@ test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <
                          the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
                          containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap,
                          stdset, stdsetstring, stdset2, stdset3, stdunorderedmap, stdunorderedmapstring, stdunorderedmap2,
-                         stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2; a fixture's input is NAME.stdin
+                         stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2, stdnodehandle, stdmapinit;
+                         a fixture's input is NAME.stdin
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
 library/ccl_driver.pl    ccl_drive(+Inputs, +Options): the steps, diagnostics in clang's shape,
@@ -3336,6 +3337,77 @@ deduced as `const pair *', a POINTER where the value was meant (the trace:
 pair *])') -- which is the next thing; `optional<T &>' (C++26), `and_then',
 `transform', `or_else' (C++23), `std::hash<optional>', `bad_optional_access'
 caught (exceptions are off: it aborts with its message).
+
+**M6's fifty-first step (0.83): NODE HANDLES, and the value category of
+`std::move`.** `<set>`'s and `<map>`'s not-done item since 0.80, taken up once
+`<optional>` compiled: `test/cpp/run/stdnodehandle.cpp` (`set::extract` by key,
+the handle's `empty`, `value` and `operator bool`, `insert(node_type &&)` into
+another set, an extract that finds nothing, `map::extract`, `key()` rewritten
+and `mapped()`, the handle inserted back) and `stdmapinit.cpp` (a map of strings
+from an initializer list of braced pairs, walked and looked up) match clang++
+line for line. THE FORMS, each named: (1) `std::move` OF A CLASS VALUE KEEPS ITS
+MOVE ([expr.xvalue]; `cpp_expr(move)`): 0.40 had made `move(x)' of a value
+without owners the value itself, and the value category was gone before
+overload resolution -- `t.insert(std::move(nh))' found no `insert(node_type &&)'
+and took `insert(const value_type &)' through the handle's `operator bool'; the
+class an expression has looks through the move (`cpp_class_of_type_of`), a
+by-value parameter of a class with a destructor given `std::move(x)' takes the
+MOVE constructor into the callee's copy (`cpp_move_temp` in `cpp_copies_`; the
+copy one over the object where the class has no move), `return std::move(x)'
+of a local likewise, and a reference bound to a move binds the object
+(`ir_ref_of`); (2) A NON-CLASS ARGUMENT CONVERTS TO A CLASS PARAMETER ONLY
+THROUGH A CONSTRUCTOR WHOSE PARAMETER TAKES ITS KIND (`cpp_converting/2` in
+`cpp_type_accepts`): any one-argument constructor let `const pair *' pass for a
+map's `const_iterator', so `insert(__il.begin(), __il.end())' in the map's
+initializer-list constructor took `insert(const_iterator, _Pp &&)' over the
+range template, and a node was built from a pointer to a pair; (3) A BRACED
+ITEM OF AN INITIALIZER LIST list-initializes the element class through its
+constructors (`cpp_il_item`): `{{"a", 1}, {"b", 2}}' for a map builds each
+`pair<const string, int>', which as an aggregate of the backing array stored
+the literal's pointer into the string; (4) THE COPY PASS RUNS ON A TEMPORARY'S
+CONSTRUCTOR CALL TOO (`cpp_temporary`): `pair(const T1 &, const T2 &)' took
+the literal raw for the `const string &', and the map's keys were the
+pointer's bytes; the temporaries register is read AGAIN after the pass, since
+the pass registers temporaries of its own (a string for that parameter) and the
+list read at the head dropped them (`undeclared('$tmp_8')'); on a MEMBER's
+constructor call the same pass LOOPED through the string's allocator member
+(`__alloc_(std::move(__str.__alloc_))' converting into itself without end, 4.3
+GB in 486 s to the cap) and is not run there; (5) AN AGGREGATE WHOSE MEMBER
+CONSTRUCTS IS BUILT MEMBER BY MEMBER, as a temporary and as a braced return
+(`cpp_temporary`, `cpp_stmt_(return)`, through 0.41's `cpp_aggregate_inits`):
+the tree's `_InsertReturnType{end(), false, _NodeHandle()}' put a
+`__tree_iterator' into a `__tree_const_iterator' member bitwise, where its
+converting constructor was meant; (6) THE MEMBERWISE COPY OF AN ANONYMOUS UNION
+IS ITS BYTES (`cpp_member_inits`): the implicit copy constructor of optional's
+storage assigned the union, and the lowering converted its bytes as a pointer;
+(7) A VALUE OF THE CLASS ITSELF TAKES ITS COPY OR MOVE CONSTRUCTOR, written or
+implicit, and never another constructor taking a class ([over.best.ics];
+`cpp_ctor`'s first clause): the C++ gate's first run of this step was RED on
+all ten stream fixtures (exit 139), and the backtrace led into `std::copy''s
+unwrap road, where (5) built `__in_out_result{__first, __rewrap_iter(...)}'
+member by member and the fit set gave the `ostreambuf_iterator' member
+`ostreambuf_iterator(ostream_type &)' for an ostreambuf_iterator argument --
+the stream buffer's pointer was the iterator's bytes; and the second run RED
+on the three `getline' fixtures by a slip of (2): the one-argument
+`cpp_converting/1' the traits' `is_convertible' still asks was gone with the
+two-argument one, an existence error the driver reported as the file's
+(restored beside it); and the third RED on the node-handle fixture itself, by
+(8) AN ARGUMENT TYPED BY A FUNCTION TEMPLATE'S RAW SIGNATURE IS NOT TYPED
+(`cpp_raw_type` in `cpp_arg_type`): the inference types a call of a function
+template from the raw signature a summary declares it under (0.49), so
+`std::exchange(__other.__alloc_, nullopt)' in the node handle's move constructor
+was a `_T1', optional's `optional(_Up &&)' deduced `_Up' as that free name, and
+an allocator was built from a `_T1' -- a type naming a parameter the tables do
+not know now falls to the desugaring, which instantiates the call and types it.
+A trace names the member template instance an overload set settles on
+(`member_holds(C, Name)'), which is how (2) was found. The module rebuilt as
+0.83. Seven gates GREEN (the reader's 94 checks, 5 s and 84 MB; the compile
+gate's 73 at 209 MB; the driver's 23; the objects' 29; the proof; the C++ one
+128 checks, 1237 s, 1090 MB on its fourth run, GREEN at last; the libc++ one
+415 s and 1348 MB, unchanged by a desugaring step); the node-handle fixture
+builds in 100 s at 1.0-1.2 GB, the map one in 50 s at 0.5. NOT DONE: `unordered_map::extract' and the unordered node
+handle (its `__hash_node_handle'), `merge' between a set and a multiset, a node
+handle's `get_allocator'.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
