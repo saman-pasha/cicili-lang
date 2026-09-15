@@ -845,8 +845,9 @@ cpp_base_name(B0, _) :- cpp_template_id(B0, N, Args), !,                        
     ;   cpp_refuse(0, base_not_a_class(N)) ).
 cpp_base_name(B0, _) :- cpp_refuse(0, base_not_a_class(B0)).
 %% the class a scope names: `C', `X<T>' (its instance), `A::B<T>'; a namespace is no class
-cpp_scope_class(Path, C) :- ccl_last(Path, P), cpp_path_class(P, C), !.
-cpp_scope_class(Path, C) :- cpp_scope_walk(Path, none, C).      % a path of two or more CLASS segments, each named inside the one before: allocator_traits<A>::propagate_on_container_swap::value
+cpp_scope_class(Path, C) :- cpp_where(scope(Path), cpp_scope_class_(Path, C)).
+cpp_scope_class_(Path, C) :- ccl_last(Path, P), cpp_path_class(P, C), !.
+cpp_scope_class_(Path, C) :- cpp_scope_walk(Path, none, C).      % a path of two or more CLASS segments, each named inside the one before: allocator_traits<A>::propagate_on_container_swap::value
 cpp_scope_walk([], C, C) :- C \== none.
 cpp_scope_walk([S|Ss], none, C) :- !, ( cpp_path_class(S, C1) -> cpp_scope_walk(Ss, C1, C) ; cpp_scope_walk(Ss, none, C) ).   % a namespace's segment names no class: skipped
 cpp_scope_walk([S|Ss], Cx, C) :- ( cpp_in_class(Cx, cpp_path_class(S, C1)) -> cpp_scope_walk(Ss, C1, C)
@@ -1026,7 +1027,14 @@ cpp_class_of_type_(base(_, [typedef(X)]), C) :- cpp_template_id(X, N, Args), !, 
 cpp_class_of_type_(base(_, [typedef(scoped(_, C))]), C) :- cpp_class(C, _), !.
 cpp_pointee_class(T, C) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, E) ; T1 = arr(_, E) ), cpp_class_of_type(E, C).
 cpp_class_of_type_of(move(X), C) :- !, cpp_class_of_type_of(X, C).
-cpp_class_of_type_of(X, C) :- ccl_type_of(X, T), T \== unknown, ccl_unref(T, T1), cpp_class_of_type(T1, C).   % the class an EXPRESSION has: through a reference, since `declval<C &>()' names C's members (the TYPE-level test keeps its reference, where the value category depends on it)
+%% ... AND NEVER FROM A RAW TYPE, the guard `cpp_arg_type' has had since 0.83: the inference types a call of a
+%% FUNCTION TEMPLATE from the raw signature a summary declares it under, so `std::invoke(f, a...)' is
+%% `invoke_result_t<_Fn, _Args...>' with `_Fn' still invoke's own parameter. Resolved here to find the class,
+%% it instantiated the traits on that name; its SFINAE specialization -- a `void_t<decltype(...)>' first
+%% element, matched in the non-deduced pass -- cannot match a free name, so the PRIMARY was chosen and the
+%% primary has no `type'. Left raw, the value falls to `cpp_init_arg_class', which desugars the call and
+%% instantiates it, and the instance's result is concrete.
+cpp_class_of_type_of(X, C) :- ccl_type_of(X, T), T \== unknown, \+ cpp_raw_type(T), ccl_unref(T, T1), cpp_class_of_type(T1, C).   % the class an EXPRESSION has: through a reference, since `declval<C &>()' names C's members (the TYPE-level test keeps its reference, where the value category depends on it)
 cpp_pointee_class_of(X, C) :- ccl_type_of(X, T), T \== unknown, cpp_pointee_class(T, C).
 %% the members: data (own and inherited, with the hops through '$base'), the statics, methods, constructors, the destructor
 cpp_data_member(C, N, []) :- cpp_class(C, cls(_, Data, _, _, _, _)), memberchk(member(_, N, _), Data), !.
@@ -1556,6 +1564,8 @@ cpp_arg_type(call(scoped(_, move), [X]), T) :- !, cpp_arg_type(X, T).   % every 
 cpp_arg_type(A, tmplfn(F)) :- cpp_fn_template_ref(A, F), !.               % A FUNCTION TEMPLATE'S NAME has no type of its own: a target type gives it one (cpp_deduce_target)
 cpp_arg_type(A, T) :- ccl_type_of(A, T0), T0 \== unknown, \+ cpp_raw_type(T0), !, T = T0.   % ... but never a type that names a template's own parameter: a call of a FUNCTION TEMPLATE is typed by the inference from the raw signature the summary declares it under (0.49), `std::exchange(__other.__alloc_, nullopt)' as `_T1', and optional's `optional(_Up &&)' then deduced `_Up' as that free name (an allocator built from a `_T1' in the node handle's move constructor); the desugaring below instantiates the call and types it
 cpp_raw_type(base(_, [typedef(N)])) :- atom(N), \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _), \+ cpp_class(N, _), \+ cpp_template(N, _, _), !.
+cpp_raw_type(base(_, [typedef(X)])) :- cpp_template_id(X, _, Args), member(A, Args), cpp_free_arg(A), !.   % ... AND A TEMPLATE-ID OVER ONE IS RAW TOO, which only a bare name was
+cpp_raw_type(base(_, [typedef(scoped(Path, _))])) :- member(S, Path), cpp_template_id(S, _, Args), member(A, Args), cpp_free_arg(A), !.   % ... and the template-id may sit in the PATH: `invoke_result_t<_Fn, _Args...>' is `typename invoke_result<_Fn, _Args...>::type', whose last name is `type' and whose scope carries the free one. A plain namespace segment is an atom and no template-id, so `std::x' is untouched
 %% a template ARGUMENT that is a free name: a plain type naming no typedef, tag, class or template (a template parameter of
 %% an enclosing template, unbound), through pointers and references; a value or a template-id is no such thing
 cpp_free_arg(base(_, [typedef(N)])) :- atom(N), \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _), \+ cpp_class(N, _), \+ cpp_template(N, _, _), !.
@@ -2680,8 +2690,20 @@ cpp_template_id(scoped(_, tmpl(N, Args)), N, Args).                      % a nam
 %% the walk of an instance sees no local of the function that met it: the scopes are set aside
 %% a breadcrumb for the trace: what the desugaring is working on, so a silent resolution says where it happened.
 %% Scoped, so it names the innermost work and not merely the last thing entered.
-cpp_where(W, Goal) :- ( catch(nb_getval('$cpp_where', W0), _, fail) -> true ; W0 = top ), nb_setval('$cpp_where', W),
-    ( catch(Goal, E, (nb_setval('$cpp_where', W0), throw(E))) -> nb_setval('$cpp_where', W0) ; nb_setval('$cpp_where', W0), fail ).
+%% ... AND THE BREADCRUMB IS A STACK, not one frame: `cpp_where' kept only the innermost, so a trace inside an
+%% instantiation reported the ask naming ITSELF (0.65's lesson, which cost that step an afternoon and this one
+%% another). The stack is bounded at six frames and is kept ONLY while `'$cpp_trace'' is on, so an ordinary build
+%% pays nothing for it -- `nb_setval' copies what it stores and the breadcrumb is entered at every statement.
+cpp_where(W, Goal) :- ( catch(nb_getval('$cpp_where', W0), _, fail) -> true ; W0 = top ),
+    cpp_wpush(W, St0), nb_setval('$cpp_where', W),
+    ( catch(Goal, E, (cpp_wpop(W0, St0), throw(E))) -> cpp_wpop(W0, St0) ; cpp_wpop(W0, St0), fail ).
+cpp_wpush(W, St0) :- ( catch(nb_getval('$cpp_trace', yes), _, fail)
+    ->  cpp_wstack(St0), cpp_wtake(8, [W|St0], St1), nb_setval('$cpp_wstack', St1) ; St0 = off ).
+cpp_wpop(W0, St0) :- nb_setval('$cpp_where', W0), ( St0 == off -> true ; nb_setval('$cpp_wstack', St0) ).
+cpp_wstack(St) :- ( catch(nb_getval('$cpp_wstack', St0), _, fail) -> St = St0 ; St = [] ).
+cpp_wtake(0, _, []) :- !.
+cpp_wtake(_, [], []) :- !.
+cpp_wtake(N, [X|Xs], [X|Ys]) :- N1 is N - 1, cpp_wtake(N1, Xs, Ys).
 cpp_isolated(Goal) :- nb_getval('$ccl_scope', S), nb_setval('$ccl_scope', []),
     ( catch(Goal, E, (nb_setval('$ccl_scope', S), throw(E))) -> nb_setval('$ccl_scope', S) ; nb_setval('$ccl_scope', S), fail ).   % ON A THROW TOO: SFINAE throws and catches by design, and a lost scope left the CALLER's own locals untyped
 cpp_add_instance_items(Items) :- cpp_linkonce(Items, Items1), forall(member(I, Items1), assertz('$cpp_out'(I))),
@@ -2711,7 +2733,7 @@ cpp_instantiate_class__(N, Args, Name) :-
 %% `==', never unified, so an unbound argument matches nothing.
 cpp_instantiate_class_(N, Args, Name) :- '$cpp_iname'(N, A, Name0), A == Args, !, Name = Name0.
 cpp_instantiate_class_(N, Args, Name) :-
-    ( member(A, Args), cpp_free_arg(A) -> ( catch(nb_getval('$cpp_where', W), _, W = top) -> true ; W = top ), cpp_trace(free_name_instance(N, A, in(W))) ; true ),   % an instance asked on a name the tables do not know is TRACED with its breadcrumb (0.49's, 0.60's and 0.64's defect, from the other side); refusing it took an instance name still being registered for a free name (`__tree<__value_type<int, int>>'), 37 fixtures RED
+    ( member(A, Args), cpp_free_arg(A) -> cpp_wstack(W), ( catch(nb_getval('$cpp_class_ctx', Cx), _, Cx = none) -> true ; Cx = none ), ( catch(nb_getval('$cpp_making', Mk), _, Mk = none) -> true ; Mk = none ), cpp_trace(free_name_instance(N, A, ctx(Cx), making(Mk), from(W))) ; true ),   % an instance asked on a name the tables do not know is TRACED with its breadcrumb (0.49's, 0.60's and 0.64's defect, from the other side); refusing it took an instance name still being registered for a free name (`__tree<__value_type<int, int>>'), 37 fixtures RED
     ( cpp_class_template(N, TPs, Item) -> true ; cpp_refuse(0, template_without_body(N)) ),
     ( cpp_bind_targs(TPs, Args, B) -> true ; cpp_trace(bind_failed(N)), fail ),
     cpp_constraints_hold(N, TPs, B),

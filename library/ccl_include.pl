@@ -690,9 +690,18 @@ ccl_llvm_roots(Rs) :- ( catch(os_env('LLVM', L), _, fail), L \== '' -> Rs = [L, 
 ccl_own_include_dirs(Ds) :- ccl_library_dirs(Ls), findall(D, ( member(L, Ls), atom_concat(L, '/include', D) ), Ds).
 ccl_sdk_dirs(Ds) :-
     ( catch(os_env('SDKROOT', S), _, fail), S \== '' -> atom_concat(S, '/usr/include', D0), Ds = [D0|Ds1] ; Ds = Ds1 ),
-    Ds1 = ['/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include',
-           '/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include',
-           '/usr/include'].
+    ccl_multiarch_dirs(M),
+    append(['/Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include',
+            '/Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include'], M, D2),
+    append(D2, ['/usr/include'], Ds1).
+%% DEBIAN AND UBUNTU SPLIT THE C LIBRARY'S HEADERS, and the split half comes FIRST: <bits/...>
+%% and <sys/cdefs.h> live in /usr/include/<triplet>, which clang searches before /usr/include
+%% (`clang -E -v' lists it there). Without it the closure of <stdio.h> stops at 146 lines against
+%% clang's 828 over 35 files, `__BEGIN_DECLS', `__THROW', `__wur' and `_Nonnull((1))' -- all of
+%% them sys/cdefs.h's -- reach the reader unexpanded, and every declaration wearing one is lost:
+%% `undeclared(printf)' for a two-line program. Both triplets are offered and ccl_existing_dirs
+%% keeps whichever is there, so macOS, where neither exists, is untouched.
+ccl_multiarch_dirs(['/usr/include/x86_64-linux-gnu', '/usr/include/aarch64-linux-gnu']).
 ccl_existing_dirs([], []).
 ccl_existing_dirs([D|Ds], Es) :- ccl_existing_dirs(Ds, Es1), ( exists_directory(D), \+ memberchk(D, Es1) -> Es = [D|Es1] ; Es = Es1 ).
 ccl_split([], _, [[]]).

@@ -3726,6 +3726,83 @@ takes one, nothing else does); and `<atomic>`'s own surface -- the
 compare-exchange builtins, the waits and the fences' scopes -- which is a module
 of its own.
 
+**M6's fifty-fourth step (0.87): THE RESULT TYPE OF AN UNINSTANTIATED TEMPLATE, and
+the first LINUX port.** TWO PIECES, the first a defect three steps had named and none
+had caught. `std::optional`'s C++23 `transform` to a class, its `and_then` over a
+conditional and `std::hash<optional>` all stopped at
+`no_member_type('__invoke_result_impl.void._Fn_', type)` -- an instance keyed by `_Fn`,
+which is `std::invoke`'s OWN template parameter. THE RULE: `cpp_class_of_type_of`, the
+class an EXPRESSION has, must not take a RAW type -- the guard `cpp_arg_type` has had
+since 0.83 -- and `cpp_raw_type` now knows two more shapes: a template-id whose argument
+is a free name, and one sitting in a SCOPED PATH, which is what `invoke_result_t<_Fn,
+_Args...>` is once the alias is followed (`typename invoke_result<_Fn, _Args...>::type`,
+whose last segment is `type` and whose scope carries the free name). Left raw, the value
+falls to `cpp_init_arg_class`, which desugars the call, instantiates it, and reads the
+instance's concrete result. WHY IT WAS FATAL rather than merely wrong: resolving that
+type instantiated the traits on a free name, and the SFINAE specialization -- whose first
+element is a `void_t<decltype(...)>`, matched in the non-deduced pass (0.46) -- cannot
+match one, so the PRIMARY was chosen and the primary deliberately has no `type`.
+THE INSTRUMENT THAT FOUND IT, and the reason 0.65's lesson had to be learned twice:
+`cpp_where` kept ONE frame, so a trace inside an instantiation reported the ask naming
+ITSELF (`in(class(__invoke_result_impl))`). It is a bounded stack now, six frames, kept
+only while `'$cpp_trace'` is on -- an ordinary build pays nothing, since `nb_setval`
+copies what it stores and the breadcrumb is entered at every statement -- with a frame on
+the scope walk and the class context beside the free-name trace. It took the reproduction
+from fourteen seconds over all of `<optional>` and `<string>` to a TWENTY-LINE program
+that fails in one second at 3 MB, and three ingredients are necessary and sufficient: a
+function template whose declared result is a dependent alias over its own parameters, a
+class template whose constructor initializes a CLASS-typed member from a call to it, and
+a specialization whose first pattern element is a SFINAE `void_t<decltype(...)>`. Drop
+the third and it runs; drop the second as well and the bad ask never happens.
+AND THE FIRST LINUX PORT, on a Colab runtime over an ssh tunnel: Ubuntu 24.04.4,
+x86_64, two cores, clang 18.1.3, LLVM 18, SBCL 2.2.9, libc++ from the distribution.
+Three things in THIS repository were macOS-shaped, each found by running and none by
+reading. (1) `module/build-llvm.sh` linked `-lLLVM-C`, which is Homebrew's layout;
+Debian keeps the C API inside the one `libLLVM` and the link simply fails ("cannot find
+-lLLVM-C"). The name is read off disk now (`llvm-config --libdir`, `libLLVM-C.*` if it is
+there, else `-lLLVM`), with the rpath following it. (2) THE INCLUSION PATH NEVER LOOKED
+IN THE MULTIARCH DIRECTORY: Debian and Ubuntu split the C library's headers, `<bits/...>`
+and `<sys/cdefs.h>` living in `/usr/include/<triplet>`, which clang searches BEFORE
+`/usr/include` (`clang -E -v` lists it there). Without it the closure of `<stdio.h>` was
+146 lines against clang's 828 over 35 files, and `__BEGIN_DECLS`, `__THROW`, `__wur` and
+`_Nonnull((1))` reached the reader unexpanded; with it, 514 and every one expanded
+(`ccl_multiarch_dirs`, both triplets offered and `ccl_existing_dirs` keeping whichever is
+there, so macOS is untouched). (3) A NULLABILITY WORD MAY CARRY AN ARGUMENT LIST. glibc's
+`__nonnull(params)` reaches this reader as `_Nonnull ( ( 1 ) )`, a spelling no compiler
+emits on purpose -- and it is OURS: the predefined table is clang's, so `__clang__` is
+defined, while `__has_attribute` answers 0 (the preprocessor's plainest path), and
+`sys/cdefs.h` then takes a branch neither compiler would. Read as the bare qualifier
+Apple's headers write, that `((1))` stopped the read of `<stdio.h>` at `fclose`, 69 lines
+before `printf` was declared. Reader version 68.
+WHAT THE SYMPTOM LOOKED LIKE, and it looked like nothing of the kind: `undeclared(printf)`
+for a two-line program, because A PARTIAL READ IS SILENT (0.44) -- a reader that stops two
+thirds of the way through a header leaves a unit that simply lacks the rest. The bisect
+that settled it is worth keeping: the declaration ALONE, `extern int printf(const char *
+__restrict, ...);`, compiles and runs, so the reader was stopping short and not reading
+and dropping. Those are different defects and only a measurement tells them apart.
+AND A TRAP THAT COST A WRONG CONCLUSION mid-chase: `cicili++ -fsyntax-only` PASSES on that
+same file on Linux, because in C++ mode the driver skips the check and the lowering under
+that flag. A flag that skips the stage under test passes for a reason that has nothing to
+do with the question, so it reads as evidence of health and is evidence of nothing; the
+tell is that the good news arrived too cheaply.
+Seven gates GREEN, at cocolog 1.2.16 and reader 68, the cache warmed OUTSIDE them first at
+all four levels (21 summaries), since the reader's version moved and a cold first run peaks
+far above the steady state: the reader's 94 checks, 39 s and 388 MB; the compile gate's 73 at
+370 MB; the driver's 23 at 68; the objects' 29; the proof; the C++ one 141 checks, 1995 s,
+1441 MB; the libc++ one's 16 reads, 859 s, 2278 MB.
+NOT DONE: the Linux gates. cicili-lang compiles and runs C and C++ there, and the C++ gate
+reaches 83 of its checks where before the three fixes it reached none, but six fail and each
+is its own glibc gap -- `stdcin.cpp' stops at `template_without_body(basic_string)', a
+template body that did not survive into the summary, which says `<iostream>''s closure is
+short there as `<stdio.h>''s was. The libc++ gate has not run there at all. AND THE RULE THAT
+DID NOT TRAVEL WITH THE GATES: every cocolog run of mine on the Mac goes through a watchdog
+that samples resident size and kills past 2800 MB, and the Linux chain was written without
+one -- an hour of gates with no cap on a box whose `/sys/fs/cgroup/memory.max' reads `max'
+from inside, so the real ceiling is imposed from outside and invisible to the obvious check.
+Nothing of ours was killed (the OOM took a 9.7 GB neighbour and the notebook's own node), but
+that was luck and not design; the cap goes in before Linux runs again, and a gate that dies
+with no output is `dmesg | grep -i "killed process"' before it is anything else.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -4223,6 +4300,27 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `false.' that should have been an answer, and a message about an unbound `_G' variable.
   To raise with cocolog's owner: an `oom' check in the step loop answering
   `resource_error(memory)'; it is their engine's call, and they have it.
+* **A build that writes to one tree and is audited against another cannot report
+  honestly** (2026-09-15, cocolog's `install/install-linux.sh` on a fresh Ubuntu 24.04).
+  `common.sh` takes `ZIGURATIP_HOME=${ZIGURATIP_HOME:-$ZIGURATIP/home}`, so an INHERITED
+  value beats the `ZIGURATIP=` the caller passes; the Colab runtime exports
+  `ZIGURATIP_HOME=/content/ZiguratIP/home` from earlier work, and every project then
+  staged its headers and objects there while `MVCCS-cicili/mvccs.cpp` looked for
+  `../home/include/zexception.hpp` -- a CHECKOUT-RELATIVE path -- in the tree actually
+  being built, found it empty, and died. Nothing linked: 0 libraries, 0 objects. What
+  made it cost an afternoon is that the installer's completeness check reads
+  `$ZIGURATIP_HOME/lib`, so it audited the OTHER tree and reported "thirteen present,
+  one missing" for a build that had produced nothing at all -- a plausible partial
+  result that sent two of us after MVCCS and the staging pass. Setting both variables
+  to the same tree fixes it outright: `home/include` 2 -> 104 files, `home/lib` 0 -> 14
+  with `libMVCCS.so`, all four binaries, and cocolog builds. Raised with cocolog's owner
+  through the cocolog session, which wrote the guard (refuse and name both paths, never
+  derive silently, since an inherited home may be somebody's deliberate arrangement) and
+  a `make EMBED=0` for a store-less cocolog -- `--local`, tier-2 libraries and consulted
+  programs all working with 21 weak `ce_*` symbols left null and `--embed` refusing by
+  name -- both landing in 1.2.16. AND THE LESSON FOR THIS REPOSITORY, which is the same
+  shape as the two below: an instrument that answers without measuring the thing you
+  asked about will answer confidently and wrongly.
 * **On macOS the memory counters READ LOW, and the store's dead rows were the
   weight** (2026-09-14, with cocolog's owner's session). One identical C++
   build measured four times with `/usr/bin/time -l` gave 3252, 1821, 1728 and

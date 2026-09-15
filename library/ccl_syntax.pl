@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(67).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template
+ccl_reader_version(68).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc)
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1055,6 +1055,15 @@ ccl_skip_attr --> ccl_p(']'), ccl_p(']'), !.
 ccl_skip_attr --> [_], ccl_skip_attr.
 ccl_gnu_attr --> ccl_id(A), { memberchk(A, ['__attribute__', '__attribute']) }, !, ccl_p('('), ccl_p('('), ccl_balanced, ccl_p(')'), ccl_p(')').
 ccl_gnu_attr --> ccl_id(A), { memberchk(A, ['__asm', '__asm__']) }, !, ccl_p('('), ccl_balanced, ccl_p(')').   % int f(void) __asm("_f")
+%% ... AND A NULLABILITY WORD MAY CARRY AN ARGUMENT LIST: glibc's `__nonnull(params)' reaches this
+%% reader as `_Nonnull ( ( 1 ) )' -- a spelling no compiler emits on purpose. It is ours: the
+%% predefined table is clang's, so `__clang__' is defined, while `__has_attribute' answers 0
+%% (ccl_pp's plainest path), and glibc's sys/cdefs.h takes a branch neither compiler would.
+%% Apple's headers write the bare word, so the clause below still serves them; taken bare here,
+%% the `((1))' stopped the read of <stdio.h> at fclose, 69 lines before printf was declared, and
+%% a partial read is silent (0.44) -- which is why it surfaced as `undeclared(printf)'.
+ccl_gnu_attr --> ccl_id(A), { memberchk(A, ['_Nonnull', '_Nullable', '_Null_unspecified', '__nonnull', '__nullable', '__null_unspecified']) },
+    ccl_peek(p, '('), !, ccl_p('('), ccl_balanced, ccl_p(')').
 ccl_gnu_attr --> ccl_id(A), { memberchk(A, ['__extension__', '__inline__', '__inline', '__restrict', '__restrict__', '__volatile__', '__const',
                                              '_Nonnull', '_Nullable', '_Null_unspecified', '__nonnull', '__nullable', '__null_unspecified']) }.
 ccl_balanced --> ccl_p('('), !, ccl_balanced, ccl_p(')'), ccl_balanced.

@@ -831,6 +831,22 @@ what runs today.
   `-fno-rtti` gives it; the atomic builtins the reference count is written on
   are LLVM's own instructions; and `new T[n]()` value-initializes.
 
+* **The fifty-fourth step DONE: the result type of an uninstantiated template, and
+  the first Linux port.** The class an expression has is no longer read off a raw
+  type, which is the guard the argument road has had since 0.83: `std::invoke`'s
+  declared result is `invoke_result_t<_Fn, _Args...>`, and resolving it with `_Fn`
+  still invoke's own parameter instantiated the traits on that name, where the SFINAE
+  specialization cannot match and the primary has no `type`. With it, the C++23
+  optional's `and_then` over a conditional matches clang++, and `transform` to a class
+  and `std::hash<optional>` pass that failure. The breadcrumb is a bounded stack now
+  rather than one frame, kept only while tracing, which cut the reproduction from a
+  library-scale hunt to a twenty-line file that fails in one second. AND cicili-lang
+  compiles and runs C and C++ on **Linux**: Ubuntu 24.04, clang 18, libc++ from the
+  distribution. Three things here were macOS-shaped -- the embedded LLVM linked
+  Homebrew's `libLLVM-C` by name, the inclusion path never looked in Debian's multiarch
+  directory where `<bits/...>` and `<sys/cdefs.h>` live, and a nullability word could
+  not carry the argument list glibc hands it. The gates there are their own step.
+
 ## The `cicili` command
 
 `bin/cicili` takes clang's arguments, so nothing about it is new:
