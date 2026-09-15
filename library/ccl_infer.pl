@@ -72,6 +72,7 @@ ccl_const_eval(not(E), V) :- !, ccl_const_eval(E, V0), ( V0 =:= 0 -> V = 1 ; V =
 ccl_const_eval(cast(_, E), V) :- !, ccl_const_eval(E, V).
 ccl_const_eval(ccast(_, _, E), V) :- !, ccl_const_eval(E, V).      % C++'s own casts, a functional one among them: `type(~0)' folds as `(type) ~0' does
 ccl_const_eval(sizeof_type(T), V) :- !, ccl_size_of(T, V).
+ccl_const_eval(alignof_type(T), V) :- !, ccl_resolve_type(T, T1), ccl_size_align(T1, _, V).   % `alignof(T)' ([expr.alignof]): the alignment the layout already computes
 ccl_const_eval(sizeof(E), V) :- !, ccl_type_of(E, T), ccl_size_of(T, V).
 ccl_const_eval(cond(C, A, B), V) :- !, ccl_const_eval(C, CV), ( CV =\= 0 -> ccl_const_eval(A, V) ; ccl_const_eval(B, V) ).
 ccl_const_eval(bin(Op, A, B), V) :- ccl_const_eval(A, X), ccl_const_eval(B, Y), ccl_const_op(Op, X, Y, V).
@@ -221,6 +222,7 @@ ccl_type_of(postinc(E), T) :- !, ccl_type_of(E, T).
 ccl_type_of(postdec(E), T) :- !, ccl_type_of(E, T).
 ccl_type_of(sizeof(_), T) :- !, ccl_size_type(T).
 ccl_type_of(sizeof_type(_), T) :- !, ccl_size_type(T).
+ccl_type_of(alignof_type(_), T) :- !, ccl_size_type(T).
 ccl_type_of(cast(T, _), T) :- !.
 ccl_type_of(move(E), T) :- !, ccl_type_of(E, T).
 ccl_type_of(compound_lit(T, _), T) :- !.
@@ -271,6 +273,7 @@ ccl_size_of(T, N) :- ccl_resolve_type(T, T1), ccl_size_align(T1, N, _).
 ccl_size_align(ptr(_, _), 8, 8) :- !.
 ccl_size_align(block(_, _), 8, 8) :- !.
 ccl_size_align(fn(_, _, _), 8, 8) :- !.
+ccl_size_align(memptr(_, _, fn(_, _, _)), 8, 8) :- !.                          % a pointer to member function: the address of the one function emitted for it
 ccl_size_align(arr(NE, E), N, A) :- !, ( ccl_size_align(E, EN0, A0) -> EN = EN0, A = A0 ; ccl_resolve_type(E, E1), ccl_size_align(E1, EN, A) ), ( ccl_const_eval(NE, K) -> N is K * EN ; N = 0 ).   % a flexible member, `T a[]' or `own T *a[n]': no bytes of its own; the ELEMENT resolved (the resolver leaves an array as it is, and `std::string s[2]' had no size)
 ccl_size_align(base(_, S), N, A) :- ccl_basic_size(S, N), !, A = N.
 ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N, A).

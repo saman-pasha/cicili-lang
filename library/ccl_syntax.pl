@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(68).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc)
+ccl_reader_version(69).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1286,7 +1286,10 @@ ccl_memptr_quals(Ptrs, Direct) --> ccl_cpp, { ccl_memptr_decl(Ptrs, Direct) }, !
 ccl_memptr_quals(_, _) --> [].
 ccl_mptr_quals --> ccl_kw(K), { memberchk(K, [const, volatile]) }, !, ccl_mptr_quals.
 ccl_mptr_quals --> ( ccl_p('&&'), ! ; ccl_p('&') ), !, ccl_mptr_quals.
-ccl_mptr_quals --> [].
+%% ... and the noexcept-specifier comes after them ([dcl.fct]/1: cv, ref, then noexcept), which is what
+%% <functional>'s __strip_signature specializes over: `_Rp (_Gp::*)(_Ap...) const noexcept' and every other
+%% combination of the three. ccl_suffix_quals is the one rule for `noexcept' and `throw(...)'; it is empty-safe.
+ccl_mptr_quals --> ccl_suffix_quals.
 ccl_memptr_decl(Ptrs, _) :- memberchk(memptr(_, _), Ptrs), !.
 ccl_memptr_decl(_, paren(decl(Ps, D, _))) :- ccl_memptr_decl(Ps, D).
 ccl_pointers([ref(Qs)|Ps]) --> ccl_cpp, ccl_p('&'), !, ccl_quals(Qs), ccl_pointers(Ps).      % C++'s references
@@ -1476,8 +1479,13 @@ ccl_expr(E) --> ccl_assign_expr(A), ( ccl_p(','), !, ccl_expr(B), { E = comma(A,
 %% the operator looked for after it (the C grammar's unary-expression there
 %% had every non-assignment expression's first operand parsed twice)
 ccl_assign_expr(E) --> ccl_cond_expr(A), ccl_assign_rest(A, E).
-ccl_assign_rest(A, assign(Op, A, R)) --> ccl_assign_op(Op), !, ccl_assign_expr(R).
+ccl_assign_rest(A, assign(Op, A, R)) --> ccl_assign_op(Op), !, ccl_assign_right(R).
 ccl_assign_rest(E, E) --> [].
+%% the right side of an assignment may be a BRACED LIST in C++ ([expr.ass]/9: `x = {}' value-initializes the left
+%% side, `x = {a, b}' list-initializes it), which is how libc++'s __policy_func move constructor empties the one it
+%% moved from, `__f.__func_ = {};'.
+ccl_assign_right(I) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(I).
+ccl_assign_right(E) --> ccl_assign_expr(E).
 ccl_assign_op(Op) --> ccl_p(Op), { memberchk(Op, ['=', '*=', '/=', '%=', '+=', '-=', '<<=', '>>=', '&=', '^=', '|=']) }.
 
 ccl_cond_expr(E) --> ccl_lor(C), ( ccl_p('?'), !, ccl_expr(A), ccl_p(':'), ccl_cond_expr(B), { E = cond(C, A, B) } ; { E = C } ).
@@ -1523,6 +1531,8 @@ ccl_unary_(delete, kw, E) --> ccl_cpp, !, ccl_kw(delete), ( ccl_p('['), !, ccl_p
 ccl_unary_(co_await, kw, co_await(E)) --> ccl_cpp, !, ccl_kw(co_await), ccl_cast_expr(E).                  % C++20 coroutines: read, refused later
 ccl_unary_(noexcept, kw, noexcept_expr(E)) --> ccl_cpp, !, ccl_kw(noexcept), ccl_p('('), { ccl_targ_save(D) }, ( ccl_expr(E), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')').   % noexcept(e): a bool
 ccl_unary_(alignof, kw, alignof_type(T)) --> ccl_cpp, !, ccl_kw(alignof), ccl_p('('), ccl_type_name([], T), ccl_p(')').
+ccl_unary_('__alignof', id, alignof_type(T)) --> ccl_cpp, !, ccl_id('__alignof'), ccl_p('('), ccl_type_name([], T), ccl_p(')').        % GNU's spellings, which libc++ writes in `alignas(__alignof(_Tp))'
+ccl_unary_('__alignof__', id, alignof_type(T)) --> ccl_cpp, !, ccl_id('__alignof__'), ccl_p('('), ccl_type_name([], T), ccl_p(')').
 ccl_unary_(co_yield, kw, co_yield(E)) --> ccl_cpp, !, ccl_kw(co_yield), ccl_assign_expr(E).
 ccl_unary_(throw, kw, throw(E)) --> ccl_cpp, !, ccl_kw(throw), ( ccl_assign_expr(E), ! ; { E = none } ).
 %% PLACEMENT arguments are KEPT: `::new ((void *) p) T(args)' constructs where it is told and allocates nothing,
@@ -1561,6 +1571,11 @@ ccl_postfix_p('[', A, E) --> ccl_cpp, ccl_p('['), ccl_peek(p, '{'), !, ccl_initi
 ccl_postfix_p('[', A, E) --> !, ccl_p('['), ccl_expr(I), ccl_p(']'), ccl_postfix_(index(A, I), E).
 ccl_postfix_p('(', id(N), E) --> ccl_cpp, { ccl_builtin_trait(N) }, !, ccl_p('('), { Env = genv }, ccl_builtin_args(Env, As), ccl_p(')'), ccl_postfix_(call(id(N), As), E).   % __is_same(T, U): the arguments types
 ccl_postfix_p('(', A, E) --> !, ccl_p('('), { ccl_targ_save(D) }, ( ccl_args(As), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
+%% `x.*pm' and `p->*pm' ([expr.mptr.oper]), read from the two punctuators the lexers already have (no C writes
+%% `.' before `*', and none writes `->' before one either), so neither lexer changes: the node is memptr_get/2 or
+%% memptr_arrow/2 and only a CALL of it means anything here (cpp_memptr_call)
+ccl_postfix_p('.', A, E) --> ccl_cpp, ccl_p('.'), ccl_peek(p, '*'), !, ccl_p('*'), ccl_unary(F), ccl_postfix_(memptr_get(A, F), E).
+ccl_postfix_p('->', A, E) --> ccl_cpp, ccl_p('->'), ccl_peek(p, '*'), !, ccl_p('*'), ccl_unary(F), ccl_postfix_(memptr_arrow(A, F), E).
 ccl_postfix_p('.', A, E) --> ccl_cpp, ccl_p('.'), ccl_p('~'), !, ccl_id(T), ccl_postfix_(member(A, dtor(T)), E).      % C++: x.~T(), the destructor called
 ccl_postfix_p('->', A, E) --> ccl_cpp, ccl_p('->'), ccl_p('~'), !, ccl_id(T), ccl_postfix_(arrow(A, dtor(T)), E).
 ccl_postfix_p('.', A, E) --> !, ccl_p('.'), ccl_member_name(N), ccl_postfix_(member(A, N), E).

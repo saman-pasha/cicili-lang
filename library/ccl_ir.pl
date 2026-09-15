@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(32).
+ccl_lowering_version(33).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -163,6 +163,8 @@ ir_type_(ref(_, _), ptr) :- !.                                           % C++: 
 ir_type_(rref(_, _), ptr) :- !.
 ir_type_(block(_, _), ptr) :- !.
 ir_type_(fn(_, _, _), ptr) :- !.
+ir_type_(memptr(_, _, fn(_, _, _)), ptr) :- !.                           % A POINTER TO MEMBER FUNCTION IS THE ADDRESS of the function this compiler emits for that method, whose first parameter is the object
+ir_type_(memptr(C, _, _), _) :- !, ir_fail(pointer_to_data_member(C)).
 ir_type_(arr(NE, E), LL) :- !, ir_type(E, EL), ( ccl_const_eval(NE, N) -> true ; N = 0 ), atomic_list_concat(['[', N, ' x ', EL, ']'], LL).   % a flexible member: [0 x T]
 ir_type_(T, _) :- ir_fail(type(T)).
 ir_base(S, void) :- memberchk(void, S), !.
@@ -244,8 +246,16 @@ ir_run_map([lay(N, T, Off, bits(BOff, W, _))|Ls], Idx, Start, RunLL, [m(N, Idx, 
     ir_run_map(Ls, Idx, Start, RunLL, Ms).
 %% a member's slot: an address, or bf(Address, RunLL, BitOff, Width, Signed) for a bitfield
 ir_class_pointee(T, Name) :- ccl_resolve_type(T, ptr(_, PT)), ccl_resolve_type(PT, base(_, [struct(Name, _)])), atom(Name).
-ir_base_path(D, A) :- ccl_members_of(base([], [struct(D, none)]), Ms), memberchk(member(MT, '$base', _), Ms), ccl_resolve_type(MT, base(_, [struct(B, _)])), ( B == A -> true ; ir_base_path(B, A) ).
-ir_base_hops(V, D, A, V1) :- ir_member_slot(V, base([], [struct(D, none)]), '$base', P, MT), ccl_resolve_type(MT, base(_, [struct(B, _)])), ( B == A -> V1 = P ; ir_base_hops(P, B, A, V1) ).
+%% ... and a class may have SEVERAL base sub-objects since 0.88 (`$base', then `$base$2' ...: std::tuple's leaves),
+%% so the route is found once and walked, rather than each walk finding its own
+ir_base_path(D, A) :- ir_base_route(D, A, _), !.
+ir_base_route(D, A, [BN|Rest]) :- ccl_members_of(base([], [struct(D, none)]), Ms), member(member(MT, BN, _), Ms), ir_base_member(BN),
+    ccl_resolve_type(MT, base(_, [struct(B, _)])), ( B == A -> Rest = [] ; ir_base_route(B, A, Rest) ).
+ir_base_member('$base') :- !.
+ir_base_member(N) :- atom(N), sub_atom(N, 0, 6, _, '$base$').
+ir_base_hops(V, D, A, V1) :- ir_base_route(D, A, Route), !, ir_base_walk(V, D, Route, V1).
+ir_base_walk(V, _, [], V) :- !.
+ir_base_walk(V, D, [BN|Rest], V1) :- ir_member_slot(V, base([], [struct(D, none)]), BN, P, MT), ccl_resolve_type(MT, base(_, [struct(B, _)])), ir_base_walk(P, B, Rest, V1).
 %% ... and the same walk for a REFERENCE bound to a derived object (`const A &r = x', `f(x)' over an `A &'): the
 %% address the bind takes is the sub-object's
 ir_ref_to(E, RefT, P) :- ir_ref_of(E, P0), ( ccl_type_of(E, ET), ET \== unknown, ccl_unref(ET, ET1), ccl_resolve_type(ET1, base(_, [struct(D, _)])), ccl_unref(RefT, RT), ccl_resolve_type(RT, base(_, [struct(A, _)])), D \== A, ir_base_path(D, A) -> ir_base_hops(P0, D, A, P) ; P = P0 ).
@@ -559,6 +569,7 @@ ir_expr(cast(T, E), P, T, ptr) :- ( T = ref(_, _) ; T = rref(_, _) ), !, ir_ref_
 ir_expr(cast(T, E), V, T, LL) :- !, ir_expr(E, V0, T0, L0), ( ccl_resolve_type(T, base(_, [void])) -> V = V0, LL = void ; ir_type(T, LL), ir_convert(V0, T0, L0, T, LL, V) ).
 ir_expr(sizeof(E), N, T, i64) :- !, ccl_size_type(T), ccl_type_of(E, ET), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof(E)) ).
 ir_expr(sizeof_type(ET), N, T, i64) :- !, ccl_size_type(T), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof_type(ET)) ).
+ir_expr(alignof_type(ET), N, T, i64) :- !, ccl_size_type(T), ( ccl_const_eval(alignof_type(ET), N) -> true ; ir_fail(alignof_type(ET)) ).
 ir_expr(cond(C, A, B), V, T, LL) :- !,
     ccl_type_of(A, TA), ccl_type_of(B, TB), ( ccl_is_arith(TA), ccl_is_arith(TB) -> ccl_usual(TA, TB, T) ; T = TA ), ir_type(T, LL),
     ir_label(LT), ir_label(LF), ir_label(LE), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LT, ', label %', LF]),

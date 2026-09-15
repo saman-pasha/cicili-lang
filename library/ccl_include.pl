@@ -414,16 +414,16 @@ ccl_sum_write(F, Path, Files, unit(Is)) :-
 %% (cicili++ never runs over a store, where such a clause would be refused). The names are the desugaring's index
 %% names (cpp_index_name/2); an item with none is never asked for by name and is left out.
 ccl_ast_file(F, A) :- atom_length(F, N), N1 is N - 4, sub_atom(F, 0, N1, 4, B), atom_concat(B, '.ast.pl', A).
-ccl_ast_write(F, unit(Is)) :- ccl_ast_file(F, A), ccl_flat_items([], Is, Flat), ccl_ast_chunks(Flat, 100, Codes), write_file_from_codes(A, Codes).
+ccl_ast_write(F, unit(Is)) :- ccl_ast_file(F, A), ccl_flat_items([], Is, Flat), cpp_ns_quals(Flat, Qs), ccl_ast_chunks(Flat, Qs, 100, Codes), write_file_from_codes(A, Codes).
 %% THE TEXT IS BUILT A HUNDRED ITEMS AT A TIME, each chunk inside \+ \+ and kept through a global: cocolog reclaims
 %% the heap on backtracking only, and term_to_atom over three thousand items in one deterministic run held a
 %% gigabyte of intermediates beside the two megabytes of text it was making (the cold read of <iostream>: 2598 MB).
-ccl_ast_chunks([], _, []) :- !.
-ccl_ast_chunks(Is, K, Codes) :-
+ccl_ast_chunks([], _, _, []) :- !.
+ccl_ast_chunks(Is, Qs, K, Codes) :-
     ccl_ast_take(K, Is, Some, Rest),
-    \+ \+ ( ccl_ast_lines(Some, Cs), nb_setval('$ccl_ast_chunk', Cs) ),
+    \+ \+ ( ccl_ast_lines(Some, Qs, Cs), nb_setval('$ccl_ast_chunk', Cs) ),
     nb_getval('$ccl_ast_chunk', Cs1), nb_setval('$ccl_ast_chunk', []),
-    ccl_ast_chunks(Rest, K, More), append(Cs1, More, Codes).
+    ccl_ast_chunks(Rest, Qs, K, More), append(Cs1, More, Codes).
 ccl_ast_take(0, Is, [], Is) :- !.
 ccl_ast_take(_, [], [], []) :- !.
 ccl_ast_take(K, [I|Is], [I|Some], Rest) :- K1 is K - 1, ccl_ast_take(K1, Is, Some, Rest).
@@ -437,12 +437,14 @@ ccl_flat_items(Path, [namespace(_, N, Js)|Is], Flat) :- !, ( atom(N), N \== anon
     ccl_flat_items(P1, Js, F1), ccl_flat_items(Path, Is, F2), append(F1, F2, Flat).
 ccl_flat_items(Path, [extern_c(_, Js)|Is], Flat) :- !, ccl_flat_items(c, Js, F1), ccl_flat_items(Path, Is, F2), append(F1, F2, Flat).
 ccl_flat_items(Path, [I|Is], [in(Path, I)|Flat]) :- ccl_flat_items(Path, Is, Flat).
-ccl_ast_lines([], []).
-ccl_ast_lines([in(Path, I)|Is], Out) :-
+ccl_ast_lines([], _, []).
+ccl_ast_lines([in(Path, I)|Is], Qs, Out) :-
     (   catch(cpp_index_name(I, N), _, fail)
-    ->  ccl_ast_clause('$cpp_hdr_ast'(N, I), L1), ccl_ast_clause('$cpp_hdr_ast_ns'(N, Path), L2), append(L1, L2, L0)
+    ->  cpp_index_key(Qs, Path, N, Key0),                                   % the same qualified key the index gives a deeper namespace's item (cpp_ns_quals)
+        ( Key0 == N -> Key = N, I1 = I ; cpp_qualify_item(N, Key0, I, Iq) -> Key = Key0, I1 = Iq ; Key = N, I1 = I ),
+        ccl_ast_clause('$cpp_hdr_ast'(Key, I1), L1), ccl_ast_clause('$cpp_hdr_ast_ns'(Key, Path), L2), append(L1, L2, L0)
     ;   L0 = [] ),
-    ccl_ast_lines(Is, O2), append(L0, O2, Out).
+    ccl_ast_lines(Is, Qs, O2), append(L0, O2, Out).
 ccl_ast_clause(T, Cs1) :- term_to_atom(T, A), atom_codes(A, Cs), append(Cs, [0'., 10], Cs1).
 ccl_sum_mnames([], []) :- !.
 ccl_sum_mnames(Ms, [mnames(Ns)|Out]) :- ccl_sum_mnames_(Ms, 100, Ns, Rest), ccl_sum_mnames(Rest, Out).

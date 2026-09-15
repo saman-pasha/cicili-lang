@@ -847,6 +847,26 @@ what runs today.
   directory where `<bits/...>` and `<sys/cdefs.h>` live, and a nullability word could
   not carry the argument list glibc hands it. The gates there are their own step.
 
+* **The fifty-fifth step DONE: `<functional>`, whole.** Five fixtures match
+  clang++ line for line: `std::function` over a function pointer, a lambda, a
+  functor and an empty one, copied, assigned, swapped, compared with `nullptr`,
+  with a void result and in a vector; `std::bind` with the placeholders, one
+  reordering its arguments and one repeating a placeholder, a member function
+  bound, `mem_fn`, `invoke`, a pointer to member written out and `std::ref` into
+  a `std::function`; and the function objects, the transparent comparators, the
+  reference wrappers and the hashes. `<functional>` is read whole. What it asked
+  for: a pointer to member FUNCTION, which the reader has taken since 0.86 and
+  nothing else could -- it is the address of the one function this compiler emits
+  for that method, whose first parameter is the object, and a pointer to a VIRTUAL
+  member or a DATA member is refused by name; MULTIPLE INHERITANCE where a base
+  after the first has storage of its own, `$base$2` at its own offset, which is
+  how `std::tuple` holds its elements; two namespaces of one flattened name, the
+  open item since 0.32, told apart where the use is qualified; a partial
+  specialization over a FUNCTION TYPE, `function<_Rp(_ArgTypes...)>`, without
+  which every one of `<functional>`'s classes fell to its declared-only primary;
+  a function type decaying to a pointer to function; and a virtual overload set,
+  where two `__clone` slots of one name shared a table entry.
+
 ## The `cicili` command
 
 `bin/cicili` takes clang's arguments, so nothing about it is new:

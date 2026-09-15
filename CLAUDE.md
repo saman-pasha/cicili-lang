@@ -52,7 +52,7 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set>, <optional> and <memory> flattened and read WHOLE, under a fresh HOME,
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set>, <optional>, <memory> and <functional> flattened and read WHOLE, under a fresh HOME,
                          and at the levels: <set>, <map>, <unordered_map>, <unordered_set> at C++20, <optional>, <string> at C++23, <optional> at C++26;
                          test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
                          the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
@@ -60,6 +60,7 @@ test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <
                          stdset, stdsetstring, stdset2, stdset3, stdunorderedmap, stdunorderedmapstring, stdunorderedmap2,
                          stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2, stdnodehandle, stdmapinit, stdmapemplace, stdmapown,
                          stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, the smart pointers (stduniqueptr, stdsharedptr, stdmemory),
+                         the callables (stdfunction, stdbind, stdfunctional) with multibase and detectbase beside them,
                          and at the levels stdcontains (C++20), stdoptional3 (C++23),
                          stdoptionalref (C++26);
                          a fixture's input is NAME.stdin
@@ -3803,6 +3804,141 @@ Nothing of ours was killed (the OOM took a 9.7 GB neighbour and the notebook's o
 that was luck and not design; the cap goes in before Linux runs again, and a gate that dies
 with no output is `dmesg | grep -i "killed process"' before it is anything else.
 
+**M6's fifty-fifth step (0.88): `<functional>`, whole -- `std::function`, `std::bind`
+and the callable adaptors compiled from libc++'s own bodies.** THE MODULE:
+`test/cpp/run/stdfunction.cpp` (a `std::function<int(int)>` from a function pointer, a
+lambda, a functor and an empty one; `operator bool', the null comparisons, a copy, an
+assignment, `swap'; a void result, two arguments, a capturing lambda, and a vector of
+them walked by a range-for), `stdbind.cpp` (`std::bind' with the placeholders, one
+reordering its arguments and one repeating a placeholder; `mem_fn' of a nullary and of a
+one-argument method; `std::invoke' of a free function, of a pointer to member and of one
+with an argument; a pointer to member written out and called with `.*' and `->*';
+`std::ref' into a `std::function'; a member function bound to an object) and
+`stdfunctional.cpp` (the arithmetic, comparison, logical and bitwise function objects, the
+transparent `less<>' and `plus<>', `reference_wrapper' with `ref', `cref', `get' and a
+rebind, `std::hash' of an int and of a string, a function object as a set's comparator)
+match clang++ line for line, and `<functional>` is read WHOLE in the libc++ gate (472
+items). THE READER (version 69), by the census loop: (1) A POINTER TO MEMBER FUNCTION
+TAKES THE NOEXCEPT-SPECIFIER after its cv- and ref-qualifiers ([dcl.fct]/1, the order cv,
+ref, noexcept), which `__strip_signature<_Rp (_Gp::*)(_Ap...) const noexcept>` and its
+fifteen siblings spell -- 0.86 read the cv- and ref- ones and stopped there, and the header
+died at line 4421 of 18167; `ccl_suffix_quals' is the one rule for `noexcept' and `throw(...)',
+and the member-pointer qualifiers now end in it. (2) THE RIGHT SIDE OF AN ASSIGNMENT MAY BE
+A BRACED LIST ([expr.ass]/9: `x = {}' value-initializes, `x = {a, b}' list-initializes),
+which is how `__policy_func''s move constructor empties the one it moved from,
+`__f.__func_ = {};'. (3) `x.*pm' AND `p->*pm' ([expr.mptr.oper]) are read from the two
+punctuators the lexers already have -- no C writes `.' before `*' and none writes `->'
+before one -- so NEITHER LEXER CHANGES and k84 still compares them token for token; only a
+CALL of the node means anything here. (4) `__alignof' and `__alignof__' beside `alignof',
+and `alignof(T)' FOLDS to the alignment the layout already computes (nothing evaluated it
+before: the reader made the node and no pass took it).
+TWO NAMESPACES OF ONE FLATTENED NAME, the open item since M6's first step: `<functional>`
+declares `std::__maybe_derive_from_unary_function<_Tp, bool>' -- what `__weak_result_type'
+derives from, named unqualified -- and `std::__function::__maybe_derive_from_unary_function<_Fp>'
+-- what `std::function' derives from, written `__function::...' -- and flattened to one bare
+name the first won both, so `function<int(int)>' took the two-parameter one, whose defaulted
+second argument asks a detection over a member pointer that nothing could answer. THE
+OUTERMOST NAMESPACE KEEPS THE BARE NAME (an unqualified use from there is what C++ finds);
+every deeper namespace's items are indexed under `<innermost namespace>.<name>' with the
+name inside the item rewritten (`cpp_ns_quals', `cpp_qualify_item'), and a use QUALIFIED by
+that namespace resolves to it (`cpp_ns_key', in `cpp_type'). The decision is a function of
+the header's own items, so the index and the AST beside the summary reach it alike without
+either telling the other -- and it is the reader version's business, since the AST's keys
+change. Measured on `<functional>`: exactly two names collide.
+THE DESUGARING, each form named: (5) A PARTIAL SPECIALIZATION'S PATTERN MAY BE A FUNCTION
+TYPE, `function<_Rp(_ArgTypes...)>' ([temp.deduct.type]/8: the result type and the parameter
+types are deduced elements of their own, a trailing pack taking every parameter left) --
+`function', `__func', `__value_func', `__policy_func' and `__alloc_func' are each a primary
+template declared and never defined beside one specialization over a function type, and
+without it every one of them fell to the primary and the instance was an incomplete type; a
+function type as a TEMPLATE ARGUMENT is matched exactly, never decayed. (6) A FUNCTION TYPE
+DECAYS TO A POINTER TO FUNCTION ([conv.func]), as an array does to a pointer to its element:
+`std::function<int(int)> f = twice' hands `twice' to `function(_Fp)', whose `_Fp' is `int
+(*)(int)' -- deduced as the FUNCTION type, `__decay_t<_Fp>' kept it, and `__func<int(int),
+int(int)>' held its callable in a member of function type whose ADDRESS was then called
+instead of its value; and a function CONVERTS to a pointer to itself, which is what
+`is_constructible<_Fd, _Gp>' asks of `std::bind''s `int (&)(int, int, int)'. (7) A VIRTUAL
+OVERLOAD SET: a slot is named by the method AND ITS ARITY, since `__base''s `virtual __base
+*__clone() const' and `virtual void __clone(__base *) const' are two slots -- named alike,
+the table's struct had the member twice, the dispatch took the first, and a COPY of a
+`std::function' called the nullary clone with two arguments. (8) A VIRTUAL `operator()'
+DISPATCHES, as a named method already did: `std::function' calls what it holds through
+`(*__f_)(std::forward<_ArgTypes>(__args)...)', whose `__base::operator()' is PURE, and
+called directly the link named it. (9) MULTIPLE INHERITANCE WHERE A BASE AFTER THE FIRST HAS
+STORAGE OF ITS OWN ([class.derived]: the non-virtual bases in declaration order, then the
+class's own members): each is a sub-object `$base$2', `$base$3' ... laid out after the first
+base, constructed and destroyed with it, reached by the member lookup, the hops and the
+lowering's base walk (`ir_base_route', one route found and walked where two walks found
+their own); an EMPTY extra base is still a scope and no bytes (0.71), and only a POLYMORPHIC
+one is refused, since two tables need a `this' adjusted at every call. `std::tuple' is built
+this way -- `__tuple_impl<__tuple_indices<_Indx...>, _Tp...> : public __tuple_leaf<_Indx,
+_Tp>...', one base per element -- and `std::bind' stores its bound arguments in one.
+(10) A POINTER TO MEMBER FUNCTION keeps its shape through the passes (`memptr(C, Q, T)'),
+so the deduction and the thirty specializations `__weak_result_type' writes over it read it
+as it stands, and only the lowering turns it into what it is here: the ADDRESS of the one
+function this compiler emits for that method, whose first parameter is the object. `&C::m'
+is that address cast to the member-pointer type; `__builtin_invoke(pm, obj, args...)' and
+`(obj.*pm)(args)' are the indirect call. A pointer to a VIRTUAL member (which would have to
+carry a table index), to a DATA member (an offset) and an OVERLOADED member's address
+(no target here to choose by) are refused by name. (11) A DECLTYPE'S EXPRESSION AND A
+TEMPLATE ARGUMENT ARE WALKED IN THE CLASS they are written in, where C++ looks their names
+up: `using type = decltype(__find_base(static_cast<_Tp *>(nullptr)))' names a static member
+of that class, and `aligned_storage<sizeof(__buf_)>::type __tempbuf' names a member of the
+enclosing one -- walked with no context both stayed as written and neither had a type.
+(12) A STATIC METHOD NAMED BARE inside its class takes a null `this', as a static member
+template has since 0.47, and AN ELLIPSIS IS C++'S WORST MATCH for a plain overload too
+([over.ics.ellipsis]): `static void __find_base(...)' is the answer where the template
+beside it deduces nothing, and it is tried after every other overload and every template.
+(13) A FILE-SCOPE `const' OBJECT OF INTEGRAL TYPE WITH A CONSTANT INITIALIZER IS A CONSTANT
+EXPRESSION ([expr.const]; the rule 0.63 gave a `const' LOCAL): libc++ writes `inline const
+size_t __aligned_storage_max_align = alignof(__max_align_impl<...>);' and every
+`aligned_storage' asks for that name inside a variable template's initializer, where only a
+constant will do. The initializer is desugared before it is folded, under a guard per name,
+and only a SUCCESS is remembered -- asked once from inside a candidate whose walk is
+abandoned, a remembered failure would stand for ever. (14) A CLASS WHOSE ONLY CONSTRUCTOR IS
+A TEMPLATE takes arguments as a temporary: libc++'s `bind' writes `typedef __bind<_Fp,
+_BoundArgs...> type; return type(f, args...)', and counted by its data members the call took
+more than the class has and was left as a call to the class's own name. (15) A DATA MEMBER OF
+FUNCTION-POINTER TYPE IS CALLED THROUGH, as C calls one, where the refusal `no_member' is
+for a name the class does not have at all. (16) `cpp_is_type' knows a pointer to member, so
+the two-pass pattern matching puts one where it belongs.
+Reader version 69, lowering version 33. Gated by the three module fixtures above and by
+`test/cpp/run/multibase.cpp` (two bases with storage and an empty one, the offsets, a
+deeper derivation and the memberwise copy) and `detectbase.cpp` (the detection idiom
+`__weak_result_type' is written on: a variadic static member function beside a template one,
+read through a decltype at class scope).
+NOT DONE: `alignas' is still dropped, so `__aligned_storage_max_align' folds to 1 and
+`std::function''s inline buffer is 24 bytes aligned 1 where clang's is 32 aligned 16 -- self
+consistent, and in practice 8-aligned by its place in the object, but not the ABI's layout;
+`sizeof' OF AN EMPTY CLASS IS 0 here and 1 in C++ ([class]/4), which cannot be fixed by
+itself, since the empty base would then take a byte where C++'s optimization gives it none
+-- the pair belongs to one step of its own; `sizeof' a pointer to member function is 8 and
+not the ABI's 16, the price of refusing the virtual case; an UNQUALIFIED use of a colliding
+name from inside the deeper namespace still finds the outer one (libc++ qualifies every one
+of them); `std::function::target' and `target_type' (RTTI is off, 0.86); `std::not_fn',
+`std::identity' and `std::bind_front' (C++17/20, untried); `std::invoke' of a pointer to
+DATA member; `std::bind' of a member function pointer as the callee with `std::ref'ed
+arguments; and `<tuple>' as a module of its own, which the multiple inheritance above is
+the road to.
+Seven gates GREEN at cocolog 1.2.16, the cache warmed OUTSIDE them first at all four levels
+(22 summaries, `<functional>` the new one), since the reader's version moved: the reader's 94
+checks, 38 s and 396 MB; the compile gate's 73 at 358 MB; the driver's 23 at 77; the objects'
+29; the proof; the C++ one 146 checks at 1623 MB; the libc++ one's 17 reads, 945 s, 2306 MB.
+AND THE C++ GATE'S CLOCK IS NOT A NUMBER THIS TIME: it read 16655 s against 0.87's 1995, and
+`pmset -g log` says the machine was ASLEEP for 173 of those 278 minutes -- a clamshell sleep on
+battery at 16:05 for eighty minutes, then five maintenance sleeps. The gate measures elapsed
+time with `date +%s`, so it measured the lid. I read the number as an eight-fold REGRESSION
+and named a cause before measuring; the owner said sleep, and the log said sleep. What the
+regression would have looked like was in front of me and I passed it twice: the sampled rate
+was four fixtures in one half-hour and twelve in the next, and a slowdown in the compiler is
+evenly slow. The measurement that settles it is one fixture against a recorded number, awake,
+with the CPU time beside the wall clock: `test/cpp/run/stdmap.cpp` builds in 28.3 s of user
+time at 489 MB (18 s at about 1.1 GB when 0.79 recorded it, nine steps and cocolog's store
+compaction ago), and with `cpp_global_const' STUBBED TO FAIL -- 0.87's behaviour, the predicate
+being new here -- 28.6 s: this step's one addition to the hot path costs nothing measurable.
+The libc++ gate ran in a window with no sleep in it and is the honest comparison: 945 s against
+859 at 0.87, for one header more.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -4349,6 +4485,18 @@ module (a segfault that looked like the error path's). The build mirrors `module
   cocolog's "not started" item. A watchdog on ps's RSS under-protects on macOS
   (the number reads low); the cap stays, and `statistics/2` is the honest
   question to ask from inside. The string map stays two fixtures.
+* **A GATE'S ELAPSED TIME IS NOT A MEASUREMENT ON A LAPTOP THAT SLEEPS** (2026-09-15, the
+  C++ gate at 0.88). The gates time themselves with `date +%s`, which counts the hours a
+  closed lid spends asleep: one run read 16655 s where the work was at most 6254, the machine
+  having slept 173 of 278 minutes (`pmset -g log`, a `Clamshell Sleep' on battery and five
+  maintenance sleeps). Nothing warns you -- the log is complete, every check passed, and the
+  number is simply eight times too big. So: a timing is compared only against a run whose
+  window is known to have been awake, `pmset -g log | awk '$4=="Sleep"||$4=="DarkWake"'` is
+  the check, and where a number has to mean something it is CPU time (`time`'s user + system),
+  which a sleep cannot inflate. The shape is the other tell: a real slowdown is evenly slow,
+  while a sleeping machine leaves the progress in bursts. This is the third instrument in
+  these findings that answers confidently without measuring what was asked -- macOS's memory
+  counters, the installer's completeness check, and now the clock.
 * **No cocolog run of mine is unguarded, not even a small fixture:**
   `scratchpad/guard.sh SECS MB LOG QUERY [HOME]` runs one query under
   `perl -e 'alarm N; exec @ARGV'` (SIGALRM survives exec, so the alarm
