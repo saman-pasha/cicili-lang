@@ -13,10 +13,13 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 D=$(mktemp -d "${TMPDIR:-/tmp}/cicili-cpp-XXXXXX")
 trap 'rm -rf "$D"' EXIT
 export CCL_TEST_ROOT="$ROOT" CCL_TEST_TMP="$D"
-out=$("$C" --local query "ensure_loaded('$ROOT/test/cpp.pl'), cpp_main" 2>&1)
+out=$("$C" --local query "ensure_loaded('$ROOT/test/cpp.pl'), cpp_main" 2>&1); rc=$?
 echo "$out" | grep -a "^ok\|^FAIL\|^--\|^SKIP\|^     \|^GREEN\|^RED\|ERROR" || echo "$out" | tail -5
 failures=$(echo "$out" | grep -ac "^FAIL")
-echo "$out" | grep -aq "^GREEN\|^RED" || { echo "RED: the gate did not finish"; exit 1; }
+# a gate that DIES says so with its exit status and its raw tail, as the libc++ one does (0.84's finding):
+# a cocolog that cannot get memory answers `false.' and prints an Unknown message about a _G variable,
+# neither of which the filter above keeps, and a crash prints nothing at all
+echo "$out" | grep -aq "^GREEN\|^RED" || { echo "RED: the gate did not finish (query exit $rc)"; printf '%s\n' "$out" | tail -20; exit 1; }
 echo "-- cicili++, the command"
 cd "$D"
 got=$("$ROOT/bin/cicili++" "$ROOT/test/cpp/hello.cpp" -o hello 2>&1 && ./hello)

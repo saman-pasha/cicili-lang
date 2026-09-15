@@ -4060,6 +4060,35 @@ module (a segfault that looked like the error path's). The build mirrors `module
   `retract` and `nb_setval` overwrites are compacted away at safe points,
   `garbage_collect/0` forces it and `statistics(store_used, B)` reads it; the
   HEAP still reclaims on backtracking only, so the `\+ \+` discipline stays.
+* **cocolog CANNOT REPORT A FAILED ALLOCATION: a refused request is a WRONG ANSWER,
+  not an error** (2026-09-15, measured by cocolog's owner's session with an interposer
+  that refuses any request at or above 16 MB, after this repository's libc++ gate died
+  on it). The `oom' flag is set in eleven places -- every array that grows sets it when
+  realloc says no -- and read in ONE, a check inside the compaction; nowhere else. So
+  `coco_push' answers index 0 without writing, every term built afterwards IS the cell at
+  index 0, and the proof walks on over garbage: `numlist(1, 400000, L), length(L, N),
+  last(L, La)' answers `false.' and prints `ERROR: ?-: Unknown message: _G0', the ball
+  being that same cell read as an error term. Nothing stops after the flag is set, so the
+  engine asked for the same 16 MB 551,514 times before the query ended. WHAT IT LOOKS
+  LIKE HERE: a gate that dies with exit 1 and NOTHING in its log. The libc++ gate did
+  exactly that once at 0.84, 155 s into a 900 s run, straight after the C++ gate's 2157 s
+  on a 16 GB machine, peaking at 1018 MB against a 2800 MB cap -- the MACHINE was out,
+  not the process, which is why it ran clean alone afterwards and why it cannot be
+  reproduced on an idle box. A gate now prints its query's EXIT STATUS and the raw tail
+  when no GREEN or RED line comes back (`test/libcxx.sh`, `test/cpp.sh`): `false.' and an
+  Unknown message about a `_G' variable is this, and is worth telling apart from a goal
+  that really failed. AND THE ONE PLACE THE FLAG IS READ PROTECTS THE STORE AND TELLS
+  NOBODY (read from the source by that session, 2026-09-15): the compaction copies into a
+  SEPARATE array and tests `oom' after the walk and before a single pointer is swapped, so
+  every failure path leaves the store byte for byte as it was and answers 0 -- and every
+  caller (assert, retract, nb_setval, the end of a findall) ignores that answer. So a
+  compaction that meets a refused allocation is a no-op, and a gate death of this kind is
+  NEVER the store corrupted and never a compaction crashing: it is always one of the other
+  ten sites having turned the machine to garbage earlier, with the compaction, if it runs
+  at all, quietly declining. The symptom to watch for is therefore the only one: exit 1, a
+  `false.' that should have been an answer, and a message about an unbound `_G' variable.
+  To raise with cocolog's owner: an `oom' check in the step loop answering
+  `resource_error(memory)'; it is their engine's call, and they have it.
 * **On macOS the memory counters READ LOW, and the store's dead rows were the
   weight** (2026-09-14, with cocolog's owner's session). One identical C++
   build measured four times with `/usr/bin/time -l` gave 3252, 1821, 1728 and

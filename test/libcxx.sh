@@ -11,6 +11,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 D=$(mktemp -d "${TMPDIR:-/tmp}/cicili-libcxx-XXXXXX")
 trap 'rm -rf "$D"' EXIT
 export CCL_TEST_TMP="$D"
-out=$(HOME="$D" "$C" --local query "ensure_loaded('$ROOT/test/libcxx.pl'), libcxx_main" 2>&1)
+out=$(HOME="$D" "$C" --local query "ensure_loaded('$ROOT/test/libcxx.pl'), libcxx_main" 2>&1); rc=$?
 echo "$out" | grep -a "^ok\|^FAIL\|^GREEN\|^RED\|ERROR" || echo "$out" | tail -5
-echo "$out" | grep -aq "^GREEN" || { echo "$out" | grep -aq "^RED" || echo "RED: the gate did not finish"; exit 1; }
+# A GATE THAT DIES SAYS SO WITH ITS EXIT STATUS AND ITS RAW TAIL: the filter above keeps the lines
+# that match, and a cocolog that cannot get memory prints `false.' and an Unknown message about a
+# _G variable -- neither matches, and a crash prints nothing at all. The status told apart a killed
+# run from a refused one when the libc++ gate died once at 0.84 (the finding in CLAUDE.md).
+echo "$out" | grep -aq "^GREEN" || { echo "$out" | grep -aq "^RED" || { echo "RED: the gate did not finish (query exit $rc)"; printf '%s\n' "$out" | tail -20; }; exit 1; }
