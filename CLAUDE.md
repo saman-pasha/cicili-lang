@@ -52,14 +52,15 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set> and <optional> flattened and read WHOLE, under a fresh HOME,
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set>, <optional> and <memory> flattened and read WHOLE, under a fresh HOME,
                          and at the levels: <set>, <map>, <unordered_map>, <unordered_set> at C++20, <optional>, <string> at C++23, <optional> at C++26;
                          test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
                          the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
                          containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap,
                          stdset, stdsetstring, stdset2, stdset3, stdunorderedmap, stdunorderedmapstring, stdunorderedmap2,
                          stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2, stdnodehandle, stdmapinit, stdmapemplace, stdmapown,
-                         stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, and at the levels stdcontains (C++20), stdoptional3 (C++23),
+                         stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, the smart pointers (stduniqueptr, stdsharedptr, stdmemory),
+                         and at the levels stdcontains (C++20), stdoptional3 (C++23),
                          stdoptionalref (C++26);
                          a fixture's input is NAME.stdin
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
@@ -3591,6 +3592,139 @@ such ask now); `std::hash<optional>` (a local's `operator()' on that specializat
 unordered containers' `erase_if`; `<vector>`, `<string>` and `<iostream>` read at
 C++20 (only the associative containers and `<optional>`/`<string>` are); a program's
 own `operator<=>`, `std::format`, the ranges.
+
+**M6's fifty-third step (0.86): `<memory>`, whole -- `std::unique_ptr`,
+`std::shared_ptr` and `std::weak_ptr` compiled from libc++'s own bodies.** THE
+MODULE: `test/cpp/run/stduniqueptr.cpp` (a `unique_ptr<int>` over `new`, `*`,
+`get`, `operator bool`, `reset`, `make_unique`, MOVED from and the source left
+empty, a `unique_ptr` of the program's own class with a destructor counted, a
+method through `->`, `release` and the raw pointer `delete`d, a default-built one
+assigned from a `make_unique`), `stdsharedptr.cpp` (`make_shared<int>` with
+`use_count` through a copy's scope, `make_shared` of a class with a destructor,
+a `weak_ptr` from it, `expired`, `use_count`, `lock` into a second owner,
+`reset` destroying the object and the weak pointer expiring with it,
+`shared_ptr<int>(new int(12))` and its `operator bool`) and `stdmemory.cpp` (a
+`unique_ptr<int[]>` over `new int[4]` and over `make_unique<int[]>(n)` with
+`operator[]`, a CUSTOM DELETER whose parameter is `own`, `swap` as a member and
+as `std::swap`, the comparisons with `nullptr`, `addressof`, a `unique_ptr` as a
+class's member built in its constructor's initializer, an ALIASING `shared_ptr`
+into the object's own member keeping it alive, two `weak_ptr`s and the object
+outliving its first owner) match clang++ line for line, and `<memory>` is read
+WHOLE in the libc++ gate. THE FORMS, each named:
+(1) A POINTER TO MEMBER, `_Rp (_Cp::*)()` and `int C::*` ([dcl.mptr]), its own
+node (`memptr(Class, Quals)`, `ccl_pointers`, `ccl_apply_pointers`) so it can
+never be taken for a plain pointer: libc++'s `__weak_result_type` specializes
+over one for every member-function shape, and the reader stopped at
+`<memory>`'s line 4317 of 8957 on the first of them. Nothing lowers one; a
+program that writes one is refused by name, and a specialization's pattern over
+one matches nothing a program has. (2) AND ONLY A POINTER TO MEMBER FUNCTION
+TAKES THE CV- AND REF-QUALIFIERS AFTER ITS PARAMETERS, `_Rp (_Cp::*)() const`
+and `() &&` (`ccl_memptr_quals` in `ccl_decl_syntax`, the declarator's own
+memptr the test) -- read in `ccl_suffix_quals`, where a function TYPE's
+`noexcept` is dropped, they take a METHOD's own `const` with them, which is the
+method rule's (`ccl_method_quals`): every const method in the language lost its
+mark, the const overload, the const ordering and the `K` of a shipped member's
+Itanium name with it (the link named
+`__shared_weak_count::__get_deleter(const type_info &)` without it). The gate
+did not find this -- our own mangling is `.c` on both sides of a call and
+agrees with itself; the shipped library's does not. (3) A MEMBER CLASS
+TEMPLATE'S NAME IS NOTED AHEAD with the member function templates' (0.81's
+`ccl_member_templates_ahead`, now `struct`/`class`/`union` after the parameter
+list): `shared_ptr` uses `__shared_ptr_default_delete<_Tp[], _Yp>` two hundred
+lines before it declares it, which a complete-class context allows
+([class.mem]/6), and read in order it was a pair of comparisons. (4) A TYPE THE
+READER CANNOT SETTLE STAYS `auto` OUTSIDE A TEMPLATE TOO (`ccl_free_name`:
+inside one every name the tables do not know is some parameter's, which is
+0.60's rule unchanged; outside one a name the tables know as a typedef, a tag,
+a template or an env entry is settled and anything else is somebody's
+parameter): 0.60 asked the question only inside a template, and `auto q =
+std::make_unique<int>(7)` written in `main` took `unique_ptr<_Tp>` off the raw
+declaration a summary holds a function template under, with `_Tp` free -- the
+lowering met `typedef(_Tp)`. The two branches are kept apart on purpose: a
+template's own parameters ARE in the global env while its item is read, so
+testing the env inside one would have made them settled and undone 0.60. (5) `typeid` is read
+as its own node and refused by name. Reader version 67.
+AND NO RTTI, the question 0.50 asked of exceptions asked again: libc++ decides
+its `_LIBCPP_HAS_RTTI` by `#if defined(__cpp_rtti) && __cpp_rtti >= 199711L`,
+and this compiler emits no `type_info` object for any type, so neither
+`__cpp_rtti` nor `__GXX_RTTI` is predefined any more (`ccl_pp.pl`, commented
+with the reason) and the library compiles its own no-RTTI configuration, as
+`-fno-rtti` gives it. `shared_ptr`'s control block writes
+`__t == typeid(_Dp) ? addressof(__deleter_) : nullptr` in an override; without
+RTTI the override is not there and the base's shipped one answers null. Four
+headers change (`any`, `exception_ptr`, `shared_ptr`, `function`) and the
+VTABLES do not -- `__shared_weak_count::__get_deleter` is declared
+unconditionally and only the derived override is guarded -- so our control
+blocks lay out as the shipped library's. A program's own `typeid` and
+`dynamic_cast` are refused by name with it: the cast had been passed through as
+a plain one, which is a WRONG ANSWER for a downcast rather than a missing form.
+THE DESUGARING: (6) A CLASS TYPEDEF THAT ASKS FOR ITSELF WHILE IT IS BEING
+RESOLVED IS LEFT AS WRITTEN, a guard per (class, name) as `cpp_fold_static` has
+one: libc++'s `type_info` writes `typedef __type_info_implementations::__impl
+__impl` over a NAMESPACE, and the namespace flattening makes that `typedef
+__impl __impl`, which asked for itself without end (139,393 flattens, 140 s to
+2803 MB). THE SHAPE IS NO TEST, which is how this was first written and what
+cost the day: `allocator_traits` writes `typedef typename __base::pointer
+pointer`, the same spelling through a scope that DOES resolve, and refusing it
+by shape left every `pointer`, `size_type` and `allocator_type` parameter of
+the allocator traits raw at the lowering (`not lowered yet: typedef(pointer)`).
+The guard is 4 s and 140 MB and resolves both. (7) `nullptr_t` TAKES A NULL
+POINTER CONSTANT AND NOTHING ELSE in the TEMPLATE road too ([conv.ptr];
+`cpp_param_accepts`, where 0.81 had put it at the fit and the arity-only last
+resort): libc++ writes `unique_ptr(nullptr_t)` beside `explicit
+unique_ptr(pointer)` as two constructor templates under one guard, both held
+for `unique_ptr<int> p(new int(5))`, the first declared won, and `*p` read a
+null. (8) `std::move(x)` NAMES AN OBJECT and is no temporary to elide
+([basic.lval]: an xvalue, not a prvalue; `cpp_decl_pieces`' elide guard):
+elided, `auto r = std::move(q)` made `r` the bytes of `q`, both unique_ptrs
+held the pointer and both freed it. (9) THE ARRAY AND REFERENCE TRAITS
+(`cpp_builtin_type`): `__remove_extent` and `__remove_all_extents`
+([meta.trans.arr]), `__add_pointer`, and `__add_lvalue_reference` and
+`__add_rvalue_reference` with REFERENCE COLLAPSING, where they had unreffed
+first -- `shared_ptr`'s `element_type` is `__remove_extent_t<_Tp>`. (10) `new
+T[n]()` and `new T[n]{}` VALUE-INITIALIZE every element ([expr.new]/24), which
+for a scalar is its zero bytes -- `calloc` exactly, and `make_unique<_Tp[]>(n)`
+is `unique_ptr<_Tp>(new _Up[__n]())`, the one place the form is asked for;
+refused by name since 0.71.
+THE CHECK: (11) A LIBRARY CLASS'S VALUE MAY BE MOVED (`ck_moves_library` in
+`ck_expr(move)` and `ck_kind(move)`): what it holds is libc++'s own discipline,
+as its pointers already are (0.79's `ck_carries_`) and its functions' bodies
+are (0.45), and `auto r = std::move(q)` over a `unique_ptr` is the ordinary way
+to use one -- refused as `move of a non-owner`, since the check has no owner
+behind it and needs none.
+THE LOWERING: (12) THE ATOMIC BUILTINS ARE LLVM'S OWN INSTRUCTIONS, never a
+call to anything (`ir_atomic_rmw` and kin): `__atomic_add_fetch(p, -1,
+__ATOMIC_ACQ_REL)` is how `shared_ptr` counts its owners
+(`__libcpp_atomic_refcount_decrement`), and the compiler is asked for it by
+name. An `atomicrmw` answers the OLD value, so a `*_fetch` form applies the
+operation once more to it and a `fetch_*` form takes it as it is; `exchange`,
+`load`, `store` and the two fences go with them, the load and the store
+carrying the type's alignment beside the ordering. The memory order is the constant the header
+spells, clang's own numbering, which this preprocessor predefines
+(`__ATOMIC_RELAXED` 0 .. `__ATOMIC_SEQ_CST` 5); anything that does not fold is
+sequentially consistent. Lowering version 32.
+Seven gates GREEN, warm, at cocolog 1.2.15 (the reader's 94 checks, 40 s and
+429 MB; the compile gate's 73 at 364 MB, 35 s; the driver's 23 at 68 MB; the
+objects' 29; the proof; the C++ one 141 checks, 1885 s, 1480 MB; the libc++
+one's 16 reads, 829 s, 2316 MB, `<memory>` 324 items) -- and the cache was
+warmed OUTSIDE them first, one header a process at each of the four levels
+(21 summaries), since the reader's version moved twice in this step and a cold
+first run peaks far above the steady state. The three fixtures build in 6 to
+50 s at 150 to 870 MB; `leaks` finds none.
+NOT DONE: `shared_ptr::get_deleter` and `dynamic_pointer_cast`, which are not
+there without RTTI -- what `-fno-rtti` means; `enable_shared_from_this`,
+`owner_before` and `std::atomic<shared_ptr>` (untried); `make_unique<T[]>` of a
+CLASS, whose elements need their constructor run over each and their destructor
+over each at `delete[]`, which needs the ABI's ARRAY COOKIE (the count written
+before the first element) that nothing here writes -- refused by name
+(`new_array_of_objects`), with `new T[n]{a, b}` beside it; a program that calls
+`std::allocator::allocate` directly, whose raw pointer the safe part refuses as
+a loose one, exactly as it refuses a bare `malloc` with no `own` slot behind it;
+`std::uninitialized_copy` and the `destroy_*` algorithms called by a program;
+`std::unique_ptr`'s ordering operators; a POINTER TO MEMBER lowered (the reader
+takes one, nothing else does); and `<atomic>`'s own surface -- the
+compare-exchange builtins, the waits and the fences' scopes -- which is a module
+of its own.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

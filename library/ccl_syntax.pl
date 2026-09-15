@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(63).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept
+ccl_reader_version(67).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -829,7 +829,9 @@ ccl_auto_decl(L, N, E, R, D) :-
 %% was read off. libc++'s `auto __guard = std::__make_exception_guard(...)' takes that function's result type,
 %% `__exception_guard<_Rollback>', whose _Rollback is free here: deduced, it keyed an instance by that free name.
 ccl_dependent_type(T) :- compound(T), ( T = scoped(_, _) -> true ; ccl_free_name(T) -> true ; T =.. [_|As], member(A, As), ccl_dependent_type(A) ), !.
-ccl_free_name(typedef(N)) :- atom(N), nb_getval('$ccl_tmpl_depth', D), D > 0, \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _).
+ccl_free_name(typedef(N)) :- atom(N), \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _),
+    (   nb_getval('$ccl_tmpl_depth', D), D > 0 -> true                       % INSIDE a template every name the tables do not know is some parameter's (0.60)
+    ;   \+ ccl_known_template(N), \+ ccl_env_member(genv, N) ).             % ... and OUTSIDE one too, where the type was read off a library template's RAW declaration: `auto q = std::make_unique<int>(7)' in main took `unique_ptr<_Tp>' with _Tp free and the lowering met `typedef(_Tp)'. There a name the tables know as a typedef, a tag, a template or an env entry is settled; anything else is somebody's parameter
 ccl_sto_quals(Sto, MQs, Sto1) :- ( memberchk(const, MQs) -> Sto1 = const(Sto) ; Sto1 = Sto ).
 
 ccl_external_rest(Env, Env, L, Sto, Base, function(L, Sto1, Ret, Name, Params, Var, Body)) -->
@@ -1106,6 +1108,7 @@ ccl_scan_close([tok(p, '>>', _)|Ts], D, R) :- !, D1 is D - 2, ccl_scan_close(Ts,
 ccl_scan_close([_|Ts], D, R) :- ccl_scan_close(Ts, D, R).
 ccl_scan_did([tok(p, '(', _)|Ts], 0, tok(_, W, _), N) :- ccl_scan_group_word(W), !, ccl_scan_parens(Ts, 0, Rest), ccl_scan_did(Rest, 0, none, N).   % `__attribute__((...))', `alignas(...)', `decltype(...)': a group, not the declarator; libc++ writes three attributes before every member's type
 ccl_scan_did([tok(p, '[', _), tok(p, '[', _)|Ts], D, _, N) :- !, ccl_scan_attr(Ts, Rest), ccl_scan_did(Rest, D, none, N).   % `[[...]]'
+ccl_scan_did([tok(kw, K, _), tok(id, N, _)|_], 0, _, N) :- memberchk(K, [struct, class, union]), !.   % a member CLASS template's name, `template <class, class _Yp> struct __shared_ptr_default_delete : ...': shared_ptr USES it two hundred lines before it declares it, which a complete-class context allows ([class.mem]/6), and read in order `__shared_ptr_default_delete < _Tp , _Yp > ( )' was a pair of comparisons
 ccl_scan_did([tok(p, '(', _)|_], 0, tok(id, N, _), N) :- !.
 ccl_scan_did([tok(p, '(', _)|_], 0, _, _) :- !, fail.
 ccl_scan_did([tok(p, P, _)|_], 0, _, _) :- memberchk(P, [';', '{', '}']), !, fail.
@@ -1263,9 +1266,27 @@ ccl_tie_name(none) --> [].
 ccl_abstract_or_declarator(Env, Base, Name, Type) --> ccl_decl_syntax(Env, D), !, { ccl_mk_type(D, Base, Name, Type) }.
 ccl_abstract_or_declarator(_, Base, anon, Base) --> [].
 
-ccl_decl_syntax(Env, decl(Ptrs, Direct, Sfx)) --> ccl_pointers(Ptrs), ccl_direct(Env, Direct), ccl_suffixes(Env, Sfx), { Direct \== none ; Ptrs \== [] ; Sfx \== [] }.
+ccl_decl_syntax(Env, decl(Ptrs, Direct, Sfx)) --> ccl_pointers(Ptrs), ccl_direct(Env, Direct), ccl_suffixes(Env, Sfx),
+    ccl_memptr_quals(Ptrs, Direct), { Direct \== none ; Ptrs \== [] ; Sfx \== [] }.
+%% ... AND ONLY A POINTER TO MEMBER FUNCTION takes the cv- and ref-qualifiers after its parameters, `_Rp (_Cp::*)()
+%% const' and `_Rp (_Cp::*)() &&' ([dcl.mptr]), which is how libc++'s __weak_result_type specializes over every
+%% member-function shape. They are NOT read in `ccl_suffix_quals', where a METHOD's own `const' would go with them:
+%% that is the method rule's (ccl_method_quals), and eaten here every const method in the language lost its mark --
+%% the const overload, the const ordering and the `K' of a shipped member's Itanium name with it.
+ccl_memptr_quals(Ptrs, Direct) --> ccl_cpp, { ccl_memptr_decl(Ptrs, Direct) }, !, ccl_mptr_quals.
+ccl_memptr_quals(_, _) --> [].
+ccl_mptr_quals --> ccl_kw(K), { memberchk(K, [const, volatile]) }, !, ccl_mptr_quals.
+ccl_mptr_quals --> ( ccl_p('&&'), ! ; ccl_p('&') ), !, ccl_mptr_quals.
+ccl_mptr_quals --> [].
+ccl_memptr_decl(Ptrs, _) :- memberchk(memptr(_, _), Ptrs), !.
+ccl_memptr_decl(_, paren(decl(Ps, D, _))) :- ccl_memptr_decl(Ps, D).
 ccl_pointers([ref(Qs)|Ps]) --> ccl_cpp, ccl_p('&'), !, ccl_quals(Qs), ccl_pointers(Ps).      % C++'s references
 ccl_pointers([rref(Qs)|Ps]) --> ccl_cpp, ccl_p('&&'), !, ccl_quals(Qs), ccl_pointers(Ps).
+%% A POINTER TO MEMBER, `_Rp (_Cp::*)()' and `int C::*' ([dcl.mptr]): its own node, memptr(Class, Qs), so it can
+%% never be taken for a plain pointer -- libc++'s __weak_result_type specializes over one for every member-function
+%% shape, and the reader stopped at <memory>'s line 4317 of 8957 on the first of them. Nothing lowers one yet; a
+%% program that writes one is refused by name, and a specialization's pattern over one matches nothing a program has.
+ccl_pointers([memptr(C, Qs)|Ps]) --> ccl_cpp, { Env = genv }, ccl_qname(Env, type, C), ccl_p('::'), ccl_p('*'), !, ccl_quals(Qs), ccl_pointers(Ps).
 ccl_pointers([ptr(Qs)|Ps]) --> ccl_p('*'), !, ccl_quals(Qs), ccl_pointers(Ps).
 ccl_pointers([block(Qs)|Ps]) --> ccl_p('^'), !, ccl_quals(Qs), ccl_pointers(Ps).   % Apple's block pointer, (^f)(int)
 ccl_pointers([]) --> [].
@@ -1319,6 +1340,7 @@ ccl_mk_type(decl(Ptrs, Direct, Sfx), Base, Name, Type) :-
     ; Name = anon, Type = T2 ).
 ccl_apply_pointers([], T, T).
 ccl_apply_pointers([ptr(Q)|Ps], T0, T) :- ccl_apply_pointers(Ps, ptr(Q, T0), T).
+ccl_apply_pointers([memptr(C, Q)|Ps], T0, T) :- ccl_apply_pointers(Ps, memptr(C, Q, T0), T).   % a pointer to member: the class it belongs to, kept
 ccl_apply_pointers([block(Q)|Ps], T0, T) :- ccl_apply_pointers(Ps, block(Q, T0), T).
 ccl_apply_pointers([ref(Q)|Ps], T0, T) :- ccl_apply_pointers(Ps, ref(Q, T0), T).
 ccl_apply_pointers([rref(Q)|Ps], T0, T) :- ccl_apply_pointers(Ps, rref(Q, T0), T).
@@ -1601,6 +1623,8 @@ ccl_lambda_specs --> ccl_gnu_attr, !, ccl_lambda_specs.                         
 ccl_lambda_specs --> ccl_kw(K), { memberchk(K, [mutable, constexpr, consteval, static]) }, !, ccl_lambda_specs.
 ccl_lambda_specs --> ccl_kw(noexcept), !, ( ccl_p('('), ccl_balanced, ccl_p(')'), ! ; [] ), ccl_lambda_specs.
 ccl_lambda_specs --> [].
+ccl_primary_(kw, typeid, typeid(X)) --> ccl_cpp, !, ccl_kw(typeid), ccl_p('('), { Env = genv },   % RTTI's operator, which shared_ptr's __get_deleter compares: read as its own node and refused by name where a program writes one (nothing here emits a type_info)
+    ( ccl_type_name(Env, T), ccl_peek(p, ')'), { X = type(T) } ; ccl_expr(E), { X = E } ), ccl_p(')').
 ccl_primary_(id, '__null', cast(ptr([], base([], [void])), int(0))) --> ccl_cpp, !, ccl_id('__null').   % C++'s NULL: what C's gives
 %% the requirements of a requires-expression: typename T; { e } -> C; requires e; e;
 ccl_requirements(Env, [R|Rs]) --> ccl_requirement(Env, R), !, ccl_requirements(Env, Rs).

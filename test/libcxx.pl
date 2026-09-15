@@ -8,7 +8,7 @@
 
 libcxx_main :-
     nb_setval('$lx_fail', 0),
-    forall(member(H-Min, [vector-400, string-400, iostream-600, map-400, set-400, unordered_map-300, unordered_set-300, optional-150,
+    forall(member(H-Min, [vector-400, string-400, iostream-600, map-400, set-400, unordered_map-300, unordered_set-300, optional-150, memory-300,
                           at(set, 20)-450, at(map, 20)-450, at(unordered_map, 20)-350, at(unordered_set, 20)-350, at(optional, 23)-250, at(string, 23)-450, at(optional, 26)-250]),   % the levels: C++20's concepts and ranges, C++23's monadic optional, C++26's optional<T &>
            libcxx_header(H, Min)),
     nb_getval('$lx_fail', N),

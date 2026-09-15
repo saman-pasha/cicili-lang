@@ -815,7 +815,7 @@ ck_decls([var(N, T0, Init0)|Vs], St0, St) :-
 ck_kind(E, _, null) :- ck_null(E), !.
 ck_kind(move(E), _, fresh) :- ck_own_elem(E, _), !.                  % an element moved out: an owner, complete
 ck_kind(move(E), St, K) :- ck_path(E, P), ck_by_value(E), ck_own_under(St, P, Fs), Fs \== [], !, ck_kind(E, St, K).   % a struct with owners moved whole: the value's kind, the fields going in ck_expr
-ck_kind(move(E), St, K) :- !, ( ck_owner_path(St, E, P) -> K = owner(P) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
+ck_kind(move(E), St, K) :- !, ( ck_owner_path(St, E, P) -> K = owner(P) ; ck_moves_library(E) -> ck_kind(E, St, K) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).   % a library class's value: the kind its own form has (ck_moves_library)
 ck_name(E, N) :- ( ck_path(E, N) -> true ; N = E ).
 ck_kind(E, St, owner(P)) :- ck_owner_path(St, E, P), !.
 ck_kind(E, St, borrow(P)) :- ck_borrows_from(E, St, P), !.
@@ -1068,7 +1068,12 @@ ck_unary_shape(deref(E), E). ck_unary_shape(cast(_, E), E). ck_unary_shape(posti
 ck_unary_shape(preinc(E), E). ck_unary_shape(predec(E), E).
 ck_expr(move(E), St0, St) :- ck_own_elem(E, K), !, ck_expr(E, St0, St1), ck_dangle(St1, K, St).   % an element out: the array's borrows dangle
 ck_expr(move(E), St0, St) :- ck_path(E, K), ck_by_value(E), ck_own_under(St0, K, Fs), Fs \== [], !, ck_expr(E, St0, St1), ck_move_out(St1, Fs, move(E), St).   % a struct with owners moved whole: its fields go
-ck_expr(move(E), St0, St) :- !, ( ck_owner_path(St0, E, K) -> ck_base_use(E, St0, St1), ck_consume(K, move, move(E), St1, St, _) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
+ck_expr(move(E), St0, St) :- !, ( ck_owner_path(St0, E, K) -> ck_base_use(E, St0, St1), ck_consume(K, move, move(E), St1, St, _) ; ck_moves_library(E) -> ck_expr(E, St0, St) ; ck_name(E, N), ck_fail(move_of_non_owner, N, move(E)) ).
+%% A LIBRARY CLASS'S VALUE MAY BE MOVED: what it holds is libc++'s own discipline, as its pointers are
+%% (ck_carries_) and its functions' bodies are (0.45) -- `auto r = std::move(q)' over a unique_ptr is the
+%% ordinary way to use one, and the check has no owner behind it to move and needs none.
+ck_moves_library(E) :- ccl_lang(cpp), catch(ccl_type_of(E, T), _, fail), T \== unknown, ccl_unref(T, T1),
+    catch(ccl_resolve_type(T1, base(_, [struct(N, _)])), _, fail), ck_library_class(N), !.
 ck_expr(scoped(_, N), St0, St) :- !, ck_expr(id(N), St0, St).                  % C++ (M6)
 ck_expr(ccast(_, _, E), St0, St) :- !, ck_expr(E, St0, St).
 ck_expr(new(_, Args), St0, St) :- !, ck_exprs(Args, St0, St).

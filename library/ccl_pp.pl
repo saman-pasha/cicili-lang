@@ -1025,7 +1025,14 @@ pp_predef('__GLIBCXX_TYPE_INT_N_0', cpp, '__int128').
 pp_predef('__GNUC_GNU_INLINE__', cpp, '1').
 pp_predef('__GNUG__', cpp, '4').
 pp_predef('__GXX_EXPERIMENTAL_CXX0X__', cpp, '1').
-pp_predef('__GXX_RTTI', cpp, '1').
+%% AND NO RTTI, the same question asked the same way: `#if defined(__cpp_rtti) && __cpp_rtti >= 199711L' decides
+%% libc++'s _LIBCPP_HAS_RTTI, and this compiler emits no type_info object for any type, so leaving both undefined
+%% compiles the library's own no-RTTI configuration, as -fno-rtti gives it. Four headers change (`any',
+%% `exception_ptr', `shared_ptr', `function'); the VTABLES do not -- `__shared_weak_count::__get_deleter' is
+%% declared unconditionally and only the derived override is guarded, so our control blocks still lay out as the
+%% shipped library's. `shared_ptr::get_deleter' and `dynamic_pointer_cast' are then not there, which is what
+%% -fno-rtti means, and a program that writes `typeid' or `dynamic_cast' is refused by name.
+%% pp_predef('__GXX_RTTI', cpp, '1').
 pp_predef('__GXX_WEAK__', cpp, '1').
 pp_predef('__STDCPP_DEFAULT_NEW_ALIGNMENT__', cpp, '16UL').
 pp_predef('__STDCPP_THREADS__', cpp, '1').
@@ -1071,7 +1078,7 @@ pp_predef('__cpp_range_based_for', cpp, '201603L').
 pp_predef('__cpp_raw_strings', cpp, '200710L').
 pp_predef('__cpp_ref_qualifiers', cpp, '200710L').
 pp_predef('__cpp_return_type_deduction', cpp, '201304L').
-pp_predef('__cpp_rtti', cpp, '199711L').
+%% pp_predef('__cpp_rtti', cpp, '199711L').   % see NO RTTI above
 pp_predef('__cpp_rvalue_references', cpp, '200610L').
 pp_predef('__cpp_sized_deallocation', cpp, '201309L').
 pp_predef('__cpp_static_assert', cpp, '202306L').

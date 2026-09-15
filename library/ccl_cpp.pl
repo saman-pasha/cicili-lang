@@ -1887,7 +1887,7 @@ cpp_decl_pieces(Ctx, L, Sto, B, [var(N, T0, I)|Vs], Pieces) :-
         %% `__scope_guard(_Func)' has, which takes the closure, and LLVM refused the store; the temporary that
         %% built it is the object too, so the statement must not destroy it (cpp_temp_elide, as a by-value
         %% parameter and a return already do).
-        (   Args = [E0], cpp_class_of_type_of(E0, C), \+ cpp_lvalue(E0)
+        (   Args = [E0], cpp_class_of_type_of(E0, C), \+ cpp_lvalue(E0), \+ ( E0 = move(X0), cpp_lvalue(X0) )   % ... but `std::move(q)' NAMES AN OBJECT and is no temporary to elide ([basic.lval]: an xvalue, not a prvalue): elided, `auto r = std::move(q)' made r the bytes of q, both unique_ptrs held the pointer and both freed it
         ->  cpp_temp_elide(E0, E1), Pieces = [declaration(L, Sto, B, [var(N, T, E1)])|P1]
         ;   cpp_ctor(C, Args, CName)
         ->  cpp_fill_defaults(CName, Args, Args0), cpp_ref_args_of(CName, Args0, Args1),
@@ -2137,7 +2137,17 @@ cpp_expr(Ctx, decay_copy(X), E) :- !, cpp_expr(Ctx, X, X1),                     
     ->  cpp_decayed(T0, T), ( cpp_class_of_type(T, C) -> ( cpp_dtor(C, _), cpp_lvalue(X1) -> cpp_refuse(0, copy_of_a_class_with_destructor(C)) ; E = X1 ) ; E = cast(T, X1) )
     ;   E = X1 ).
 cpp_expr(Ctx, new(T0, As), E) :- !, cpp_type(T0, T), cpp_exprs(Ctx, As, As1), cpp_new(T, As1, E).
-cpp_expr(_, new_array_init(_, _, _), _) :- !, cpp_refuse(0, new_array_initialized).   % `new T[n]()': its elements are value-initialized, which nothing here does yet
+%% `new T[n]()' AND `new T[n]{}' VALUE-INITIALIZE every element ([expr.new]/24), which for a scalar and for a
+%% class with nothing to run is its zero bytes -- `calloc' exactly. libc++'s `make_unique<_Tp[]>(__n)' is
+%% `unique_ptr<_Tp>(new _Up[__n]())', the one place the form is asked for. An element whose class has a
+%% constructor or a destructor would need that constructor over each element and the destructor over each at
+%% `delete[]', which needs the ABI's ARRAY COOKIE (the count written before the first element) that nothing here
+%% writes: refused by name, as the braced item list is.
+cpp_expr(_, typeid(_), _) :- !, cpp_refuse(0, typeid).   % RTTI IS OFF (no __cpp_rtti predefined, ccl_pp): this compiler emits no type_info object for any type, so the operator that reads one is refused by name
+cpp_expr(Ctx, new_array_init(T0, N, []), E) :- !, cpp_type(T0, T), cpp_expr(Ctx, N, N1),
+    ( cpp_elem_class(T, C), \+ cpp_trivial_class(C) -> cpp_refuse(0, new_array_of_objects(C)) ; true ),
+    E = cast(ptr([], T), call(id(calloc), [N1, sizeof_type(T)])).
+cpp_expr(_, new_array_init(_, _, _), _) :- !, cpp_refuse(0, new_array_initialized).   % `new T[n]{a, b}': the items, and the rest value-initialized
 cpp_expr(Ctx, new_at(Ps, N0), E) :- !, cpp_exprs(Ctx, Ps, Ps1),
     ( N0 = new(T0, As) -> cpp_type(T0, T), cpp_exprs(Ctx, As, As1), cpp_new_at(Ps1, T, As1, E) ; cpp_refuse(0, placement_new_array) ).
 cpp_expr(Ctx, new_array(T0, N), new_array(T, N1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, N, N1).
@@ -2154,6 +2164,7 @@ cpp_nested_pending(C) :- catch(nb_getval('$cpp_nested', L), _, fail), memberchk(
 cpp_expr(Ctx, compound_lit(T0, I), compound_lit(T, I1)) :- !, cpp_type(T0, T), cpp_expr(Ctx, I, I1).
 cpp_expr(Ctx, delete(X), E) :- !, cpp_expr(Ctx, X, X1), cpp_delete(X1, E).
 cpp_expr(Ctx, ccast(functional, base(Q, [typedef(C)]), X), E) :- cpp_class(C, _), !, cpp_expr(Ctx, X, X1), cpp_temporary(base(Q, [typedef(C)]), C, [X1], E).
+cpp_expr(_, ccast(dynamic, _, _), _) :- !, cpp_refuse(0, dynamic_cast).   % RTTI IS OFF (no __cpp_rtti predefined, ccl_pp): a downcast reads a type_info object this compiler emits for nothing, and passed through as a plain cast it is a WRONG ANSWER rather than a missing form
 cpp_expr(Ctx, ccast(K, T0, X), ccast(K, T, X2)) :- !, cpp_type(T0, T), cpp_expr(Ctx, X, X1), cpp_cast_to(X1, T, X2).
 cpp_expr(Ctx, move(X), E) :- !, cpp_expr(Ctx, X, X1), ( ccl_type_of(X1, T), T \== unknown, ( cpp_holds_owners(T) ; ccl_unref(T, T1), cpp_class_of_type(T1, _) ) -> E = move(X1) ; E = X1 ).   % move of an int is the int (a template's T); OF A CLASS VALUE IT STAYS ([expr.xvalue]): the value category is what overload resolution reads, and dropped here `t.insert(std::move(nh))' found no `insert(node_type &&)' and took `insert(const value_type &)' through the handle's `operator bool'
 cpp_expr(Ctx, stmt_expr(block(Is)), stmt_expr(block(Js))) :- !, ccl_scope_push, cpp_stmts(Ctx, Is, Js), ccl_scope_pop.
@@ -2608,6 +2619,7 @@ cpp_decltype_of(E, ref([], T)) :- ( E = deref(_) ; E = index(_, _) ), ccl_type_o
 cpp_decltype_of(E, T) :- ccl_type_of(E, T), T \== unknown.
 cpp_type(base(Q, [builtin_type(N, Args)]), T) :- !, cpp_builtin_type(N, Args, T0), cpp_merge_quals(Q, T0, T).
 cpp_type(base(_, [typedef(scoped(Path, N))]), _) :- memberchk(nonclass(A), Path), !, cpp_refuse(0, no_member_type(A, N)).   % a type has no member types (cpp_subst_path)
+cpp_type(base(Q, [typedef(scoped(Path, N))]), base(Q, [typedef(N)])) :- atom(N), ccl_typedef_of(N, D), cpp_self_typedef(N, D), !.   % ... AND A NAME WHOSE FLATTENED FORM IS ITS OWN DEFINITION IS LEFT ALONE, without the hook and without the trace (0.64's self-typedef, from the flattened side): libc++'s type_info writes `typedef __type_info_implementations::__impl __impl' over a NAMESPACE, and the namespace flattening makes that `typedef __impl __impl' -- asked once per member of the class, it printed 139,393 flattens and took the machine's memory
 cpp_type(base(Q, [typedef(scoped(Path, N))]), T) :- atom(N), !,
     ( catch(nb_getval('$cpp_where', W), _, fail) -> true ; W = top ), cpp_trace(flatten(Path, N, in(W))),   % std::string: the namespace flattens (a class the resolver missed flattens too -- the trace tells)
     cpp_type(base(Q, [typedef(N)]), T).   % ... AND THE BARE NAME GOES THROUGH THE HOOK AGAIN: `std::string' is an alias of a template-id, and flattened and left there it reached the lowering as `basic_string<char>' itself
@@ -2623,7 +2635,18 @@ cpp_nested_tag(union(N, _), N) :- atom(N).
 %% that name in that class asked for itself without end -- no refusal, no trace, just terms until the machine gave
 %% out. cocolog reclaims nothing along the way, so a loop here is the whole memory (the finding below).
 cpp_self_typedef(N, base(_, [typedef(N)])).
-cpp_type(base(Q, [typedef(N)]), T) :- atom(N), cpp_class_ctx(C), cpp_class_typedef(C, N, T0, Def), \+ cpp_self_typedef(N, T0), !, cpp_in_class(Def, cpp_type(T0, T1)), cpp_merge_quals(Q, T1, T), cpp_touch_nested(T1).
+%% ... AND A CLASS TYPEDEF THAT ASKS FOR ITSELF WHILE IT IS BEING RESOLVED IS LEFT AS WRITTEN, a guard per
+%% (class, name) as `cpp_fold_static' has one: libc++'s type_info writes `typedef __type_info_implementations::__impl
+%% __impl' over a NAMESPACE, and the namespace flattening makes that `typedef __impl __impl' -- which asked for
+%% itself without end (139,393 flattens, the machine's memory). The SHAPE is no test: `allocator_traits' writes
+%% `typedef typename __base::pointer pointer', the same spelling through a scope that DOES resolve, and refusing
+%% it by shape left every `pointer' parameter of the allocator traits raw at the lowering.
+cpp_type(base(Q, [typedef(N)]), T) :- atom(N), cpp_class_ctx(C), cpp_class_typedef(C, N, T0, Def), \+ cpp_self_typedef(N, T0),
+    cpp_ctd_key(Def, N, K), \+ catch(nb_getval(K, yes), _, fail), !, nb_setval(K, yes),
+    (   catch(cpp_in_class(Def, cpp_type(T0, T1)), E, ( nb_setval(K, no), throw(E) )) -> nb_setval(K, no)
+    ;   nb_setval(K, no), fail ),
+    cpp_merge_quals(Q, T1, T), cpp_touch_nested(T1).
+cpp_ctd_key(Def, N, K) :- ( atom(Def) -> D = Def ; D = '$c' ), atomic_list_concat(['$cpp_ctd:', D, '.', N], K).   % never a raw type_error out of atomic_list_concat, as cpp_mangle guards
 %% A NESTED CLASS KNOWN BY ITS NAME ALONE -- forward-declared in its holder, defined out of it (`class locale::id')
 %% -- is LOADED when its name resolves as a type, so its struct exists where the lowering meets the type; the
 %% name road never asked for the class, and `locale::id' reached the lowering as a tag nothing had noted
@@ -3091,6 +3114,7 @@ cpp_params_accept([param(pack(_), _)|_], _, _) :- !.
 cpp_params_accept([P|Ps], [A|As], B) :- ( P = param(PT0, _) ; P = param(PT0, _, _) ), !,
     cpp_subst(PT0, B, PT), ( cpp_param_accepts(PT, A) -> true ; cpp_refuse(0, argument_mismatch) ), cpp_params_accept(Ps, As, B).
 cpp_params_accept([_|Ps], [_|As], B) :- cpp_params_accept(Ps, As, B).
+cpp_param_accepts(PT, A) :- cpp_nullptr_param(PT), !, cpp_null_constant(A).   % `nullptr_t' TAKES A NULL POINTER CONSTANT AND NOTHING ELSE ([conv.ptr]), in the template road too (0.81 had it at the fit and the last resort): libc++ writes `unique_ptr(nullptr_t)' and `explicit unique_ptr(pointer)' as two constructor TEMPLATES with the same guard, so both held for `unique_ptr<int> p(new int(5))' and the first declared won -- p was constructed empty and `*p' read null
 cpp_param_accepts(PT, A) :- cpp_fn_template_ref(A, F), !, cpp_fn_target(PT, FnT), cpp_target_deduces(F, FnT).   % a template's name: only a function-pointer parameter whose target deduces it
 cpp_param_accepts(PT, A) :- ( cpp_deduce_type(A, AT) -> cpp_unref_all(PT, PT1), cpp_unref_all(AT, AT1), cpp_type_accepts(PT1, AT1) ; true ).   % THE ARGUMENT TYPED AS THE DEDUCTION TYPES IT (cpp_deduce_type: through the desugaring where the inference cannot): a class's name called, `__optional_construct_from_invoke_tag{}', was unknown to the inference and passed every class parameter -- optional's `in_place_t' constructor took the invoke tag, level by level down its storage chain
 cpp_unref_all(T, T1) :- ( ccl_unref(T, T0), T0 \== T -> cpp_unref_all(T0, T1) ; T1 = T ).   % EVERY reference layer: a forwarding `_Tp &&' bound to an lvalue is `T & &&' before it collapses, and one layer off it was a reference to a class and no class -- libc++'s piecewise key extraction refused argument_mismatch on its piecewise_construct_t
@@ -3597,9 +3621,14 @@ cpp_strip_quals(T, [], T).
 cpp_with_quals(Q, base(_, S), base(Q, S)) :- !.
 cpp_with_quals(Q, ptr(_, T), ptr(Q, T)) :- !.
 cpp_with_quals(_, T, T).
+cpp_builtin_type('__remove_extent', [A], T1) :- !, cpp_trait_type(A, T), ( ccl_resolve_type(T, arr(_, E)) -> T1 = E ; T1 = T ).   % an array's element, the array itself one dimension shorter ([meta.trans.arr]): shared_ptr's element_type is `__remove_extent_t<_Tp>'
+cpp_builtin_type('__remove_all_extents', [A], T1) :- !, cpp_trait_type(A, T), ( ccl_resolve_type(T, arr(_, E)) -> cpp_builtin_type('__remove_all_extents', [type(E)], T1) ; T1 = T ).
+cpp_builtin_type('__add_pointer', [A], ptr([], T)) :- !, cpp_trait_type(A, T0), ccl_unref(T0, T).
+cpp_builtin_type('__add_lvalue_reference', [A], T1) :- !, cpp_trait_type(A, T),   % [meta.trans.ref], REFERENCE COLLAPSING: `T &&' takes an lvalue reference and stays one
+    ( T = ref(_, _) -> T1 = T ; T = rref(Q, U) -> T1 = ref(Q, U) ; T1 = ref([], T) ).
+cpp_builtin_type('__add_rvalue_reference', [A], T1) :- !, cpp_trait_type(A, T),   % ... and an lvalue reference takes an rvalue one and stays an lvalue reference
+    ( ( T = ref(_, _) ; T = rref(_, _) ) -> T1 = T ; T1 = rref([], T) ).
 cpp_builtin_type('__decay', [A], T1) :- !, cpp_trait_type(A, T), ccl_unref(T, T0), cpp_decayed(T0, T1).
-cpp_builtin_type('__add_lvalue_reference', [A], ref([], T1)) :- !, cpp_trait_type(A, T), ccl_unref(T, T1).
-cpp_builtin_type('__add_rvalue_reference', [A], rref([], T1)) :- !, cpp_trait_type(A, T), ccl_unref(T, T1).
 cpp_builtin_type('__add_pointer', [A], ptr([], T1)) :- !, cpp_trait_type(A, T), ccl_unref(T, T1).
 cpp_builtin_type('__remove_pointer', [A], T1) :- !, cpp_trait_type(A, T), ( ccl_resolve_type(T, ptr(_, T1)) -> true ; T1 = T ).
 %% the signed and unsigned counterparts, which libc++ takes a type's DIGITS from

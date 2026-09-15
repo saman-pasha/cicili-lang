@@ -818,6 +818,19 @@ what runs today.
   older lists close with them: the string's `operator+`, `substr` and `find`
   with the rest of its surface, and class template argument deduction.
 
+* **The fifty-third step DONE: `<memory>`, whole.** Three fixtures match
+  clang++ line for line: a `unique_ptr` over `new` and `make_unique`, moved
+  from, released and reset, of a class whose destructions are counted; a
+  `shared_ptr` from `make_shared` with its owner count through a copy's scope,
+  a `weak_ptr` that expires with the object and `lock`s into a second owner,
+  and an aliasing `shared_ptr` into a member; an array `unique_ptr` over
+  `make_unique<int[]>`, a custom deleter whose parameter is `own`, `swap`, the
+  null comparisons, `addressof` and a `unique_ptr` as a class's member.
+  `<memory>` is read whole. The reader takes a pointer to member and `typeid`;
+  RTTI is not predefined, so libc++ compiles its own no-RTTI configuration as
+  `-fno-rtti` gives it; the atomic builtins the reference count is written on
+  are LLVM's own instructions; and `new T[n]()` value-initializes.
+
 ## The `cicili` command
 
 `bin/cicili` takes clang's arguments, so nothing about it is new:
@@ -951,7 +964,7 @@ label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
 UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
 the extended floating-point suffixes, `[[assume]]` told to LLVM.
 **C++26**: its macros, so libc++ takes its paths, its forms still to
-come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>` and `<optional>`
+come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>`, `<optional>` and `<memory>`
 (and the containers at C++20, `<optional>` and `<string>` at C++23, `<optional>` at C++26)
 whole, the desugaring registers a flattened header's items by name
 as a program asks for them, and `std::vector<int>` gets several

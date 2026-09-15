@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(31).
+ccl_lowering_version(32).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -67,6 +67,7 @@ ccl_ir_units(Units0, IR) :-
 ir_cpp_prelude :-
     ( ccl_gdeclared(malloc, _) -> true ; ccl_gdeclare([malloc-fn(ptr([], base([], [void])), [param(base([], [unsigned, long]), size)], false)]) ),
     ( ccl_gdeclared(free, _) -> true ; ccl_gdeclare([free-fn(base([], [void]), [param(ptr([], base([], [void])), p)], false)]) ),
+    ( ccl_gdeclared(calloc, _) -> true ; ccl_gdeclare([calloc-fn(ptr([], base([], [void])), [param(base([], [unsigned, long]), n), param(base([], [unsigned, long]), size)], false)]) ),   % `new T[n]()' is calloc's zeroed bytes (cpp_expr(new_array_init))
     ir_prelude_mem(memcpy), ir_prelude_mem(memmove), ir_prelude_mem(memset).      % what the memory builtins become (cpp_builtin_call), when the file declared none
 ir_prelude_mem(N) :- ( ccl_gdeclared(N, _) -> true
     ; V = ptr([], base([], [void])), ccl_gdeclare([N-fn(V, [param(V, dst), param(V, src), param(base([], [unsigned, long]), n)], false)]) ).
@@ -735,6 +736,42 @@ ir_bit_builtin('__builtin_clzg', ctlz).  ir_bit_builtin('__builtin_clz', ctlz). 
 ir_bit_builtin('__builtin_ctzg', cttz).  ir_bit_builtin('__builtin_ctz', cttz).  ir_bit_builtin('__builtin_ctzl', cttz).  ir_bit_builtin('__builtin_ctzll', cttz).
 ir_bit_builtin('__builtin_popcountg', ctpop).  ir_bit_builtin('__builtin_popcount', ctpop).  ir_bit_builtin('__builtin_popcountl', ctpop).  ir_bit_builtin('__builtin_popcountll', ctpop).
 ir_bit_width(i8, 8).  ir_bit_width(i16, 16).  ir_bit_width(i32, 32).  ir_bit_width(i64, 64).
+%% THE ATOMIC BUILTINS ARE LLVM'S OWN INSTRUCTIONS, never a call to anything: `__atomic_add_fetch(p, -1,
+%% __ATOMIC_ACQ_REL)' is how libc++'s shared_ptr counts its owners (__libcpp_atomic_refcount_decrement), and the
+%% compiler is asked for it by name. An `atomicrmw' answers the OLD value, so a `*_fetch' form applies the
+%% operation once more to it and a `fetch_*' form takes it as it is; a load and a store carry the ordering and the
+%% type's alignment. The memory order is the constant the header spells -- clang's own numbering, which this
+%% preprocessor predefines (__ATOMIC_RELAXED 0 .. __ATOMIC_SEQ_CST 5) -- and anything that does not fold is
+%% sequentially consistent, the standard's own default.
+ir_call(id(B), [P, X, MO], V, ET) :- ir_atomic_rmw(B, Op, After), !,
+    ir_atomic_place(B, P, PV, ET, EL), ir_expr(X, XV0, XT, XL), ir_convert(XV0, XT, XL, ET, EL, XV), ir_atomic_order(MO, Ord),
+    ir_fresh(R), ir_ins([R, ' = atomicrmw ', Op, ' ptr ', PV, ', ', EL, ' ', XV, ' ', Ord]),
+    ( After == none -> V = R ; ir_fresh(V), ir_ins([V, ' = ', After, ' ', EL, ' ', R, ', ', XV]) ).
+ir_call(id('__atomic_load_n'), [P, MO], V, ET) :- !,
+    ir_atomic_place('__atomic_load_n', P, PV, ET, EL), ir_atomic_order(MO, Ord), ir_atomic_align(ET, A),
+    ir_fresh(V), ir_ins([V, ' = load atomic ', EL, ', ptr ', PV, ' ', Ord, ', align ', A]).
+ir_call(id('__atomic_store_n'), [P, X, MO], none, base([], [void])) :- !,
+    ir_atomic_place('__atomic_store_n', P, PV, ET, EL), ir_expr(X, XV0, XT, XL), ir_convert(XV0, XT, XL, ET, EL, XV),
+    ir_atomic_order(MO, Ord), ir_atomic_align(ET, A),
+    ir_ins(['store atomic ', EL, ' ', XV, ', ptr ', PV, ' ', Ord, ', align ', A]).
+ir_call(id('__atomic_thread_fence'), [MO], none, base([], [void])) :- !, ir_atomic_order(MO, Ord), ir_ins(['fence ', Ord]).
+ir_call(id('__atomic_signal_fence'), [MO], none, base([], [void])) :- !, ir_atomic_order(MO, Ord), ir_ins(['fence syncscope("singlethread") ', Ord]).
+ir_atomic_rmw('__atomic_add_fetch', add, add).     ir_atomic_rmw('__atomic_fetch_add', add, none).
+ir_atomic_rmw('__atomic_sub_fetch', sub, sub).     ir_atomic_rmw('__atomic_fetch_sub', sub, none).
+ir_atomic_rmw('__atomic_and_fetch', and, and).     ir_atomic_rmw('__atomic_fetch_and', and, none).
+ir_atomic_rmw('__atomic_or_fetch', or, or).        ir_atomic_rmw('__atomic_fetch_or', or, none).
+ir_atomic_rmw('__atomic_xor_fetch', xor, xor).     ir_atomic_rmw('__atomic_fetch_xor', xor, none).
+ir_atomic_rmw('__atomic_exchange_n', xchg, none).
+ir_atomic_place(B, P, PV, ET, EL) :-
+    ir_expr(P, PV, PT, _), ccl_resolve_type(PT, PT1),
+    ( PT1 = ptr(_, ET0) -> true ; PT1 = arr(_, ET0) -> true ; ir_fail(atomic_builtin(B)) ),
+    ir_atomic_plain(ET0, ET), ir_type(ET, EL).                             % `volatile _Tp *' is the same object to the instruction
+ir_atomic_plain(base(_, S), base([], S)) :- !.
+ir_atomic_plain(T, T).
+ir_atomic_align(T, A) :- ccl_resolve_type(T, T1), ( ccl_size_align(T1, _, A0) -> A = A0 ; A = 8 ).
+ir_atomic_order(MO, Ord) :- ( ccl_const_eval(MO, K), ir_atomic_ord(K, Ord0) -> Ord = Ord0 ; Ord = seq_cst ).
+ir_atomic_ord(0, monotonic).  ir_atomic_ord(1, acquire).  ir_atomic_ord(2, acquire).
+ir_atomic_ord(3, release).    ir_atomic_ord(4, acq_rel).  ir_atomic_ord(5, seq_cst).
 ir_call(id(N), Args, V, RT) :-
     ir_lookup(N, loc(Addr, T0)), ccl_resolve_type(T0, fn(RT, Ps, Var)), !,
     ir_call_(Addr, RT, Ps, Var, Args, V).
