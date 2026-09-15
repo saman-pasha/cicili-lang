@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(59).   % 58: a member template's name noted before its class's members are read; 59: a method's ref-qualifier kept
+ccl_reader_version(63).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -732,7 +732,7 @@ ccl_spliced(Is, '$splice'(Is)).
 ccl_external(Env, Env, extern_template(L, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(extern), ccl_kw(template), !, ccl_external(Env, _, Item).
 ccl_external(Env, Env, explicit_instantiation(L, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(template), ccl_peek(K, V), { \+ ( K == p, V == '<' ) }, !, ccl_external(Env, _, Item).
 ccl_external(Env0, Env0, template(L, Ps, Item)) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, { nb_getval('$ccl_env', G0) }, ccl_tparams(Env0, Ps0, Env1),
-    ( ccl_kw(requires), ccl_lor(R), { append(Ps0, [requires(R)], Ps) } ; { Ps = Ps0 } ),        % C++20: a requires-clause on the head, kept with the parameters
+    ( ccl_kw(requires), ccl_constraint(R), { ccl_add_requires(Ps0, R, Ps) } ; { Ps = Ps0 } ),        % C++20: a requires-clause on the head, kept with the parameters (conjoined with a constrained parameter's)
     { ccl_tparams_enter(G0, Ps0, New) }, ( ccl_external(Env1, _, Item), !, { ccl_tparams_leave(New) } ; { ccl_tparams_leave(New), fail } ),
     { ccl_template_name(Item, N), ccl_note_template(N) }.
 %% the parameters' names are types for the item's whole text -- the global env, which the expressions deep
@@ -773,8 +773,23 @@ ccl_last([_|Xs], X) :- ccl_last(Xs, X).
 ccl_external(Env, Env, static_assert(L, E, Msg)) --> ccl_cpp, ccl_line(L), ccl_kw(static_assert), !, ccl_p('('), ccl_cond_expr(E), ( ccl_p(','), ccl_primary(Msg), ! ; { Msg = none } ), ccl_p(')'), ccl_p(';').
 ccl_external(Env0, Env, Item) --> ccl_line(L), ccl_decl_specs(Env0, file, Sto, Base), ccl_external_rest(Env0, Env, L, Sto, Base, Item).
 %% template <typename T, int N = 4, class... Ts> -- tparam(type | Type, Name, Default); the names are types in the item
-ccl_tparams(Env0, Ps, Env) --> ccl_p('<'), ( ccl_tparam_list(Env0, Ps, Env), ! ; { Ps = [], Env = Env0 } ), ccl_tclose.
-ccl_tparam_list(Env0, [P|Ps], Env) --> ccl_tparam(Env0, P, Env1), ( ccl_p(','), !, ccl_tparam_list(Env1, Ps, Env) ; { Ps = [], Env = Env1 } ).
+ccl_tparams(Env0, Ps, Env) --> ccl_p('<'), ( ccl_tparam_list(Env0, Ps1, Env), ! ; { Ps1 = [], Env = Env0 } ), ccl_tclose, { ccl_gather_requires(Ps1, Ps) }.
+ccl_tparam_list(Env0, Ps, Env) --> ccl_tparam_c(Env0, P1, Env1), ( ccl_p(','), !, ccl_tparam_list(Env1, Ps2, Env), { append(P1, Ps2, Ps) } ; { Ps = P1, Env = Env1 } ).
+%% C++20: a CONSTRAINED TYPE PARAMETER, `template <__exchangeable _Tp>', `template <Concept<A> T>' ([temp.param]/4): a
+%% type parameter, its concept-id kept as a requires-clause of the head (`requires C<T>', conjoined with a written one
+%% by ccl_gather_requires, so the binders meet one entry, last); read as a value parameter of type `__exchangeable'
+%% the name was no type in the body. A constrained pack keeps the parameter alone (a fold this compiler does not check).
+ccl_tparam_c(Env0, Ts, [N|Env0]) --> ccl_cpp, { Env = genv }, ccl_qname(Env, type, Q), { ccl_concept_name(Q, C, As) }, ( ccl_p('...'), { K = pack } ; { K = type } ), ccl_id(N), ccl_tparam_end, !,
+    { ccl_add_env(N) }, ( ccl_p('='), !, ccl_type_name([N|Env0], D) ; { D = none } ),
+    { K == type -> Ts = [tparam(type, N, D), requires(tmpl(C, [base([], [typedef(N)])|As]))] ; Ts = [tparam(pack, N, D)] }.
+ccl_tparam_c(Env0, [P], Env) --> ccl_tparam(Env0, P, Env).
+ccl_concept_name(Q, Q, []) :- atom(Q), ccl_known_template(Q), !.
+ccl_concept_name(tmpl(C, As), C, As) :- atom(C).
+ccl_concept_name(scoped(_, Q), C, As) :- ccl_concept_name(Q, C, As).                 % `ranges::contiguous_range _Range' (the namespaces flatten: the concept is known by its bare name)
+ccl_gather_requires(Ps0, Ps) :- ( member(requires(_), Ps0) -> findall(R, member(requires(R), Ps0), Rs), findall(P, ( member(P, Ps0), P \= requires(_) ), Ps1), ccl_conj(Rs, R1), append(Ps1, [requires(R1)], Ps) ; Ps = Ps0 ).
+ccl_conj([R], R) :- !.
+ccl_conj([R|Rs], bin('&&', R, R1)) :- ccl_conj(Rs, R1).
+ccl_add_requires(Ps0, R, Ps) :- ( append(A, [requires(R0)|B], Ps0) -> append(A, B, Ps1), append(Ps1, [requires(bin('&&', R0, R))], Ps) ; append(Ps0, [requires(R)], Ps) ).
 ccl_tparam(Env0, tparam(K, N, D), [N|Env0]) --> ( ccl_kw(typename) ; ccl_kw(class) ), ( ccl_p('...'), { K = pack } ; { K = type } ), ( ccl_id(N) ; { N = anon } ), ccl_tparam_end, !,   % `class... Ts' a pack; `template <class>' unnamed
     { ccl_add_env(N) }, ( ccl_p('='), !, ccl_type_name([N|Env0], D) ; { D = none } ).                                     % a type from here on: the defaults after it, the item (ccl_tparams_enter)
 ccl_tparam_end(S, S) :- S = [tok(p, V, _)|_], memberchk(V, [',', '>', '>>', '=']).                 % not `typename T::x = 0', a value parameter
@@ -794,6 +809,7 @@ ccl_template_name(function(_, _, _, N, _, _, _), N) :- !.
 ccl_template_name(method(_, _, _, N, _, _, _), N) :- !.
 ccl_template_name(nested(base(_, [S])), N) :- ( S = class(_, N, _, _) ; S = struct(N, _) ; S = union(N, _) ), atom(N), !.
 ccl_template_name(declaration(_, _, _, [var(N, _, _)|_]), N) :- !.
+ccl_template_name(member(_, N, _), N) :- !.                                   % a member VARIABLE template (C++14): `__check_optionalU_ctor<_Up, _Up &>' reads as a template-id in the requires-clauses beside it
 ccl_template_name(declare(_, base(_, [class(_, N, _, _)])), N) :- !.
 ccl_template_name(declare(_, base(_, [struct(N, _)])), N) :- !.
 ccl_template_name(typedef(_, [var(N, _, _)|_]), N) :- !.
@@ -840,6 +856,7 @@ ccl_decl_specs(Env, Scope, Sto, base(Quals, Specs)) -->
 ccl_sto_pick(Ss, S) :- member(S, [typedef, static, extern, thread_local, '_Thread_local', virtual, explicit, friend, mutable, register, auto, inline, '_Noreturn']), memberchk(S, Ss), !.
 ccl_sto_pick([S|_], S).
 
+ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, { G = genv }, ccl_qname(G, type, C0), { ccl_concept_name(C0, _, _) }, ccl_kw(auto), !, ccl_specs(Env, Sc, St0, Q0, [auto], St, Q, S).   % C++20: a CONSTRAINED auto, `__integer_like auto f()', `std::integral auto x': the auto to deduce, its concept dropped (a template's name before `auto' is a concept)
 ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, ccl_kw(auto), !, ccl_specs(Env, Sc, St0, Q0, [auto], St, Q, S).   % C++: auto is a type to deduce (C's storage class it is not)
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_cpp, ccl_kw(constexpr), !, ccl_specs(Env, Sc, St0, [const|Q0], S0, St, Q, S).   % IN C++ TOO (0.79; BEFORE the qualifier clause below, which would take the word): a constexpr OBJECT is a const one; read as a qualifier of its own, `inline constexpr piecewise_construct_t piecewise_construct' carried `constexpr' in its TYPE, and `is_same<__remove_const_ref_t<decltype(piecewise_construct)>, piecewise_construct_t>' was false -- libc++'s key extraction for a map's piecewise emplace fell to its fallback
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_storage(K) }, !, ccl_specs(Env, Sc, [K|St0], Q0, S0, St, Q, S).
@@ -906,12 +923,14 @@ ccl_builtin_trait(N) :- atom(N), memberchk(N, ['__is_same', '__is_same_as', '__i
     '__is_pointer_interconvertible_base_of', '__is_implicit_lifetime', '__is_trivially_copy_constructible', '__is_trivially_move_constructible',
     '__has_virtual_destructor', '__has_trivial_destructor', '__has_trivial_constructor', '__has_trivial_copy', '__has_trivial_assign', '__has_nothrow_constructor',
     '__has_nothrow_copy', '__has_nothrow_assign', '__has_unique_object_representations', '__reference_binds_to_temporary', '__reference_constructs_from_temporary',
-    '__reference_converts_from_temporary', '__array_rank', '__array_extent', '__builtin_offsetof', '__builtin_bit_cast', '__builtin_convertvector']), !.
+    '__reference_converts_from_temporary', '__array_rank', '__array_extent', '__builtin_offsetof', '__builtin_bit_cast', '__builtin_convertvector',
+    '__builtin_lt_synthesizes_from_spaceship', '__builtin_le_synthesizes_from_spaceship', '__builtin_gt_synthesizes_from_spaceship', '__builtin_ge_synthesizes_from_spaceship',   % LLVM 21's, which libc++'s C++20 comparators ask
+    '__is_trivially_equality_comparable', '__builtin_is_virtual_base_of', '__builtin_is_implicit_lifetime', '__builtin_is_replaceable', '__is_bitwise_cloneable', '__builtin_is_cpp_trivially_relocatable']), !.
 ccl_cpp_type(Env, Sc, typedef(Q)) --> ccl_qname(Env, type, Q), { compound(Q) }, ( { ccl_qname_typish(Env, Q) }, ccl_type_follows(Sc) ; ccl_declarator_follows ), !.
 %% an unknown qualified name is a type where a declarator follows it (`ns::what &w', `ns::T x'), an expression where `(' does (`std::move(a)')
 ccl_declarator_follows(S, S) :- S = [tok(K, V, _)|_], ( K == id ; K == p, memberchk(V, ['*', '&', '&&']) ; K == kw, ccl_qualifier(V) ), !.
 %% a qualified name is a type when its last name is one: `S b(std::move(a))' declares no function taking a std::move
-ccl_qname_typish(_, tmpl(_, _)) :- !.
+ccl_qname_typish(_, tmpl(N, _)) :- !, \+ ccl_fn_template(N).                  % a template-id is a type unless the template is a FUNCTION's: `T &r(std::forward<U>(v))' declared a function taking a `std::forward<U>' (0.45's rule, which had covered the bare name `std::move' and not the explicit form)
 ccl_qname_typish(Env, scoped(_, Last)) :- !, ccl_qname_typish(Env, Last).
 ccl_qname_typish(Env, N) :- atom(N), ( ccl_known_typedef(Env, N) ; ccl_known_template(N), \+ ccl_fn_template(N) ; memberchk(N, [string, wstring, size_t, ptrdiff_t, nullptr_t, byte, type, value_type, pointer, reference, const_reference, iterator, const_iterator, size_type, difference_type, element_type]) ), !.
 ccl_type_follows(Sc) --> { memberchk(Sc, [file, param, member, typename]) }, !.
@@ -922,7 +941,7 @@ ccl_type_follows(_) --> ( ccl_peek(id, _), ! ; ccl_peek(p, '*'), ! ; ccl_peek(p,
 %% arguments read as such and end before a declarator; mode expr only when known.
 ccl_qname(Env, Mode, Q) --> ccl_p('::'), !, ccl_qseg(Env, Mode, S0), ccl_qrest(Env, Mode, [S0], global, Q).
 ccl_qname(Env, Mode, Q) --> ccl_qseg(Env, Mode, S0), ccl_qrest(Env, Mode, [S0], none, Q).
-ccl_qrest(Env, Mode, Acc, Lead, Q) --> ccl_p('::'), ccl_kw(template), !, ccl_id(N), ccl_targs(Env, As), ccl_qrest(Env, Mode, [tmpl(N, As)|Acc], Lead, Q).   % X<T>::template f<U>: a dependent template
+ccl_qrest(Env, Mode, Acc, Lead, Q) --> ccl_p('::'), ccl_kw(template), !, ccl_id(N), ( ccl_targs(Env, As), !, { Seg = tmpl(N, As) } ; { Seg = N } ), ccl_qrest(Env, Mode, [Seg|Acc], Lead, Q).   % X<T>::template f<U>: a dependent template; `X<T>::template f' alone names the member template (C++20's common_reference hands `__xref<_Tp>::template __apply' as a template template argument)
 ccl_qrest(Env, Mode, Acc, Lead, Q) --> ccl_p('::'), ccl_qseg(Env, Mode, S), !, ccl_qrest(Env, Mode, [S|Acc], Lead, Q).
 ccl_qrest(_, _, [S], none, S) --> !.
 ccl_qrest(_, _, [Last|Rev], Lead, scoped(Path, Last)) --> { reverse(Rev, P0), ( Lead == global -> Path = [global|P0] ; Path = P0 ) }.
@@ -1132,8 +1151,9 @@ ccl_member_decl(Env, [typedef(L, Vs)]) --> ccl_cpp, ccl_line(L), ccl_kw(typedef)
 ccl_member_decl(Env, [typedef(L, [var(N, T, none)])]) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_id(N), ccl_attrs, ccl_p('='), !, ccl_type_name(Env, T), ccl_p(';'), { ccl_add_env(N) }.
 ccl_member_decl(Env, [using(L, name(Q))]) --> ccl_cpp, ccl_line(L), ccl_kw(using), ccl_qname(Env, type, Q), ccl_p(';'), !.   % `using Base::Base;' -- an INHERITING CONSTRUCTOR, kept with its name for the desugaring (cpp_inherit_ctors); `using Base::f;' alike
 ccl_member_decl(_, [using(L)]) --> ccl_cpp, ccl_line(L), ccl_kw(using), !, ccl_skip_to_semi.
-ccl_member_decl(Env, [template(L, Ps, M)]) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, { nb_getval('$ccl_env', G0) }, ccl_tparams(Env, Ps, Env1),
-    { ccl_tparams_enter(G0, Ps, New) }, ( ccl_member_decl(Env1, [M]), !, { ccl_tparams_leave(New) } ; { ccl_tparams_leave(New), fail } ),
+ccl_member_decl(Env, [template(L, Ps, M)]) --> ccl_cpp, ccl_line(L), ccl_kw(template), !, { nb_getval('$ccl_env', G0) }, ccl_tparams(Env, Ps0, Env1),
+    ( ccl_kw(requires), ccl_constraint(R), { ccl_add_requires(Ps0, R, Ps) } ; { Ps = Ps0 } ),        % C++20: a requires-clause on a member template's head too (ranges::swap's `__fn')
+    { ccl_tparams_enter(G0, Ps0, New) }, ( ccl_member_decl(Env1, [M|_]), !, { ccl_tparams_leave(New) } ; { ccl_tparams_leave(New), fail } ),   % a member VARIABLE template, `template <class _Up> static constexpr bool __check = ...;', is the member alone: its initializer (a default_init entry beside it) is dropped, as C++26's optional<T &> writes one
     { ccl_template_name(M, N), ccl_note_template(N) }.                                            % a member template's name: `f<T>()' is a template-id from here on
 %% a conversion operator, `operator T() const', `explicit operator bool()': a method named operator(conv(T)), no parameters
 ccl_member_decl(Env, [method(L, Qs, T, operator(conv(T)), [], false, Body)]) --> ccl_cpp, ccl_line(L), ccl_attrs, ccl_member_prefix(Qs0), ccl_attrs, ccl_kw(operator), ccl_conv_type(Env, T), ccl_p('('), ccl_p(')'), !,
@@ -1149,8 +1169,8 @@ ccl_member_decl(Env, Ms) --> ccl_decl_specs(Env, member, Sto, Base0), { ccl_memb
     { Ms0 == [] -> Ms = [nested(Base)] ; Ms = Ms0 }.                                             % `struct I { ... };' inside a class: a nested type, kept
 ccl_member_base(static, base(Q, S), base([static|Q], S)) :- ccl_lang(cpp), !.      % a static member: the word kept as a qualifier
 ccl_member_base(_, B, B).
-ccl_member_prefix([K|Qs]) --> ccl_kw(K), { memberchk(K, [virtual, static, explicit, inline, constexpr, consteval]) }, !,
-    ( { K == explicit }, ccl_p('('), ccl_expr(_), ccl_p(')') ; [] ), ccl_member_prefix(Qs).      % C++20: explicit(cond), the condition dropped
+ccl_member_prefix([Q1|Qs]) --> ccl_kw(K), { memberchk(K, [virtual, static, explicit, inline, constexpr, consteval]) }, !,
+    ( { K == explicit }, ccl_p('('), ccl_expr(E), ccl_p(')'), { Q1 = explicit(E) } ; { Q1 = K } ), ccl_member_prefix(Qs).   % C++20: explicit(cond) KEPT with its condition, `explicit(E)': a constructor explicit on a condition is not the `explicit' the converting-constructor road refuses -- optional<T &>'s `explicit(!is_convertible_v<_Up, _Tp &>) optional(_Up &&)' is how `r = y' rebinds (the condition itself is not evaluated: implicit where C++ would ask)
 ccl_member_prefix(Qs) --> ccl_gnu_attr, !, ccl_member_prefix(Qs).                           % an attribute among the words
 ccl_member_prefix([]) --> [].
 ccl_method_quals([const|Qs]) --> ccl_kw(const), !, ccl_method_quals(Qs).
@@ -1164,6 +1184,7 @@ ccl_method_quals(Qs) --> ccl_kw(throw), !, ccl_p('('), ccl_balanced, ccl_p(')'),
 ccl_method_quals(Qs) --> ( ccl_p('&'), ! ; ccl_p('&&') ), !, ccl_method_quals(Qs).
 ccl_method_quals(Qs) --> ccl_gnu_attr, !, ccl_method_quals(Qs).
 ccl_method_quals([trailing(T)|Qs]) --> ccl_p('->'), !, { Env = genv }, ccl_type_name(Env, T), ccl_method_quals(Qs).
+ccl_method_quals([requires(R)|Qs]) --> ccl_kw(requires), !, ccl_constraint(R), ccl_method_quals(Qs).   % C++20: a TRAILING requires-clause, `void f(T) requires C<T>' (a member's, a definition's, a prototype's alike)
 ccl_method_quals([]) --> [].
 ccl_ctor_inits(Env, Inits) --> ccl_p(':'), !, ccl_init_list(Env, Inits).
 ccl_ctor_inits(_, []) --> [].
@@ -1505,6 +1526,7 @@ ccl_postfix_p('{', id(T), E) --> ccl_cpp, { ccl_known_typedef(genv, T) }, !, ccl
 ccl_postfix_p('{', tmpl(N, As), E) --> ccl_cpp, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(tmpl(N, As), Vs), E).           % X<T>{args}
 ccl_postfix_p('{', scoped(P, N), E) --> ccl_cpp, !, ccl_initializer(init(Is)), { ccl_item_values(Is, Vs) }, ccl_postfix_(call(scoped(P, N), Vs), E).
 ccl_postfix_p('[', A, E) --> ccl_cpp, { ccl_std_at_least(23) }, !, ccl_p('['), ccl_args(As), ccl_p(']'), { As = [I] -> Ix = index(A, I) ; Ix = index(A, args(As)) }, ccl_postfix_(Ix, E).   % C++23: a[i, j] is operator[](i, j)
+ccl_postfix_p('[', A, E) --> ccl_cpp, ccl_p('['), ccl_peek(p, '{'), !, ccl_initializer(I), ccl_p(']'), ccl_postfix_(index(A, I), E).   % C++: a[{1, 2}], a braced list as the subscript -- a map's key list-initialized
 ccl_postfix_p('[', A, E) --> !, ccl_p('['), ccl_expr(I), ccl_p(']'), ccl_postfix_(index(A, I), E).
 ccl_postfix_p('(', id(N), E) --> ccl_cpp, { ccl_builtin_trait(N) }, !, ccl_p('('), { Env = genv }, ccl_builtin_args(Env, As), ccl_p(')'), ccl_postfix_(call(id(N), As), E).   % __is_same(T, U): the arguments types
 ccl_postfix_p('(', A, E) --> !, ccl_p('('), { ccl_targ_save(D) }, ( ccl_args(As), !, { ccl_targ_restore(D) } ; { ccl_targ_restore(D), fail } ), ccl_p(')'), { ccl_call_or_macro(A, As, C) }, ccl_postfix_(C, E).
@@ -1519,6 +1541,7 @@ ccl_postfix_p(_, E, E) --> [].
 %% name is tmpl(N, Args) when the arguments read as such, ending before what a
 %% call or a closing paren starts (`x.n < y' scans to its `;' and is not one)
 ccl_member_name(operator(Op)) --> ccl_cpp, ccl_kw(operator), !, ccl_op_name(Op).                % p.operator->(), x.operator=(y)
+ccl_member_name(tmpl(operator(Op), As)) --> ccl_cpp, ccl_kw(template), ccl_kw(operator), !, ccl_op_name(Op), { Env = genv }, ccl_targs(Env, As).   % `f.template operator()<I>()': libc++'s __for_each_index_sequence
 ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_kw(template), !, ccl_id(N), { Env = genv }, ccl_targs(Env, As).   % `x.template f<T>(args)': the disambiguator on an OBJECT, as `X<T>::template f<U>' already had it on a scope
 ccl_member_name(tmpl(N, As)) --> ccl_cpp, ccl_id(N), ccl_targs_ahead, { Env = genv }, ccl_targs(Env, As), !.
 ccl_member_name(N) --> ccl_id(N).
@@ -1530,6 +1553,11 @@ ccl_args([]) --> [].
 
 %% a primary is chosen by its token's kind and value: one look, one clause
 ccl_primary(E) --> ccl_peek(K, V), ccl_primary_(K, V, E).
+%% C++20: a requires-clause's CONSTRAINT is primary expressions joined by && and || ([temp.pre]: constraint-logical-
+%% or-expression), never a postfix: read as a full expression, `requires C<T> [[nodiscard]] ...' took the attribute
+%% for a subscript and the item stopped there (libc++'s ranges::iter_move)
+ccl_constraint(E) --> ccl_constraint_and(A), ( ccl_p('||'), !, ccl_constraint(B), { E = bin('||', A, B) } ; { E = A } ).
+ccl_constraint_and(E) --> ccl_primary(A), ( ccl_p('&&'), !, ccl_constraint_and(B), { E = bin('&&', A, B) } ; { E = A } ).
 ccl_primary_(int, N, int(N))     --> !, [_].
 ccl_primary_(uint, N, uint(N))   --> !, [_].                              % 9u
 ccl_primary_(long, N, long(N))   --> !, [_].                              % 9L, 9LL
@@ -1564,8 +1592,9 @@ ccl_primary_(kw, typename, construct(T, As)) --> ccl_cpp, !, { Env = genv }, ccl
 ccl_primary_(kw, requires, requires_expr(Ps, Reqs)) --> ccl_cpp, !, ccl_kw(requires), { Env = genv },   % C++20: requires (params) { requirements }
     ( ccl_p('('), ccl_params(Env, Ps, _), ccl_p(')') ; { Ps = [] } ), ccl_p('{'), ccl_requirements(Env, Reqs), ccl_p('}').
 ccl_primary_(p, '[', lambda(Caps1, Ps, Ret, Body)) --> ccl_cpp, !, ccl_p('['), ccl_lambda_caps(Caps), ccl_p(']'), { nb_getval('$ccl_env', Env0) },
-    ( ccl_tparams(Env0, TPs, Env), { Caps1 = [tparams(TPs)|Caps] } ; { Env = Env0, Caps1 = Caps } ),                     % C++20: a template lambda, its parameters kept with the captures
+    ( ccl_tparams(Env0, TPs, Env), { Caps1 = [tparams(TPs)|Caps] }, ( ccl_kw(requires), ccl_constraint(_), ! ; [] ) ; { Env = Env0, Caps1 = Caps } ),   % C++20: a template lambda, its parameters kept with the captures; a requires-clause after them dropped
     ccl_attrs, ( ccl_p('('), !, ccl_params(Env, Ps, _), ccl_p(')') ; { Ps = [] } ), ccl_lambda_specs, ( ccl_p('->'), !, ccl_type_name(Env, Ret) ; { Ret = none } ),
+    ( ccl_kw(requires), ccl_constraint(_), ! ; [] ),                                                                   % C++20: a TRAILING requires-clause on a lambda (libc++'s __synth_three_way), dropped: a generic lambda is refused by name anyway
     ccl_push_scope, { ccl_declare_params(Ps) }, ccl_compound(Env, Body), ccl_pop_scope.
 %% C++23: the specifiers with or without the parentheses (`[] mutable -> int { }'), a static lambda, an attribute after the captures
 ccl_lambda_specs --> ccl_gnu_attr, !, ccl_lambda_specs.                                                         % an attribute after the parameters

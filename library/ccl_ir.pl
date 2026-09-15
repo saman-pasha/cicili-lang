@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(30).
+ccl_lowering_version(31).
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -404,7 +404,9 @@ ir_convert(V, From, To, V1) :- ir_type(From, FL), ir_type(To, TL), ir_convert(V,
 %% with both LLVM types in hand (the value's travels with it, the target's the caller has)
 %% a REFERENCE where a value is wanted is read through: its value is an address (a cast to a reference type binds)
 ir_convert(V, From, _, To, TL, V1) :- ( From = ref(_, RT) ; From = rref(_, RT) ), \+ ( To = ref(_, _) ; To = rref(_, _) ), !,
-    ccl_resolve_type(RT, T), ir_type(T, LL), ir_fresh(L), ir_ins([L, ' = load ', LL, ', ptr ', V]), ir_convert(L, T, LL, To, TL, V1).
+    ccl_resolve_type(RT, T),
+    (   T = fn(_, _, _) -> V1 = V                                            % A REFERENCE TO A FUNCTION IS THE FUNCTION'S ADDRESS: there is nothing to load ([conv.func]) -- `std::forward<_Func>(__f)' over `optional<int> (&)(int)' loaded the first eight bytes of the code and called them (the C++23 monadic `and_then', given a function name)
+    ;   ir_type(T, LL), ir_fresh(L), ir_ins([L, ' = load ', LL, ', ptr ', V]), ir_convert(L, T, LL, To, TL, V1) ).
 %% A POINTER TO A CLASS CONVERTS TO A POINTER TO ITS BASE BY THE BASE'S OFFSET: every base sat at offset 0 until
 %% 0.72, and a VIRTUAL base is placed after the class's own members (the ABI's complete-object layout), so `A *base
 %% = &x' copied the B * unchanged and base->twice() read b's bytes. The base sub-object is the `$base' member, or
@@ -501,7 +503,8 @@ ir_expr(call(F, Args), V, RT, LL) :- !,
     ir_moved_args(F, Args, Args1),
     (   F = id(free), Args1 = [E], ir_drain_free(E, S) -> ir_expr(S, V, RT, LL)
     ;   ir_call(F, Args1, V0, RT0),
-        (   ( RT0 = ref(_, RT1) ; RT0 = rref(_, RT1) ) -> ccl_resolve_type(RT1, RT), ir_type(RT, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', V0])   % C++: a reference result is what it refers to
+        (   ( RT0 = ref(_, RT1) ; RT0 = rref(_, RT1) ), ccl_resolve_type(RT1, RT2), RT2 = fn(_, _, _) -> V = V0, RT = RT2, ir_type(ptr([], RT2), LL)   % a reference TO A FUNCTION is the function's address, nothing to load ([conv.func]): `std::forward<_Func>(__f)' of a function name, which C++23's `and_then' calls -- the load took the first eight bytes of the code
+        ;   ( RT0 = ref(_, RT1) ; RT0 = rref(_, RT1) ) -> ccl_resolve_type(RT1, RT), ir_type(RT, LL), ir_fresh(V), ir_ins([V, ' = load ', LL, ', ptr ', V0])   % C++: a reference result is what it refers to
         ;   V = V0, RT = RT0, ir_type(RT, LL) ) ).
 %% C++ (M6): the forms that are C with names
 ir_expr(bool(true), 1, base([], [bool]), i8) :- !.

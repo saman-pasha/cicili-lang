@@ -798,6 +798,25 @@ what runs today.
   member by member, an anonymous union copied as its bytes, a value of the
   class itself taking only its copy or move constructor, and an argument
   typed by a function template's raw signature not counting as typed.
+* **The fifty-second step DONE: the container modules' not-done lists,
+  closed, and the levels' headers read whole.** Five C++17 fixtures match
+  clang++ line for line: a map's `emplace`, `insert_or_assign`,
+  `try_emplace`, `merge` and `emplace_hint`; a map of the program's own
+  struct as key and value, `emplace` without the key, a braced subscript; a
+  lambda as a set's comparator and `merge` between a set and a multiset; a
+  program's own `std::hash`, the bucket interface, `max_load_factor`,
+  `rehash`, `reserve` and the unordered node handle; plain structs holding
+  strings copied by the implicit copy and assignment, array members
+  value-initialized and copied element by element, an aggregate's rest
+  value-initialized. The reader's C++20 stretch (constrained parameters,
+  requires-clauses everywhere C++ puts them, the constraint grammar, a
+  constrained `auto`, a member variable template, concepts by name) reads
+  `<set>`, `<map>`, `<unordered_map>` and `<unordered_set>` whole at C++20,
+  `<optional>` and `<string>` at C++23 and `<optional>` at C++26. Three level
+  fixtures run: `contains` and `erase_if` at C++20, the monadic `and_then`,
+  `transform` and `or_else` at C++23, `optional<int &>` at C++26. And three
+  older lists close with them: the string's `operator+`, `substr` and `find`
+  with the rest of its surface, and class template argument deduction.
 
 ## The `cicili` command
 
@@ -933,6 +952,7 @@ UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
 the extended floating-point suffixes, `[[assume]]` told to LLVM.
 **C++26**: its macros, so libc++ takes its paths, its forms still to
 come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>` and `<optional>`
+(and the containers at C++20, `<optional>` and `<string>` at C++23, `<optional>` at C++26)
 whole, the desugaring registers a flattened header's items by name
 as a program asks for them, and `std::vector<int>` gets several
 classes deep before the next forms stop it -- under an instantiation

@@ -52,12 +52,15 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set> and <optional> flattened and read WHOLE, under a fresh HOME;
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set> and <optional> flattened and read WHOLE, under a fresh HOME,
+                         and at the levels: <set>, <map>, <unordered_map>, <unordered_set> at C++20, <optional>, <string> at C++23, <optional> at C++26;
                          test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
                          the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
                          containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap,
                          stdset, stdsetstring, stdset2, stdset3, stdunorderedmap, stdunorderedmapstring, stdunorderedmap2,
-                         stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2, stdnodehandle, stdmapinit;
+                         stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2, stdnodehandle, stdmapinit, stdmapemplace, stdmapown,
+                         stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, and at the levels stdcontains (C++20), stdoptional3 (C++23),
+                         stdoptionalref (C++26);
                          a fixture's input is NAME.stdin
 test/census.pl, census.sh  a census of a header's constructs (test/census.sh '<vector>'), or of a flattened
                          file (cicili++ -E ... -o flat.cpp; sh test/census.sh flat.cpp): where the reader stops, with tokens
@@ -3408,6 +3411,186 @@ gate's 73 at 209 MB; the driver's 23; the objects' 29; the proof; the C++ one
 builds in 100 s at 1.0-1.2 GB, the map one in 50 s at 0.5. NOT DONE: `unordered_map::extract' and the unordered node
 handle (its `__hash_node_handle'), `merge' between a set and a multiset, a node
 handle's `get_allocator'.
+
+**M6's fifty-second step (0.84): THE NOT-DONE LISTS OF THE CONTAINER MODULES,
+closed -- and the levels' headers read whole.** The owner asked for every
+not-done item of 0.79 to 0.83 at once. THE MODULES' REMAINDERS, five C++17
+fixtures matching clang++ line for line: `test/cpp/run/stdmapemplace.cpp`
+(`emplace`, `insert_or_assign`, `try_emplace`, `merge`, `emplace_hint`, a node
+handle's `get_allocator`), `stdmapown.cpp` (a map of the program's own struct
+as the key and as the value; `emplace` on a string map without the key, the
+`__without_key` road; a braced subscript `pm[{1, 2}]`; a copy of the value),
+`stdsetlambda.cpp` (a lambda as the comparator; `merge` between a set and a
+multiset, both ways), `stdunorderedhash.cpp` (`std::hash` specialized by the
+program for its own key; the bucket interface -- `bucket_count`, `bucket_size`,
+`bucket`, `begin(n)`/`end(n)`, `load_factor`; `max_load_factor` set, `rehash`,
+`reserve`; `unordered_map::extract` and the hash node handle; an
+`unordered_set<string>` extract) and `stdaggregate.cpp` (a plain struct holding
+a string pushed into a vector by the implicit copy, an array member
+value-initialized, an aggregate with fewer items than members, a nested braced
+list, an array of strings as a member, a constructor taking
+`initializer_list<string>`). Three of those (the lambda comparator, the merges,
+the whole hash surface) asked nothing: they ran as they stood. THE FORMS, each
+named: (1) A PLAIN STRUCT WHOSE MEMBER IS A CLASS IS A CLASS
+(`cpp_struct_promotes`, `'$cpp_promoted'`, at registration and in the program's
+own header): the reader keeps a C++ `struct` of data members as C's
+(`ccl_make_class`), and `struct Rec { std::string name; int n; }` had a member
+the tables never resolved and no constructor, destructor or copy for the string
+it holds; promoted, it goes a class's whole road, and a struct of plain members
+has its member types resolved in place (`cpp_plain_members`); (2) AN AGGREGATE
+IS A CLASS WITH NO CONSTRUCTOR WRITTEN (`cpp_aggregate_class`,
+[dcl.init.aggr]): the implicit constructor made for a member that constructs
+does not count, where `Val{"beta", 2}` had asked for `Val(const char *, int)`;
+the rest of an aggregate's members are VALUE-INITIALIZED where fewer items are
+given (`cpp_aggregate_inits`, `cpp_value_init`: `Grid2 g2{}` names nothing and
+gets its array zeroed and its string default-constructed), a nested braced
+list fills an array member element by element or a nested aggregate through
+its own list (`cpp_member_from`), and a class member from a braced list goes
+through its constructors; (3) AN ARRAY MEMBER OF OBJECTS (0.41's not-done):
+constructed element by element by the implicit constructor, copied element by
+element by the implicit copy and move (a plain array as its bytes), destroyed
+in reverse (`cpp_member_dtor`), `: cells()` zeroing it where it had been `cells
+= 0`, an int into an array; `cpp_elem_class` looks through the array for the
+class the members' rules ask -- and THE RESOLVER LEAVES AN ARRAY AS IT IS, so
+its element is resolved before its size is taken (`ccl_size_align`), where
+`std::string s[2]` had no size, the whole layout failed silently and the empty
+layout was cached (`no_member(s, ...)` in the lowering, found by asking the
+layout directly after the build); (4) THE IMPLICIT MEMBERWISE ASSIGNMENT
+([class.copy.assign], `cpp_implicit_assign`, `'$cpp_implicit_assign'`): a class
+with a destructor and no `operator=` written assigns each member through its
+own -- a string member takes basic_string's, an array its bytes, a base its
+sub-object -- the move form moving each, made once per class and kind as a
+method written out would be; never for a class holding owners of its own,
+whose plain copy the safe part refuses as ever (`vm[1] = Val{"alpha", 1}`);
+(5) THE IMPLICIT COPY AND MOVE MADE ON DEMAND FOR A LOCAL (`cpp_ctor_args`:
+`Grid2 g4 = g3`), where only the constructor road had them (0.82); (6) A
+MEMBER TEMPLATE'S CANDIDATES ARE RANKED BY THE FEWEST CONVERSIONS
+([over.match.best]; `cpp_ctor_holding`, `cpp_member_holding`, the free-function
+road's rule since 0.45): the FIRST that held won before, and libc++'s pair
+declares `pair(const _T1 &, const _T2 &)` before `pair(_U1 &&, _U2 &&)` --
+given a `char *` the first held through the string's converting constructor,
+where the second is exact, and `emplace("one", 1)` on a map of strings built
+its node from the pointer's bytes; the copy pass runs on placement new's
+constructor call too (`cpp_new_at`); (7) THE CLASS'S OWN VALUE IS READ OFF THE
+DESUGARED FORM where the inference cannot type the raw one (`cpp_own_value` in
+`cpp_ctor`'s first clause, 0.66's rule): pair's piecewise constructor hands
+`std::forward<_Args2>(std::get<_I2>(args))`, a `Val &&`, to Val's member
+initializer, refused as a copy; (8) A NESTED CLASS OF A LIBRARY CLASS IS THE
+LIBRARY'S (`cpp_lib_class` through `'$cpp_enclosing'`): basic_string's `__rep`'s
+implicit move constructor was emitted as the program's and checked (`move of a
+non-owner`); (9) a scoped template-id parameter keys by its name and arguments
+(`cpp_spec_key`: `initializer_list.string`, where the term was spelled letter
+by letter, 0.80's ugliness); (10) a braced list as a subscript, `pm[{1, 2}]`
+(the reader, `ccl_postfix_p`). THE READER (version 61), THE C++20 STRETCH by
+the census loop over the level's flattened headers -- `<set>` at C++20 had
+stopped at line 792 of 15,650, and every summary of a level held a tenth of
+its header, silently: `X<T>::template f` alone as a template template
+argument (`ccl_qrest`); a requires-clause on a MEMBER template's head, a
+TRAILING one after a function's parameters (a member's, a definition's, a
+prototype's: `ccl_method_quals`) and on a LAMBDA, after its template parameters
+and after its declarator (dropped: a generic lambda is refused by name anyway);
+THE CONSTRAINT GRAMMAR, primary expressions joined by `&&` and `||`
+([temp.pre]; `ccl_constraint`), where the full expression took `[[nodiscard]]`
+after a concept-id for a subscript; a CONSTRAINED TYPE PARAMETER, `template
+<__exchangeable _Tp>`, `Concept<A> T`, `ns::Concept T` (`ccl_tparam_c`: a type
+parameter and its concept-id as a requires entry of the head, conjoined with a
+written one by `ccl_gather_requires` so the binders meet one entry, last),
+read before as a value parameter of type `__exchangeable`; `f.template
+operator()<I>()` (`ccl_member_name`); a MEMBER VARIABLE TEMPLATE, `template
+<class _Up> static constexpr bool __check = ...;`, its name noted as a template
+so `__check<_Up, _Up &>` reads as a template-id in the requires-clauses beside
+it; a CONSTRAINED `auto`, `__integer_like auto operator()(...)` (`ccl_specs`: a
+template's name before `auto` is a concept, dropped); LLVM 21's builtin traits
+(`__builtin_lt_synthesizes_from_spaceship` and kin, answered false: no
+`operator<=>` synthesizes a comparison here); a CONCEPT INDEXED BY ITS NAME
+(`cpp_template_name(concept(...))`, registered on the first ask,
+`cpp_hdr_join_concept`). WITH THEM `<set>` (482 items where C++17 reads 426),
+`<map>` (486), `<unordered_map>` (377) and `<unordered_set>` (373) read WHOLE at
+C++20, `<optional>` (272) and `<string>` (492) at C++23, `<optional>` (273) at
+C++26 -- seven checks of the libc++ gate, a header at a level being a check of
+its own (`at(H, Std)`, the level set for the read as `test/cpp.pl`'s `unit_at`
+does) AND THE UNITS READ SO FAR FORGOTTEN BEFORE IT (`'$ccl_unit_paths'`): a
+header is read once per process by its PATH (`ccl_unit_cached`), so the C++17
+read was served to the level's check -- seven identical item counts, which is
+what said so. THE DESUGARING AT THE LEVELS: a concept-id as a
+template argument is its truth (`cpp_targ_value`: `conditional_t<
+__primary_template<iterator_traits<...>>, ...>`, C++20's iterator_traits); a
+VARIABLE template in a requires-clause is its value (`cpp_satisfied`: `requires
+(!is_same_v<...> && is_constructible_v<_Tp &, _Up>)` on optional<T &>, taken
+for a concept-id and refused `concept_without_body(is_same_v)`);
+`__reference_constructs_from_temporary` and kin answer false; THE BLOCK
+TYPEDEFS BEFORE THE FIRST RETURN are substituted into it before its type is
+asked (`cpp_body_typedefs` in `cpp_method_ret` and `cpp_lambda_ret`, 0.60's rule
+at walk time beside 0.81's declarations): libc++'s `transform` writes `using
+_Up = remove_cv_t<invoke_result_t<_Func, _Tp &>>; ... return optional<_Up>(...)`,
+and the first return typed raw instantiated `optional<_Up>` on the free name,
+its bases refused one by one. THE LEVELS' FIXTURES, matching clang++ line for line:
+`test/cpp/run/stdcontains.cpp` at C++20 (`contains` on a set, a map and the unordered
+pair; `erase_if` on a set and on a map), `stdoptional3.cpp` at C++23 (the monadic
+`and_then`, `transform`, `or_else`, the two chained, `value_or` on an empty optional)
+and `stdoptionalref.cpp` at C++26 (`optional<int &>`: bound, written through, rebound,
+an empty one's `value_or`). AND THREE MORE OF THE OLDER LISTS, closed by the same
+work: `stdstringops.cpp` (0.66's `operator+`, `substr`, `find`, and the rest of the
+string's surface: `rfind`, `append`, `push_back`, `insert`, `erase`, `replace`,
+`compare`, `front`, `back`, `at`, `npos`, a range-for over the characters, `to_string`)
+and `stdctad.cpp` (class template argument deduction, in an expression and in a
+declaration). AND WHAT THE LEVELS' PROBES ASKED FOR, each
+its own rule: (11) THE ARGUMENT PASS RUNS ON A TEMPLATE'S INSTANCE TOO (`cpp_call`'s
+template clauses, the free road's since 0.79) -- a class value where the parameter
+wants another class goes through its conversion operator, and libc++'s
+`std::__concatenate_strings(a.get_allocator(), __lhs, __rhs)', whose parameters are
+`__type_identity_t<basic_string_view<...>>', stored a basic_string's bytes into a
+string_view, which LLVM refused; (12) A FUNCTION THE SHIPPED LIBRARY ONLY DECLARES
+gets its result and parameters RESOLVED (`cpp_use_mangled`, 0.58's rule for an inline
+one): `string to_string(int)' is declared under the raw alias, and `std::to_string(x)
++ "!"' deduced nothing for `operator+(const basic_string<...> &, const _CharT *)';
+(13) CLASS TEMPLATE ARGUMENT DEDUCTION ([over.match.class.deduct], [dcl.type.class.deduct]:
+`cpp_ctad_args' at the expression road and at a declaration) -- a class template's name
+written with arguments deduces them from the IMPLICIT GUIDES, each constructor taken as a
+function template over the class's own parameters, else an aggregate's data members in
+order: libc++'s C++23 `__allocate_at_least' returns `__allocation_result{__res.ptr,
+__res.count}', and with the bare name deduced its `.ptr' had no type; (14) A DEDUCED
+RESULT'S CONDITIONAL is the arm the other converts to ([expr.cond]/4, `cpp_deduced_ret');
+(15) A CANDIDATE'S RESULT TYPE IS RESOLVED ONLY WHERE ITS NAMES ARE BOUND
+(`cpp_result_holds', [temp.deduct]/2): `__invoke_result_t<_Args...>' resolved with the
+pack free instantiated `__invoke_result_impl<void, _Fn>' on that name; (16) A FILE-SCOPE
+ALIAS IS THE CLASS IT NAMES in a path (`cpp_path_class'): `std::string::npos' was
+flattened to the bare `npos'; (17) A STATIC CONST NAMED BARE AS A TEMPLATE ARGUMENT
+folds to its value (`cpp_targ_value', 0.60's rule for an expression), which is how
+libc++'s find calls `__str_find<value_type, size_type, traits_type, npos>'; and (18) IN
+THE LOWERING, A REFERENCE TO A FUNCTION IS THE FUNCTION'S ADDRESS, with nothing to load
+([conv.func]; `ir_convert' and the call's reference result): `std::forward<_Func>(__f)'
+over `optional<int> (&)(int)' loaded the first eight bytes of the code and called them.
+AND THREE THE GATE FOUND, each a defect of this step's own making:
+(19) THE IMPLICIT DEFAULT CONSTRUCTOR IS NOTED WHERE THE CLASS EMITS IT, so a later
+naming does not emit it again (`cpp_item`; `cpp_use_member' takes a lazy class's written
+`C()' by the same name -- two identical definitions, which LLVM refuses); (20) A UNION'S
+MEMBERWISE COPY IS ITS BYTES, copied by `memcpy' from the source's ADDRESS (0.83's rule
+for an anonymous union member, here for a union class): as an assignment the two sides
+were typed by two roads and basic_string's `__rep' loaded its source as `[0 x i8]' where
+the slot was `{ i64, [16 x i8] }'; and (21) the implicit copy made ON DEMAND for a local
+is THE PROGRAM'S OWN classes' (`cpp_ctor_args'), a library class's special members coming
+through its own lazy road. Lowering version 31; reader version 63.
+Seven gates GREEN under cocolog 1.2.14 (the module rebuilt for it: the reader's 94
+checks, 6 s and 96 MB; the compile gate's 73 at 175 MB; the driver's 23 at 68; the
+objects' 29; the proof; the C++ one 138 checks, 2157 s, 1350 MB; the libc++ one's 15
+reads, 909 s, 1858 MB), and the C++ gate RED twice before them, each failure this step's
+own (the three above); the libc++ gate died ONCE with no output at all, 155 s in and a
+third of the way, straight after the C++ gate's 2157 s -- its script keeps only the lines
+that match, so a crash leaves nothing to read, and the same query run alone gave the same
+fifteen reads (896 s, 1980 MB) as the rerun did. AND WHAT 1.2.14 BOUGHT, warm against warm on the same fixtures:
+the reader's peak 179 -> 96 MB, the compile gate's 326 -> 175, the driver's 83 -> 68,
+the C++ one's 1489 -> 1350 -- the compaction's own peak, which the engine's owner cut by
+sizing the new cell array at the live length instead of letting it double into place.
+NOT DONE: the C++23 optional's
+`transform` to a STRING and its `and_then` whose lambda returns a conditional over
+`optional<int>` and `nullopt` (both stop at `__invoke_result_impl<void, _Fn>`, an
+instance asked while the pack is free -- the trace `free_name_instance' names every
+such ask now); `std::hash<optional>` (a local's `operator()' on that specialization);
+`find_first_of` (`__str_find_first_of' cannot deduce its `_BinaryPredicate'); the
+unordered containers' `erase_if`; `<vector>`, `<string>` and `<iostream>` read at
+C++20 (only the associative containers and `<optional>`/`<string>` are); a program's
+own `operator<=>`, `std::format`, the ranges.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
