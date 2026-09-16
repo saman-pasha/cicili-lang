@@ -867,6 +867,20 @@ what runs today.
   a function type decaying to a pointer to function; and a virtual overload set,
   where two `__clone` slots of one name shared a table entry.
 
+* **The fifty-sixth step DONE: the rules a class's bytes are made of.** 0.88's
+  not-done list opened with a pair that cannot be taken one at a time: `sizeof`
+  an empty class is 1 in C++ ([class]/4), while an empty BASE takes no bytes (the
+  empty base optimization) -- so the first rule written alone would grow every
+  class derived from an empty one, and libc++'s allocators, comparators and tuple
+  leaves are empty bases everywhere. It became a trio: `alignas` on a class was
+  dropped by the reader, so `std::function`'s inline buffer came out aligned 1,
+  and C++20's `[[no_unique_address]]` was dropped with it, so libc++'s marked
+  allocators and paddings each took a byte the ABI does not give them. All four
+  rules are one question -- where a class's bytes are -- and they are answered in
+  the layout (`ccl_infer`), the desugaring's tag and the LLVM shape alike, so
+  `sizeof`, `alignof`, `offsetof` and the emitted struct agree. Three fixtures
+  match clang++: `emptyclass.cpp`, `alignas.cpp` and `nounique.cpp`.
+
 ## The `cicili` command
 
 `bin/cicili` takes clang's arguments, so nothing about it is new:

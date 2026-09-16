@@ -127,8 +127,8 @@ ccl_resolve_base(S, Q, base(Q, S)).
 %% plain members (a struct), or a class's (a constructor, a method, a label)
 ccl_tag_type(N, Ms0, Q, base(Q, [union(N, Ms)])) :- ccl_is_union_tag(Ms0), !, ccl_tag(N, Ms).   % a UNION with constructors: a class whose members share storage
 ccl_tag_type(N, Ms0, Q, base(Q, [enum(N, Ms)])) :- ccl_is_enum_tag(Ms0), !, ccl_tag(N, Ms).
-ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms2)])) :- member(M, Ms), M \= member(_, _, _), ccl_tag_struct(N, Ms2), !.   % the class desugared: its struct, noted beside the raw class
-ccl_tag_type(N, Ms, Q, base(Q, [class(class, N, [], Ms)])) :- member(M, Ms), M \= member(_, _, _), !.
+ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms2)])) :- ccl_class_shape(Ms), ccl_tag_struct(N, Ms2), !.   % the class desugared: its struct, noted beside the raw class
+ccl_tag_type(N, Ms, Q, base(Q, [class(class, N, [], Ms)])) :- ccl_class_shape(Ms), !.
 ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms)])).
 %% A TAG'S MEMBERS TELL AN ENUM FROM A STRUCT: its enumerators, or the underlying type kept before them
 %% (ccl_enum_members//3 in the reader) -- which is the only thing that tells `enum class C : size_t { }',
@@ -140,16 +140,28 @@ ccl_tag_type(N, Ms, Q, base(Q, [struct(N, Ms)])).
 ccl_is_union_tag([union_tag|_]).
 ccl_is_enum_tag([enumerator(_, _)|_]).
 ccl_is_enum_tag([enum_base(_)|_]).
-ccl_tag_struct(N, Ms) :- ccl_cached_named('$ccl_ts:', N, Ms, ( nb_getval('$ccl_tags', L), member(N-Ms, L), \+ ( member(M, Ms), M \= member(_, _, _) ) )).
+ccl_tag_struct(N, Ms) :- ccl_cached_named('$ccl_ts:', N, Ms, ( nb_getval('$ccl_tags', L), member(N-Ms, L), \+ ccl_class_shape(Ms) )).
+%% a member list that is a CLASS's and not a plain struct's: something in it is no data member. The
+%% `align_as' a class states is LAYOUT and not a member, so it counts for neither shape -- read as one,
+%% an `alignas' struct answered its raw class where its desugared struct was meant and `sizeof' had
+%% nothing to lay out.
+ccl_class_shape(Ms) :- member(M, Ms), \+ ccl_layout_marker(M), M \= member(_, _, _), !.
+ccl_layout_marker(align_as(_)).
 ccl_resolve_typedef(N, T) :- ccl_typedef_of(N, T0), ccl_resolve_type(T0, T).
 ccl_add_quals([], T, T) :- !.
 ccl_add_quals(Q, base(Q0, S), base(Q1, S)) :- !, append(Q, Q0, Q1).
 ccl_add_quals(Q, ptr(Q0, T), ptr(Q1, T)) :- !, append(Q, Q0, Q1).
 ccl_add_quals(_, T, T).
-ccl_members_of(base(_, [struct(_, Ms)]), Ms) :- Ms \== none, !.                 % resolved already: no resolution
-ccl_members_of(base(_, [union(_, Ms)]), Ms) :- Ms \== none, !.
-ccl_members_of(T, Ms) :- ccl_resolve_type(T, T1), ( T1 = base(_, [struct(_, Ms)]) ; T1 = base(_, [union(_, Ms)]) ), Ms \== none, !.
-ccl_members_of(T, Ms) :- ccl_resolve_type(T, base(_, [class(_, _, _, Ms0)])), !, findall(member(MT, N, I), ( member(member(MT, N, I), Ms0), \+ ( MT = base(Q, _), memberchk(static, Q) ) ), Ms).   % C++: a class's data members, the statics apart
+%% the one door for a struct's members, so the LAYOUT MARKERS a tag carries beside them (`align_as')
+%% are taken out here: the check's field walks and the lowering's member roads read this, and a marker
+%% where a member/3 is expected fails a walk without a word (`phase(check)')
+ccl_members_of(T, Ms) :- ccl_members_of_(T, Ms0), ccl_data_members(Ms0, Ms).
+ccl_data_members([], []) :- !.
+ccl_data_members([M|Ms], Out) :- ( ccl_layout_marker(M) -> Out = Out1 ; Out = [M|Out1] ), ccl_data_members(Ms, Out1).
+ccl_members_of_(base(_, [struct(_, Ms)]), Ms) :- Ms \== none, !.                 % resolved already: no resolution
+ccl_members_of_(base(_, [union(_, Ms)]), Ms) :- Ms \== none, !.
+ccl_members_of_(T, Ms) :- ccl_resolve_type(T, T1), ( T1 = base(_, [struct(_, Ms)]) ; T1 = base(_, [union(_, Ms)]) ), Ms \== none, !.
+ccl_members_of_(T, Ms) :- ccl_resolve_type(T, base(_, [class(_, _, _, Ms0)])), !, findall(member(MT, N, I), ( member(member(MT, N, I), Ms0), \+ ( MT = base(Q, _), memberchk(static, Q) ) ), Ms).   % C++: a class's data members, the statics apart
 ccl_member_type(T, N, MT) :- ccl_members_of(T, Ms), memberchk(member(MT, N, _), Ms).
 
 %% ---- classes ----------------------------------------------------------------------
@@ -276,8 +288,22 @@ ccl_size_align(fn(_, _, _), 8, 8) :- !.
 ccl_size_align(memptr(_, _, fn(_, _, _)), 8, 8) :- !.                          % a pointer to member function: the address of the one function emitted for it
 ccl_size_align(arr(NE, E), N, A) :- !, ( ccl_size_align(E, EN0, A0) -> EN = EN0, A = A0 ; ccl_resolve_type(E, E1), ccl_size_align(E1, EN, A) ), ( ccl_const_eval(NE, K) -> N is K * EN ; N = 0 ).   % a flexible member, `T a[]' or `own T *a[n]': no bytes of its own; the ELEMENT resolved (the resolver leaves an array as it is, and `std::string s[2]' had no size)
 ccl_size_align(base(_, S), N, A) :- ccl_basic_size(S, N), !, A = N.
-ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N, A).
-ccl_size_align(base(_, [union(_, Ms)]), N, A) :- Ms \== none, !, ccl_union_layout(Ms, 0, 1, N, A).
+ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N0, A0), ccl_tag_size(Ms, N0, A0, N, A).
+ccl_size_align(base(_, [union(_, Ms)]), N, A) :- Ms \== none, !, ccl_union_layout(Ms, 0, 1, N0, A0), ccl_tag_size(Ms, N0, A0, N, A).
+%% a tag's size and alignment: the members' own, the empty class's byte, and `alignas' where the class
+%% states one ([dcl.align]: never smaller than the natural alignment, and the size rounds up to it)
+ccl_tag_size(Ms, N0, A0, N, A) :- ccl_class_size(Ms, N0, N1), ccl_align_as(Ms, A0, A), ccl_round_up(N1, A, N).
+ccl_align_as(Ms, A0, A) :- findall(V, ( member(align_as(E), Ms), ccl_const_eval(E, V) ), Vs), ccl_max_align(Vs, A0, A).
+ccl_max_align([], A, A).
+ccl_max_align([V|Vs], A0, A) :- ( V > A0 -> A1 = V ; A1 = A0 ), ccl_max_align(Vs, A1, A).
+%% AN EMPTY CLASS HAS SIZE ONE ([class]/4): two objects of it must have two addresses, an array of
+%% them n, and `new' must hand back something. In C an empty struct is a GNU extension of no bytes
+%% and stays so. The rule cannot be written without the one beside it -- an empty BASE takes no
+%% bytes (cpp_base_layout, the empty base optimization) -- or every class deriving from an empty one
+%% would grow by a byte where C++ gives it none, and libc++'s allocators, comparators and tuple
+%% leaves are empty bases everywhere.
+ccl_class_size(Ms, 0, N) :- ccl_lang(cpp), ccl_no_data_members(Ms), !, N = 1.   % NO DATA MEMBERS AT ALL is what [class]/4 asks: a class whose one member is a zero-length array (libc++'s compressed-pair padding, `char __padding_[sizeof(T) - __datasizeof_v<T>]') HAS a member and keeps the no bytes the GNU extension gives it
+ccl_class_size(_, N, N).
 ccl_size_align(base(_, [enum(_, [enum_base(T)|_])]), N, A) :- !, ccl_size_align(T, N, A).   % `enum E : size_t' is eight bytes
 ccl_size_align(base(_, [enum(_, _)]), 4, 4) :- !.
 ccl_size_align(base(_, [enum_class(_, _)]), 4, 4) :- !.
@@ -300,7 +326,10 @@ ccl_members_layout_nocache(Ms, Lays, Size, Align) :- ccl_members_layout_(Ms, 0, 
 ccl_members_layout_([], Bits, Al, [], Bits, Al).
 ccl_members_layout_([member(T, N, W0)|Ms], Bit0, Al0, Lays, Bits, Al) :-
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ABits is A * 8,
-    (   W0 == none
+    (   W0 == no_unique_address, ccl_empty_layout(T1)
+    ->  ccl_round_up(Bit0, ABits, B1), Off is B1 // 8, Bit1 = Bit0, Al1 is max(Al0, A),   % `[[no_unique_address]]' ON AN EMPTY MEMBER: no bytes, its ALIGNMENT kept -- libc++ marks every container's allocator and comparator with it, and given the byte an empty class now has as a complete object, basic_string's data began one byte late
+        Lays = [lay(N, T, Off, empty)|Lays1]
+    ;   ccl_plain_width(W0)
     ->  ccl_round_up(Bit0, ABits, B1), Off is B1 // 8, Bit1 is B1 + S * 8, Al1 is max(Al0, A),
         Lays = [lay(N, T, Off, none)|Lays1]
     ;   ccl_bit_width(W0, W),
@@ -313,6 +342,16 @@ ccl_members_layout_([member(T, N, W0)|Ms], Bit0, Al0, Lays, Bits, Al) :-
 %% A LAYOUT IS OVER DATA MEMBERS: a C++ class's tag carries its constructors, methods and typedefs beside them, and
 %% a nested one reaches the layout as the reader gave it -- libc++'s `union __rep' has three constructors.
 ccl_members_layout_([_|Ms], Bit0, Al0, Lays, Bits, Al) :- ccl_members_layout_(Ms, Bit0, Al0, Lays, Bits, Al).
+ccl_plain_width(none).
+ccl_plain_width(no_unique_address).                                              % the mark is no bitfield width: a member carrying it over a type with bytes lies where it always did
+%% AN EMPTY CLASS IS ONE WITH NO DATA MEMBERS AT ALL ([class]/4) -- the same test `ccl_class_size' asks, and
+%% written once. NOT "lays out to zero": `ccl_members_layout_' SKIPS a member whose type it cannot size yet (its
+%% last clause takes anything), so a class whose members are not resolvable at the moment of asking lays out to
+%% zero and would read as empty. libc++'s compressed pair marks `__rep_' ITSELF with `[[no_unique_address]]', and
+%% by the weaker test basic_string's 24-byte union became a member of no bytes -- the struct came out
+%% `{ {}, padding, {}, {} }' with no `__rep_' in it, every string was its own first byte, and `a + ", "' was empty.
+ccl_empty_layout(T) :- ( T = base(_, [struct(_, Ms)]) ; T = base(_, [union(_, Ms)]) ), Ms \== none, ccl_no_data_members(Ms).
+ccl_no_data_members(Ms) :- \+ member(member(_, _, _), Ms).
 ccl_bit_width(int(W), W) :- !.
 ccl_bit_width(W, W) :- integer(W), !.
 ccl_bit_width(E, W) :- ccl_const_eval(E, W).

@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(69).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart
+ccl_reader_version(71).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1052,7 +1052,15 @@ ccl_gnu_attr --> ccl_c_or_cpp, ccl_p('['), ccl_p('['), !, ccl_skip_attr.        
 ccl_gnu_attr --> ccl_c23, ccl_id(alignas), !, ccl_p('('), ccl_balanced, ccl_p(')').
 ccl_gnu_attr --> ccl_cpp, ccl_kw(alignas), !, ccl_p('('), ccl_balanced, ccl_p(')').           % alignas(T), alignas(16): dropped, as the attributes are                         % C++'s [[nodiscard]] and kin, dropped
 ccl_skip_attr --> ccl_p(']'), ccl_p(']'), !.
+%% ... and ONE attribute is not dropped: `[[no_unique_address]]' ([dcl.attr.nouniqueaddr]) is C++20's empty
+%% base optimization for a MEMBER, and libc++ marks every container's allocator and comparator with it. It is
+%% noted as it goes past and taken by the member declarator, since the attributes sit inside ccl_decl_specs,
+%% which every declaration in both languages shares.
+ccl_skip_attr --> [tok(id, W, _)], { ccl_nua_word(W) }, !, { nb_setval('$ccl_nua', yes) }, ccl_skip_attr.
 ccl_skip_attr --> [_], ccl_skip_attr.
+ccl_nua_word(no_unique_address).
+ccl_nua_word('__no_unique_address__').
+ccl_take_nua(Nua) :- ( catch(nb_getval('$ccl_nua', yes), _, fail) -> Nua = no_unique_address ; Nua = none ), nb_setval('$ccl_nua', no).
 ccl_gnu_attr --> ccl_id(A), { memberchk(A, ['__attribute__', '__attribute']) }, !, ccl_p('('), ccl_p('('), ccl_balanced, ccl_p(')'), ccl_p(')').
 ccl_gnu_attr --> ccl_id(A), { memberchk(A, ['__asm', '__asm__']) }, !, ccl_p('('), ccl_balanced, ccl_p(')').   % int f(void) __asm("_f")
 %% ... AND A NULLABILITY WORD MAY CARRY AN ARGUMENT LIST: glibc's `__nonnull(params)' reaches this
@@ -1071,9 +1079,24 @@ ccl_balanced --> [tok(K, V, _)], { \+ ( K == p, ( V == '(' ; V == ')' ) ) }, !, 
 ccl_balanced --> [].
 
 ccl_struct_spec(Env, T) --> ccl_kw(K), { K == struct ; K == union ; K == class }, !, ccl_struct_body(Env, K, T).
-ccl_struct_body(Env, K, T) --> ccl_attrs, ccl_id(N), !, { ( ccl_lang(cpp) -> ccl_add_env(N), ccl_note_if_template(N) ; true ) }, ccl_class_targs(Env, N, Name),
-    ( ccl_cpp, ccl_class_tail(Env, K, Name, T), ! ; ccl_p('{'), !, ccl_members(Env, Ms), ccl_p('}'), ccl_attrs, { T =.. [K, N, Ms] } ; { T =.. [K, N, none] } ).
-ccl_struct_body(Env, K, T) --> ccl_attrs, ccl_p('{'), ccl_class_members(Env, anon, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, anon, [], Ms, T) }.
+ccl_struct_body(Env, K, T) --> ccl_attrs_align(A), ccl_id(N), !, { ( ccl_lang(cpp) -> ccl_add_env(N), ccl_note_if_template(N) ; true ) }, ccl_class_targs(Env, N, Name),
+    ( ccl_cpp, ccl_class_tail(Env, K, Name, A, T), ! ; ccl_p('{'), !, ccl_members(Env, Ms0), ccl_p('}'), ccl_attrs, { ccl_align_members(A, Ms0, Ms), T =.. [K, N, Ms] } ; { T =.. [K, N, none] } ).
+ccl_struct_body(Env, K, T) --> ccl_attrs_align(A), ccl_p('{'), ccl_class_members(Env, anon, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, anon, [], Ms, A, T) }.
+%% `alignas' IS KEPT where it sits on a class, a struct or a union ([dcl.align]) -- every other attribute is
+%% dropped where it always was. `union alignas(_Align) type { unsigned char __data[N]; };' is how libc++'s
+%% aligned_storage states the alignment std::function's inline buffer needs, and `struct alignas(16) V { ... }'
+%% is a program's own; dropped, the type came out under-aligned and nothing said so. The value travels as
+%% `align_as(E)' at the END of the members (the head is where union_tag and enum_base sit), folded in the
+%% class's own words by the desugaring as a bitfield's width and an array's bound are.
+ccl_attrs_align(A) --> ccl_align_attr(A0), !, ccl_attrs_align(A1), { ( A0 == none -> A = A1 ; A = A0 ) }.
+ccl_attrs_align(none) --> [].
+ccl_align_attr(align(E)) --> ccl_c23, ccl_id(alignas), !, ccl_p('('), ccl_align_arg(E), ccl_p(')').
+ccl_align_attr(align(E)) --> ccl_cpp, ccl_kw(alignas), !, ccl_p('('), ccl_align_arg(E), ccl_p(')').
+ccl_align_attr(none) --> ccl_gnu_attr.
+ccl_align_arg(alignof_type(T)) --> ccl_type_name([], T), ccl_peek(p, ')'), !.          % alignas(T) is alignof(T)
+ccl_align_arg(E) --> ccl_cond_expr(E).
+ccl_align_members(none, Ms, Ms) :- !.
+ccl_align_members(align(E), Ms0, Ms) :- append(Ms0, [align_as(E)], Ms).
 %% C++: `struct N final : public B, C { ... }' -- class(Kind, N, Bases, Ms) when
 %% it has bases, is a `class', or holds anything but fields; else C's struct
 %% `struct X<int>', `struct X<T *>': a specialization, its name the template-id
@@ -1087,8 +1110,8 @@ ccl_class_qual(Env, H, Name) --> ccl_cpp, ccl_peek(p, '::'), !, ccl_p('::'), ccl
 ccl_class_qual(_, H, H) --> [].
 ccl_class_qname(N, scoped(P, L), scoped([N|P], L)) :- !.
 ccl_class_qname(N, M, scoped([N], M)).
-ccl_class_tail(Env, K, N, T) --> ( ccl_id(final), ! ; [] ), ( ccl_p(':'), !, ccl_bases(Env, Bs) ; { Bs = [] } ),
-    ( ccl_p('{'), !, ccl_class_members(Env, N, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, N, Bs, Ms, T) } ; { Bs == [], T =.. [K, N, none] } ).
+ccl_class_tail(Env, K, N, A, T) --> ( ccl_id(final), ! ; [] ), ( ccl_p(':'), !, ccl_bases(Env, Bs) ; { Bs = [] } ),
+    ( ccl_p('{'), !, ccl_class_members(Env, N, Ms), ccl_p('}'), ccl_attrs, { ccl_make_class(K, N, Bs, Ms, A, T) } ; { Bs == [], T =.. [K, N, none] } ).
 ccl_base_virtual(virtual) --> ccl_kw(virtual), !.
 ccl_base_virtual(none) --> [].
 ccl_bases(Env, [base(A1, Q)|Bs]) --> ccl_base_virtual(V1), ( ccl_kw(A), { memberchk(A, [public, private, protected]) }, ! ; { A = none } ), ccl_base_virtual(V2), ccl_qname(Env, type, Q0), ccl_targ_pack(Q0, Q),
@@ -1141,11 +1164,12 @@ ccl_current_class(N) :- nb_getval('$ccl_class', [C|_]), ccl_class_bare(C, N).
 ccl_class_bare(scoped(_, L), B) :- !, ccl_class_bare(L, B).
 ccl_class_bare(tmpl(N, _), N) :- !.
 ccl_class_bare(N, N).
+ccl_make_class(K, N, Bs, Ms0, A, T) :- ccl_align_members(A, Ms0, Ms), ccl_make_class(K, N, Bs, Ms, T).
 ccl_make_class(union, N, _, Ms, union(N, Ms)) :- !.
 ccl_make_class(K, N, Bs, Ms, class(K, N, Bs, Ms)) :- ccl_lang(cpp), ( K == class ; Bs \== [] ; member(M, Ms), M \= member(_, _, _) ), !.
 ccl_make_class(K, N, _, Ms, T) :- T =.. [K, N, Ms].
 ccl_members(Env, Ms) --> [tok(pp, _, _)], !, ccl_members(Env, Ms).          % a #define inside a struct body (clang -E -dD keeps them)
-ccl_members(Env, Ms) --> ccl_member_decl(Env, M), !, ccl_members(Env, Ms1), { append(M, Ms1, Ms) }.
+ccl_members(Env, Ms) --> { nb_setval('$ccl_nua', no) }, ccl_member_decl(Env, M), !, ccl_members(Env, Ms1), { append(M, Ms1, Ms) }.   % the nua mark is cleared ONCE PER MEMBER, here and not in the declarator clause: `ccl_member_decl' drops an attribute before a member and RECURSES, so a reset inside it wiped the very flag that attribute had set
 ccl_members(_, []) --> [].
 %% C++ members: an access label; a friend or using declaration (skipped to
 %% its `;'); a member template; a constructor (the class's own name, then `('),
@@ -1177,7 +1201,7 @@ ccl_member_decl(Env, [ctor(L, Qs, Ps, Inits, Body)]) --> ccl_cpp, ccl_line(L), c
 ccl_member_decl(Env, [dtor(L, Qs, Body)]) --> ccl_cpp, ccl_line(L), ccl_member_prefix(Qs0), ccl_p('~'), !, ccl_id(_), ccl_p('('), ccl_p(')'), ccl_method_quals(Qs1), ccl_fn_body(Env, [], Body), { append(Qs0, Qs1, Qs) }.
 ccl_member_decl(Env, [method(L, Qs, Ret, Name, Ps, Var, Body)]) --> ccl_cpp, ccl_line(L), ccl_member_prefix(Qs0), ccl_decl_specs(Env, member, Sto, Base), ccl_declarator(Env, Base, Name, Type), { Type = fn(Ret, Ps, Var) }, !,
     ccl_method_quals(Qs1), ccl_fn_body(Env, Ps, Body), { ( Sto == none -> Qs2 = Qs0 ; Qs2 = [Sto|Qs0] ), append(Qs2, Qs1, Qs) }.
-ccl_member_decl(Env, Ms) --> ccl_decl_specs(Env, member, Sto, Base0), { ccl_member_base(Sto, Base0, Base) }, ccl_member_declarators(Env, Base, Ms0), ccl_p(';'),
+ccl_member_decl(Env, Ms) --> ccl_decl_specs(Env, member, Sto, Base0), { ccl_member_base(Sto, Base0, Base), ccl_take_nua(Nua) }, ccl_member_declarators(Env, Base, Nua, Ms0), ccl_p(';'),
     { Ms0 == [] -> Ms = [nested(Base)] ; Ms = Ms0 }.                                             % `struct I { ... };' inside a class: a nested type, kept
 ccl_member_base(static, base(Q, S), base([static|Q], S)) :- ccl_lang(cpp), !.      % a static member: the word kept as a qualifier
 ccl_member_base(_, B, B).
@@ -1209,15 +1233,15 @@ ccl_fn_body(_, _, none) --> ccl_p(';'), !.
 ccl_fn_body(Env, Ps, Body) --> ccl_peek(p, '{'), ccl_push_scope, { ccl_declare_params(Ps) }, ccl_compound(Env, Body), ccl_pop_scope.
 ccl_skip_to_semi --> ccl_p(';'), !.
 ccl_skip_to_semi --> [_], ccl_skip_to_semi.
-ccl_member_declarators(Env, Base, Ms) --> [tok(pp, _, _)], !, ccl_member_declarators(Env, Base, Ms).   % a #define between two declarators
-ccl_member_declarators(Env, Base, Ms) --> ccl_member_declarator(Env, Base, M), ccl_member_default(M, Ds), ( ccl_p(','), !, ccl_member_declarators(Env, Base, Ms1) ; { Ms1 = [] } ), { append([M|Ds], Ms1, Ms) }.
+ccl_member_declarators(Env, Base, Nua, Ms) --> [tok(pp, _, _)], !, ccl_member_declarators(Env, Base, Nua, Ms).   % a #define between two declarators
+ccl_member_declarators(Env, Base, Nua, Ms) --> ccl_member_declarator(Env, Base, Nua, M), ccl_member_default(M, Ds), ( ccl_p(','), !, ccl_member_declarators(Env, Base, Nua, Ms1) ; { Ms1 = [] } ), { append([M|Ds], Ms1, Ms) }.
 %% C++: a default member initializer, `int limit = 100;', kept beside the member
 ccl_member_default(member(_, N, _), [default_init(N, E)]) --> ccl_cpp, ccl_p('='), !, ccl_initializer(E).      % = e, = { ... }
 ccl_member_default(member(_, N, _), [default_init(N, I)]) --> ccl_cpp, ccl_peek(p, '{'), !, ccl_initializer(I).
 ccl_member_default(_, []) --> [].
-ccl_member_declarators(_, _, []) --> [].
-ccl_member_declarator(Env, Base, member(T, N, Bits)) --> ccl_declarator(Env, Base, N, T0), ccl_tie(T0, T), ( ccl_p(':'), !, ccl_cond_expr(Bits) ; { Bits = none } ).
-ccl_member_declarator(_, Base, member(Base, anon, Bits)) --> ccl_p(':'), ccl_cond_expr(Bits).
+ccl_member_declarators(_, _, _, []) --> [].
+ccl_member_declarator(Env, Base, Nua, member(T, N, Bits)) --> ccl_declarator(Env, Base, N, T0), ccl_tie(T0, T), ( ccl_p(':'), !, ccl_cond_expr(Bits) ; { Bits = Nua } ).
+ccl_member_declarator(_, Base, _, member(Base, anon, Bits)) --> ccl_p(':'), ccl_cond_expr(Bits).
 
 ccl_enum_spec(enum_class(N, Es)) --> ccl_cpp, ccl_kw(enum), ( ccl_kw(class), ! ; ccl_kw(struct) ), !, ccl_id(N), { ccl_add_env(N) },
     ccl_enum_base(B), ( ccl_p('{'), !, ccl_enumerators(Es0), ccl_p('}'), { ccl_scoped_base(B, B1), ccl_enum_members(B1, Es0, Es) } ; { Es = none } ).

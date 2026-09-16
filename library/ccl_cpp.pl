@@ -102,10 +102,10 @@ cpp_register_units(Units) :-
     nb_setval('$cpp_concepts', []),
     nb_setval('$cpp_class_types', []), nb_setval('$cpp_static_inits', []), nb_setval('$cpp_enclosing', []),
     nb_setval('$cpp_lazy', []), nb_setval('$cpp_hdr_loaded', []), nb_setval('$cpp_budget', 0), nb_setval('$cpp_depth', 0), nb_setval('$cpp_class_ctx', none), ( catch(abolish('$cpp_hdr'/2), _, true) -> true ; true ), dynamic('$cpp_hdr'/2), dynamic('$cpp_hdr_ast'/2),
-    cpp_reset('$cpp_lib'/1), cpp_reset('$cpp_libfn'/1), cpp_reset('$cpp_math_decl'/1), cpp_reset('$cpp_nested_tmpl'/3), cpp_reset('$cpp_implicit_copy'/3), cpp_reset('$cpp_promoted'/1), cpp_reset('$cpp_implicit_assign'/3), nb_setval('$cpp_in_lib', no),
+    cpp_reset('$cpp_lib'/1), cpp_reset('$cpp_libfn'/1), cpp_reset('$cpp_math_decl'/1), cpp_reset('$cpp_nested_tmpl'/3), cpp_reset('$cpp_implicit_copy'/3), cpp_reset('$cpp_promoted'/1), cpp_reset('$cpp_base_named'/1), cpp_reset('$cpp_implicit_assign'/3), nb_setval('$cpp_in_lib', no),
     cpp_reset('$cpp_fn'/5), cpp_reset('$cpp_nested'/5), cpp_reset('$cpp_nested_out'/1), cpp_reset('$cpp_union'/1), cpp_reset('$cpp_default_ctor'/1), cpp_reset('$cpp_iname'/3), nb_setval('$cpp_nesting', []), cpp_reset('$cpp_hdr_ns'/2), dynamic('$cpp_hdr_ast_ns'/2), nb_setval('$cpp_cnames', []), nb_setval('$cpp_gvar', []), nb_setval('$cpp_fn_refusal', none),
     ( catch(nb_getval('$cpp_trace', _), _, fail) -> true ; nb_setval('$cpp_trace', no) ),
-    forall(member(unit(Is), Units), cpp_note_fns(Is)),                                 % the free functions FIRST: a name is overloaded or not before any call to it is read
+    forall(member(unit(Is), Units), cpp_note_fns(Is)), forall(member(unit(Is), Units), cpp_note_bases(Is)),                                 % the free functions FIRST: a name is overloaded or not before any call to it is read
     forall(member(unit(Is), Units), cpp_register_(Is)).
 
 %% ---- FREE FUNCTION OVERLOADS ----------------------------------------------------------------------
@@ -575,7 +575,7 @@ cpp_register_header([declare(L, base(_, [class(K, C0, Bases, Ms)]))|Is]) :- cpp_
         cpp_isolated(( cpp_register_class(L, C, Bases, Ms), cpp_item(declare(L, base([], [class(K, C, Bases, Ms)])), Items) )), cpp_add_instance_items(Items) ),
     cpp_register_header(Is).
 cpp_register_header([namespace(_, _, Js)|Is]) :- !, cpp_register_header(Js), cpp_register_header(Is).
-cpp_register_header([declare(L, base(Q, [struct(N, Ms)]))|Is]) :- atom(N), Ms \== none, \+ '$cpp_promoted'(N), \+ cpp_class(N, _), cpp_struct_promotes(Ms), !,   % a header's plain struct promoted (cpp_struct_promotes): emitted with the header's classes
+cpp_register_header([declare(L, base(Q, [struct(N, Ms)]))|Is]) :- atom(N), Ms \== none, \+ '$cpp_promoted'(N), \+ cpp_class(N, _), cpp_struct_promotes(N, Ms), !,   % a header's plain struct promoted (cpp_struct_promotes): emitted with the header's classes
     assertz('$cpp_promoted'(N)), cpp_trace(promoted(N)), cpp_register_header([declare(L, base(Q, [class(struct, N, [], Ms)]))|Is]).
 cpp_register_header([I|Is]) :- cpp_note_fns([I]), cpp_register_([I]), cpp_register_header(Is).
 cpp_register_([]).
@@ -610,10 +610,28 @@ cpp_register_([extern_c(_, Js)|Is]) :- !, cpp_register_(Js), cpp_register_(Is).
 %% Promoted at registration ('$cpp_promoted', by a member whose type -- or whose array's element type -- names a
 %% class), it goes a class's whole road: the implicit constructor, destructor and copy, the aggregate initialization
 %% member by member. A struct of plain members stays C's, its member types resolved in place (cpp_item's clause).
-cpp_register_([declare(L, base(Q, [struct(N, Ms)]))|Is]) :- atom(N), Ms \== none, \+ '$cpp_promoted'(N), cpp_struct_promotes(Ms), !,
+cpp_register_([declare(L, base(Q, [struct(N, Ms)]))|Is]) :- atom(N), Ms \== none, \+ '$cpp_promoted'(N), cpp_struct_promotes(N, Ms), !,
     assertz('$cpp_promoted'(N)), cpp_trace(promoted(N)), cpp_register_([declare(L, base(Q, [class(struct, N, [], Ms)]))|Is]).
 cpp_register_([_|Is]) :- cpp_register_(Is).
-cpp_struct_promotes(Ms) :- member(member(T, _, _), Ms), cpp_type(T, T1), cpp_elem_class(T1, C), cpp_class(C, _), !.
+cpp_struct_promotes(_, Ms) :- member(member(T, _, _), Ms), cpp_type(T, T1), cpp_elem_class(T1, C), cpp_class(C, _), !.
+%% ... AND A PLAIN STRUCT NAMED AS A BASE IS A CLASS: `struct Tag { }; struct X : Tag { ... }' is
+%% everyday C++ (tag dispatch, and every empty base there is), and the reader keeps a struct of data
+%% members as C's -- so nothing registered Tag and the derived class refused base_not_registered.
+%% The names are collected BEFORE anything is registered, as the free functions are (cpp_note_fns),
+%% since a base is named after its own item and the decision must be made once, for the registration
+%% and the emission alike ('$cpp_promoted').
+cpp_struct_promotes(N, _) :- '$cpp_base_named'(N), !.
+cpp_note_bases([]).
+cpp_note_bases([I|Is]) :- cpp_note_bases_(I), cpp_note_bases(Is).
+cpp_note_bases_(namespace(_, _, Js)) :- !, cpp_note_bases(Js).
+cpp_note_bases_(extern_c(_, Js)) :- !, cpp_note_bases(Js).
+cpp_note_bases_(template(_, _, I)) :- !, cpp_note_bases_(I).
+cpp_note_bases_(include(_, _, file(_, _, unit(Js)))) :- !, cpp_note_bases(Js).      % the program's own header, read whole
+cpp_note_bases_(declare(_, base(_, [class(_, _, Bases, Ms)]))) :- !,
+    forall(( member(base(_, B0), Bases), atom(B0) ), cpp_note_base_name(B0)),
+    ( is_list(Ms) -> cpp_note_bases(Ms) ; true ).                                    % a nested class's bases with them
+cpp_note_bases_(_).
+cpp_note_base_name(N) :- ( '$cpp_base_named'(N) -> true ; assertz('$cpp_base_named'(N)) ).
 %% the class a member's type names, through an array's element (`std::string names[2]' is two strings)
 cpp_elem_class(MT, MC) :- cpp_class_of_type(MT, MC), !.
 cpp_elem_class(MT, MC) :- ( MT = arr(_, ET) -> true ; ccl_resolve_type(MT, arr(_, ET)) ), cpp_elem_class(ET, MC).
@@ -776,8 +794,8 @@ cpp_register_class_(L, C, Bases, Ms) :-
     ;   Data = Data0 ),
     cpp_class_put(C, cls(Base, Data, Ms, Statics, Defaults, Slots)),
     cpp_note_nontrivial(C, Base, Data, Ms, Slots),
-    cpp_base_layout(C, Base, Data, Data1),
-    ( '$cpp_union'(C) -> Tagged = [union_tag|Data1] ; Tagged = Data1 ), ccl_note_tag(C, Tagged),   % the struct (or UNION) it becomes, in the table at once: its members have types while its methods are walked
+    cpp_base_layout(C, Base, Data, Data1), cpp_align_tag(C, Ms, Data1, Data2),
+    ( '$cpp_union'(C) -> Tagged = [union_tag|Data2] ; Tagged = Data2 ), ccl_note_tag(C, Tagged),   % the struct (or UNION) it becomes, in the table at once: its members have types while its methods are walked
     cpp_in_class(C, ( cpp_declare_members(Ms, C), cpp_declare_statics(Statics, C) )).
 %% a data member's type as the struct will hold it: the class's typedef resolved (`pointer' is `int *'), a template-id
 %% its instance -- so the inference, asked the member's type by a method's body, answers what a call deduces from; a
@@ -1008,10 +1026,38 @@ cpp_note_nontrivial(C, Base, Data, Ms, Slots) :-
     ;   true ).
 cpp_nontrivial(C) :- nb_getval('$cpp_nontrivial', L), memberchk(C, L).
 cpp_user_copy_ctor(C) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(M, Ms), M = ctor(_, _, [P], _, _), cpp_user_ctor(M), ( P = param(RT, _) ; P = param(RT, _, _) ), RT =.. [Kind, _, base(_, [typedef(C)])], memberchk(Kind, [ref, rref]), !.   % a copy or move constructor the class WRITES (a memberwise one is its members' business)
-cpp_base_layout(_, none, Data, Data) :- !.
-cpp_base_layout(C, Base, Data, Data1) :- '$cpp_vbase'(C), !, cpp_extra_members(C, Ex), append(Ex, Data, D0),
+%% ... AND AN EMPTY BASE STILL CONTRIBUTES ITS ALIGNMENT, though it takes no bytes ([class.derived]:
+%% the empty base optimization is about storage, not alignment) -- which is exactly what an `align_as'
+%% marker says, so it is written as one. libc++ finds the widest alignment a platform has by deriving
+%% `__max_align_impl' from six `alignas'-carrying EMPTY bases and asking alignof of it; with their
+%% alignment dropped it answered 1, and std::function's inline buffer was aligned by it.
+cpp_base_layout(C, Base, Data, Data2) :- cpp_base_layout_(C, Base, Data, Data1), cpp_empty_base_align(C, Base, Al), append(Data1, Al, Data2).
+cpp_empty_base_align(C, Base, Ms) :- findall(align_as(int(A)), ( cpp_empty_base(C, Base, B), catch(cpp_base_align(B, A), _, fail), A > 1 ), Ms).
+cpp_base_align(B, A) :- ccl_resolve_type(base([], [typedef(B)]), T), ccl_size_align(T, _, A).   % RESOLVED first: ccl_size_align takes a resolved type, and a bare name simply fails it
+cpp_empty_base(_, Base, Base) :- Base \== none, cpp_empty_class(Base).
+cpp_empty_base(C, _, B) :- '$cpp_extra'(C, Es), member(B, Es), cpp_empty_class(B).
+cpp_base_layout_(_, none, Data, Data) :- !.
+%% ... AND AN EMPTY BASE HAS NO SUB-OBJECT AT ALL ([class]/4, the empty base optimization), which is
+%% what the extra empty bases have had since 0.71: the derived class takes no byte for it, the base's
+%% address IS the object's, and its typedefs, statics and methods are found through cpp_base_scope as
+%% they always were. Without this the byte an empty class now has as a COMPLETE object would be paid
+%% by every class deriving from one -- libc++'s allocators, comparators and tuple leaves.
+cpp_base_layout_(C, Base, Data, Data1) :- cpp_empty_class(Base), !, cpp_extra_members(C, Ex), append(Ex, Data, Data1).
+cpp_base_layout_(C, Base, Data, Data1) :- '$cpp_vbase'(C), !, cpp_extra_members(C, Ex), append(Ex, Data, D0),
     append(D0, [member(base([], [typedef(Base)]), '$base', none)], Data1).
-cpp_base_layout(C, Base, Data, [member(base([], [typedef(Base)]), '$base', none)|Data1]) :- cpp_extra_members(C, Ex), append(Ex, Data, Data1).
+cpp_base_layout_(C, Base, Data, [member(base([], [typedef(Base)]), '$base', none)|Data1]) :- cpp_extra_members(C, Ex), append(Ex, Data, Data1).
+%% `alignas' travels with the tag, its expression folded in the class's own words as a bitfield's width and
+%% an array's bound are: `union alignas(_Align) type { ... }' in an instance of libc++'s aligned_storage
+%% states an alignment the layout must know wherever the tag is noted from (ccl_align_as).
+cpp_align_tag(C, Ms, Data, Data1) :-
+    ( memberchk(align_as(E), Ms) -> cpp_in_class(C, cpp_array_bound(E, N)), append(Data, [align_as(N)], Data1) ; Data1 = Data ).
+%% where a class's base sub-object lies, and where the source's lies in a memberwise copy: its own
+%% `$base' member, or the object itself when the base is empty and has none
+cpp_base_place(B, addr(arrow(this, '$base'))) :- \+ cpp_empty_class(B), !.
+cpp_base_place(_, id(this)).
+cpp_base_src(B, S, member(id(S), '$base')) :- \+ cpp_empty_class(B), !.
+cpp_base_src(B, S, ccast(static, ref([], base([], [typedef(B)])), id(S))).   % an EMPTY base sub-object lies at the object's own address, but a memberwise copy must name it AS THE BASE: handed the object itself, the overload choice looked for a base constructor taking the DERIVED class and refused base_constructor
+cpp_base_hop(B, ['$base'|Hops], Hops1) :- ( cpp_empty_class(B) -> Hops1 = Hops ; Hops1 = ['$base'|Hops] ).
 cpp_extra_members(C, Ms) :- findall(member(base([], [typedef(B)]), Slot, none), '$cpp_base_slot'(C, B, Slot), Ms).
 cpp_vt_tag(C, VT) :- atomic_list_concat([C, '.vt'], VT).
 cpp_vtable_name(C, N) :- atomic_list_concat([C, '.vtable'], N).
@@ -1043,6 +1089,7 @@ cpp_split_members([member(T0, N, W0)|Ms], [member(T, N, W)|Data], Ss, Ds) :- !, 
 %% string 40 bytes where the library's is 24, and the library's own push_back wrote by its layout while our size()
 %% read by ours (self-consistent, the string fixtures had never met the library's members)
 cpp_bit_width(none, none) :- !.
+cpp_bit_width(no_unique_address, no_unique_address) :- !.                        % the mark travels to the layout with the member
 cpp_bit_width(W0, W) :- cpp_array_bound(W0, W).
 cpp_split_members([default_init(N, E)|Ms], Data, Ss, [N-E|Ds]) :- !, cpp_split_members(Ms, Data, Ss, Ds).
 cpp_split_members([_|Ms], Data, Ss, Ds) :- cpp_split_members(Ms, Data, Ss, Ds).
@@ -1155,7 +1202,7 @@ cpp_method(C, M, Args, Name, Hops) :-
     ->  cpp_mangle_q(C, M, Qs1, Ps1, Name), Hops = [], cpp_use_member(C, Name)
     ;   cpp_as_callee(C, ( findall(Q-Ps, ( member(method(_, Q, _, M, Ps, true, _), Ms), length(Ps, Mx), Mx =< N ), [C1|Cs]), cpp_pick_q([C1|Cs], Args, Qs1-Ps1) ))   % AN ELLIPSIS IS C++'S WORST MATCH ([over.ics.ellipsis]), tried after every other overload and every template, which is how a detection's `static void __find_base(...)' answers where the template beside it deduces nothing -- the rule 0.47 gave a member TEMPLATE, for the plain overloads too
     ->  cpp_mangle_q(C, M, Qs1, Ps1, Name), Hops = [], cpp_use_member(C, Name)
-    ;   B \== none, cpp_method(B, M, Args, Name, Hops1), Hops = ['$base'|Hops1]
+    ;   B \== none, cpp_method(B, M, Args, Name, Hops1), cpp_base_hop(B, ['$base'|Hops1], Hops)
     ;   cpp_extra_method(C, M, Args, Name, Hops) ).
 cpp_implicit_copy_ctor(C, Kind, Name) :- '$cpp_implicit_copy'(C, Kind, Name), !.
 cpp_implicit_copy_ctor(C, Kind, Name) :- catch(cpp_type(base([], [typedef(C)]), _), _, true), fail.   % THE CLASS'S OWN DECLARATION FIRST (the type hook registers and emits a nested one, 0.63): basic_string's `__rep' got an implicit copy constructor while its union was never emitted, and the lowering read the source as `[0 x i8]'
@@ -1455,7 +1502,8 @@ cpp_item(declare(L, base(Q, [class(_, C0, _, _)])), Items) :- !, ( cpp_class_ite
     ( \+ cpp_implicit_ctor_needed(C) -> Fns2 = [] ; cpp_implicit_ctor(L, C, Base, Defaults, Fns2) -> cpp_mangle(C, C, [], ICName), cpp_instance_note(ICName, C) ; cpp_trace(item_implicit_ctor(C)), fail ),   % ... and the implicit one is NOTED where the class emits it, so a later naming does not emit it again (cpp_use_member takes a written `C()' of a lazy class by the same name: two identical definitions, which LLVM refuses)
     ( \+ cpp_implicit_dtor_needed(C) -> Fns3 = [] ; cpp_implicit_dtor(L, C, Fns3) -> true ; cpp_trace(item_implicit_dtor(C)), fail ),
     append(Fns0, Fns1, Fns01), append(Fns01, Fns2, Fns012), append(Fns012, Fns3, Fns),
-    ( '$cpp_union'(C) -> Spec = union(C, [union_tag|Data1]) ; Spec = struct(C, Data1) ),   % a union-class shares its members' storage, and its tag says so wherever it is noted from (ccl_is_union_tag)
+    cpp_align_tag(C, Ms, Data1, Data2),
+    ( '$cpp_union'(C) -> Spec = union(C, [union_tag|Data2]) ; Spec = struct(C, Data2) ),   % a union-class shares its members' storage, and its tag says so wherever it is noted from (ccl_is_union_tag)
     (   Slots == [] -> Items = [declare(L, base(Q, [Spec]))|Fns]
     ;   cpp_vt_struct(L, C, Slots, VtDecl), cpp_vtable(L, C, Slots, Table),
         Items = [VtDecl, declare(L, base(Q, [Spec]))|Fns1x], append(Fns, [Table], Fns1x) ).
@@ -1501,7 +1549,7 @@ cpp_dtor_body(L, C, block(Body), block(Body1)) :-
     reverse(Data, RData),
     findall(S, ( member(member(MT, N, _), RData), cpp_member_dtor(MT, arrow(this, N), L, Ss), member(S, Ss) ), MemberDtors),
     findall(expr(L, call(id(EName), [addr(arrow(this, Slot))])), ( '$cpp_base_slot'(C, E, Slot), cpp_dtor(E, EName) ), ExtraDtors0), reverse(ExtraDtors0, ExtraDtors),
-    ( B \== none, cpp_dtor(B, BName) -> BaseDtor = [expr(L, call(id(BName), [addr(arrow(this, '$base'))]))] ; BaseDtor = [] ),
+    ( B \== none, cpp_dtor(B, BName) -> cpp_base_place(B, BPlace), BaseDtor = [expr(L, call(id(BName), [BPlace]))] ; BaseDtor = [] ),
     append(Body, MemberDtors, Body0), append(Body0, ExtraDtors, Body01), append(Body01, BaseDtor, Body1).
 %% a member's destruction: a class through its destructor, an array of objects element by element in reverse
 cpp_member_dtor(MT, Place, L, [expr(L, call(id(DName), [addr(Place)]))]) :- cpp_class_of_type(MT, MC), cpp_dtor(MC, DName), !.
@@ -1593,7 +1641,7 @@ cpp_ctor_body(L, C, B, Defaults, memberwise(S, Kind), block([]), Out) :- !,     
     ;   cpp_class(C, cls(_, Data, _, _, _, _)),
         findall(init(N, [Src]), ( member(member(_, N, _), Data), N \== '$base', N \== '$vptr', cpp_memberwise_src(Kind, member(id(S), N), Src) ), MInits),
         findall(init(Slot, [ESrc]), ( '$cpp_base_slot'(C, _, Slot), cpp_memberwise_src(Kind, member(id(S), Slot), ESrc) ), EInits),
-        ( B \== none -> cpp_memberwise_src(Kind, member(id(S), '$base'), BSrc), Inits0 = [init(B, [BSrc])|MInits] ; Inits0 = MInits ),
+        ( B \== none -> cpp_base_src(B, S, BPl), cpp_memberwise_src(Kind, BPl, BSrc), Inits0 = [init(B, [BSrc])|MInits] ; Inits0 = MInits ),
         append(Inits0, EInits, Inits),
         cpp_ctor_body(L, C, B, Defaults, Inits, block([]), Out) ).
 cpp_memberwise_src(copy, E, E).
@@ -1605,7 +1653,7 @@ cpp_ctor_body(L, C, B, Defaults, Inits0, block(Body), block(Pre)) :-
     cpp_norm_inits(Inits0, Inits),
     (   B \== none
     ->  ( memberchk(init(B, BArgs), Inits) -> true ; cpp_alias_base_init(C, B, Inits, BArgs) -> true ; BArgs = [] ),   % the base named through an ALIAS: `using __base = __optional_iterator_base<_Tp>; ... : __base(in_place, ...)' -- dropped, the base was default-constructed and the optional never engaged
-        ( cpp_ctor(B, BArgs, BName) -> cpp_fill_defaults(BName, BArgs, BArgs1), Pre = [expr(L, call(id(BName), [addr(arrow(this, '$base'))|BArgs1]))|Pre0]
+        ( cpp_ctor(B, BArgs, BName) -> cpp_fill_defaults(BName, BArgs, BArgs1), cpp_base_place(B, BPlace), Pre = [expr(L, call(id(BName), [BPlace|BArgs1]))|Pre0]
         ; BArgs == [] -> Pre = Pre0
         ; cpp_refuse(L, base_constructor(B)) )
     ;   Pre = Pre0 ),
@@ -1692,9 +1740,9 @@ cpp_member_inits([member(MT, N, _)|Ds], Inits, Defaults, L, Pre, Body) :- cpp_cl
     length(Args, NA),
     (   cpp_ctor(MC, Args, CName) -> cpp_fill_defaults(CName, Args, Args1), Pre = [expr(L, call(id(CName), [addr(arrow(this, N))|Args1]))|Pre1]
     ;   Args == [], cpp_trivial_default(MC)                                                        % nothing to construct: libc++'s allocator, `allocator() = default' and a converting template
-    ->  ( memberchk(init(N, []), Inits) -> Pre = [expr(L, call(id(memset), [addr(arrow(this, N)), int(0), sizeof_type(MT)]))|Pre1] ; Pre = Pre1 )   % ... but `m()' WRITTEN OUT is VALUE-initialization, which ZEROES a class whose default constructor is not user-provided: basic_string's `: __rep_()', and left as garbage the union's `__is_long_' bit read long, `clear()' wrote through a null pointer
+    ->  ( memberchk(init(N, []), Inits) -> cpp_zero_fill(MT, arrow(this, N), L, Pre, Pre1) ; Pre = Pre1 )   % ... but `m()' WRITTEN OUT is VALUE-initialization, which ZEROES a class whose default constructor is not user-provided: basic_string's `: __rep_()', and left as garbage the union's `__is_long_' bit read long, `clear()' wrote through a null pointer
     ;   Args = [E], cpp_init_arg_class(E, MC)                                                      % the implicit copy or move: bitwise, as a struct copies; a class with a destructor keeps the rule
-    ->  ( cpp_dtor(MC, _) -> cpp_refuse(L, copy_of_a_class_with_destructor(MC)) ; Pre = [expr(L, assign('=', arrow(this, N), E))|Pre1] )
+    ->  ( cpp_dtor(MC, _) -> cpp_refuse(L, copy_of_a_class_with_destructor(MC)) ; cpp_empty_class(MC) -> Pre = Pre1 ; Pre = [expr(L, assign('=', arrow(this, N), E))|Pre1] )   % ... and a member with NO BYTES copies none (cpp_zero_fill's rule, from the other side)
     ;   cpp_refuse(L, member_not_constructed(N, MC, NA)) ),
     cpp_member_inits(Ds, Inits, Defaults, L, Pre1, Body).
 %% a class default-initialized with nothing to do: no constructor of its own written out (a `= default' one is dropped
@@ -1708,7 +1756,7 @@ cpp_trivial_default(C) :- '$cpp_default_ctor'(C), \+ cpp_implicit_ctor_needed(C)
 %% and with nothing said an array of objects default-constructs each element
 cpp_member_inits([member(MT, N, _)|Ds], Inits, Defaults, L, Pre, Body) :- ccl_resolve_type(MT, arr(_, ET)), !,
     (   memberchk(init(N, [E]), Inits) -> cpp_member_from(MT, arrow(this, N), E, L, Pre, Pre1)
-    ;   memberchk(init(N, []), Inits) -> Pre = [expr(L, call(id(memset), [addr(arrow(this, N)), int(0), sizeof_type(MT)]))|Pre1]
+    ;   memberchk(init(N, []), Inits) -> cpp_zero_fill(MT, arrow(this, N), L, Pre, Pre1)
     ;   memberchk(N-D, Defaults) -> cpp_member_from(MT, arrow(this, N), D, L, Pre, Pre1)
     ;   cpp_elem_class(ET, EC), cpp_has_ctors(EC) -> cpp_value_init(MT, arrow(this, N), L, Pre, Pre1)
     ;   Pre = Pre1 ),
@@ -1717,7 +1765,7 @@ cpp_member_inits([member(MT, N, _)|Ds], Inits, Defaults, L, Pre, Body) :-
     (   memberchk(init(N, [E]), Inits) -> Pre = [expr(L, assign('=', arrow(this, N), E))|Pre1]
     ;   memberchk(init(N, []), Inits)                                                        % `second()' -- an EMPTY initializer VALUE-INITIALIZES ([dcl.init]/8): a scalar's zero, a class without constructors zero-filled (libc++'s __map_value_compare writes `: __comp_()' over an empty less<int>); left alone it was the member's garbage (7 32759 for pair<int, int>(piecewise_construct, forward_as_tuple(7), forward_as_tuple()))
     ->  ( cpp_scalar_type(MT) -> cpp_zero_of(MT, Z), Pre = [expr(L, assign('=', arrow(this, N), Z))|Pre1]
-        ; Pre = [expr(L, call(id(memset), [addr(arrow(this, N)), int(0), sizeof_type(MT)]))|Pre1] )
+        ; cpp_zero_fill(MT, arrow(this, N), L, Pre, Pre1) )
     ;   memberchk(N-E, Defaults) -> Pre = [expr(L, assign('=', arrow(this, N), E))|Pre1]
     ;   Pre = Pre1 ),
     cpp_member_inits(Ds, Inits, Defaults, L, Pre1, Body).
@@ -2040,10 +2088,18 @@ cpp_value_init(MT, Place, L, [S|Rest], Rest) :- cpp_class_of_type(MT, MC), cpp_h
     (   cpp_ctor(MC, [], CName) -> cpp_fill_defaults(CName, [], Args), S = expr(L, call(id(CName), [addr(Place)|Args]))
     ;   cpp_trivial_default(MC) -> S = expr(L, call(id(memset), [addr(Place), int(0), sizeof_type(MT)]))
     ;   cpp_refuse(L, member_not_constructed(MC, 0)) ).
+cpp_value_init(MT, Place, L, Inits, Rest) :- cpp_class_of_type(MT, MC), cpp_empty_class(MC), !, cpp_zero_fill(MT, Place, L, Inits, Rest).
 cpp_value_init(MT, Place, L, [S|Rest], Rest) :-
     ( \+ ccl_resolve_type(MT, arr(_, _)), cpp_scalar_type(MT) -> cpp_zero_of(MT, Z), S = expr(L, assign('=', Place, Z)) ; S = expr(L, call(id(memset), [addr(Place), int(0), sizeof_type(MT)])) ).
 cpp_value_inits([], _, _, _, Inits, Inits).
 cpp_value_inits([I|Is], ET, Place, L, Inits, Rest) :- cpp_value_init(ET, index(Place, int(I)), L, Inits, Inits1), cpp_value_inits(Is, ET, Place, L, Inits1, Rest).
+%% A CLASS WITH NO BYTES OF ITS OWN IS ZERO-FILLED BY NOTHING, and copied by nothing: it holds no state, its one
+%% byte ([class]/4, since 0.89) is PADDING as a complete object, and as a `[[no_unique_address]]' member it owns no
+%% byte at all -- its address may be one past its holder's own bytes. libc++'s basic_string writes `: __alloc_()'
+%% over a marked allocator, and a `memset' of sizeof -- zero before 0.89 and one after -- wrote that byte OUTSIDE
+%% the string: `a + ", "' came back empty and `substr' aborted on out_of_range.
+cpp_zero_fill(MT, _, _, Ss, Ss) :- cpp_class_of_type(MT, MC), cpp_empty_class(MC), !.
+cpp_zero_fill(MT, Place, L, [expr(L, call(id(memset), [addr(Place), int(0), sizeof_type(MT)]))|Ss], Ss).
 %% AN INITIALIZER ALREADY WALKED, marked by the `auto' clause above: the pieces must not walk it a second time --
 %% a statement expression that builds a temporary would have its declaration desugared again and the temporary
 %% constructed twice (`no_constructor(C, 0)' where the second walk found it bare), and a lambda would make a
@@ -2101,8 +2157,11 @@ cpp_copies_([P|Ps], [A|As], [A1|Bs]) :-
     ->  ( cpp_copy_ctor(C, rref) -> cpp_move_temp(C, X, A1) ; cpp_copy_temp(C, X, A1) )
     ;   cpp_class_of_type(PT, C), cpp_dtor(C, _), cpp_lvalue(A)
     ->  ( cpp_copy_ctor(C, ref) -> cpp_copy_temp(C, A, A1) ; cpp_refuse(0, class_with_destructor_by_value(C)) )
-    ;   cpp_class_of_type(PT, C), cpp_class_of_type_of(A, D), D \== C, cpp_base_hops(D, C, Hops), Hops \== []   % A DERIVED OBJECT WHERE ITS BASE IS TAKEN BY VALUE is SLICED to the base sub-object ([conv.ptr]/[class.copy]): libc++'s `__priority_tag<1>()' handed to the `__priority_tag<0>' fallback of __try_key_extraction_impl
-    ->  ( A = compound_lit(_, init([])) -> A1 = compound_lit(base([], [typedef(C)]), init([])) ; cpp_hops(A, Hops, A1) )
+    ;   cpp_class_of_type(PT, C), cpp_class_of_type_of(A, D), D \== C, cpp_base_hops(D, C, Hops)   % A DERIVED OBJECT WHERE ITS BASE IS TAKEN BY VALUE is SLICED to the base sub-object ([conv.ptr]/[class.copy]): libc++'s `__priority_tag<1>()' handed to the `__priority_tag<0>' fallback of __try_key_extraction_impl
+    ->  (   A = compound_lit(_, init([])) -> A1 = compound_lit(base([], [typedef(C)]), init([]))
+        ;   Hops == []                                                                        % ... AND WITH NO HOPS every base on the path is EMPTY (0.89's rule: such a base has no sub-object, so the object IS it): the value carries nothing but its TYPE must still be the base's, and the guard `Hops \== []' left `__priority_tag<1>' where `__priority_tag<0>' was wanted -- LLVM refused the store. The evaluation is kept beside the base's own empty aggregate, since A may have effects.
+        ->  A1 = comma(A, compound_lit(base([], [typedef(C)]), init([])))
+        ;   cpp_hops(A, Hops, A1) )
     ;   cpp_class_of_type(PT, _) -> cpp_temp_elide(A, A1)                                     % a prvalue IS the parameter: elided
     ;   A1 = A ),
     cpp_copies_(Ps, As, Bs).
@@ -2320,7 +2379,7 @@ cpp_call(Ctx, scoped(Path, M), As, E) :- cpp_scope_class(Path, C), cpp_method(C,
     E = call(id(Name), [Obj|As1]).
 cpp_static_method(C, M, Name) :- cpp_class(C, cls(_, _, Ms, _, _, _)), member(method(_, Qs, _, M, Ps, _, _), Ms), memberchk(static, Qs), cpp_mangle_q(C, M, Qs, Ps, Name), !.
 cpp_base_hops(C, C, []) :- !.
-cpp_base_hops(Ctx, C, ['$base'|Hops]) :- cpp_class(Ctx, cls(B, _, _, _, _, _)), B \== none, cpp_base_hops(B, C, Hops).
+cpp_base_hops(Ctx, C, Hops1) :- cpp_class(Ctx, cls(B, _, _, _, _, _)), B \== none, cpp_base_hops(B, C, Hops), cpp_base_hop(B, ['$base'|Hops], Hops1).
 cpp_base_hops(Ctx, C, [Slot|Hops]) :- '$cpp_base_slot'(Ctx, B, Slot), cpp_base_hops(B, C, Hops).
 cpp_call(_, id(N), Args, V) :- ccl_builtin_trait(N), !, cpp_trait(N, Args, V).                 % __is_same(T, U): the compiler's trait, decided here
 cpp_call(_, operator(Op), As, E) :- cpp_operator_new(Op, As, E), !.                           % `::operator new(n)' written out: the allocation the lowering already has

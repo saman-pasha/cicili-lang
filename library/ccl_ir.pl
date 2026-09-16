@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(33).
+ccl_lowering_version(34).   % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -212,10 +212,15 @@ ir_struct(Tag, Ms0, Name) :-
 %% natural one and at the tail; the map says which element a member is and,
 %% for a bitfield, its bits within the run: m(Name, Index, T, none | bf(RunLL, BitOff, Width, Signed))
 ir_struct_shape(Ms, Elems, Map) :-
-    ccl_members_layout(Ms, Lays, Size, _),
+    ccl_members_layout(Ms, Lays, Size0, A0), ccl_tag_size(Ms, Size0, A0, Size, _),   % the LLVM shape agrees with ccl_size_align: an EMPTY C++ class is one byte there (so two of them have two addresses and an array of three is three bytes), and an `alignas' class is padded to the size its alignment gives it
     ir_shape(Lays, 0, 0, Elems0, Map, Cur),
     ( Size > Cur -> Pad is Size - Cur, atomic_list_concat(['[', Pad, ' x i8]'], PadEl), append(Elems0, [PadEl], Elems) ; Elems = Elems0 ).
 ir_shape([], Cur, _, [], [], Cur).
+ir_shape([lay(N, T, Off, empty)|Ls], Cur, Idx, Elems, Map, End) :- !,   % a `[[no_unique_address]]' empty member: a zero-sized element, so the GEP gives its address and it takes no bytes
+    ir_pad_to(Off, Off, Cur, Idx, Elems, Elems1, Idx1),
+    Elems1 = ['{}'|Elems2], Idx2 is Idx1 + 1,
+    Map = [m(N, Idx1, T, empty)|Map1],
+    ir_shape(Ls, Cur, Idx2, Elems2, Map1, End).
 ir_shape([lay(N, T, Off, none)|Ls], Cur, Idx, Elems, Map, End) :- !,
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ccl_round_up(Cur, A, Nat), ir_type(T, LL),
     ir_pad_to(Off, Nat, Cur, Idx, Elems, Elems1, Idx1),
@@ -263,9 +268,10 @@ ir_member_slot(Base, ST, N, Slot, T) :-
     (   ir_is_union(ST) -> ( ccl_member_type(ST, N, T) -> Slot = Base ; ir_fail(no_member(N, ST)) )
     ;   ir_type(ST, SLL), nb_getval('$ir_maps', Maps), memberchk(SLL-shape(_, Map), Maps), memberchk(m(N, Idx, T, BF), Map)
     ->  ir_fresh(P), ir_ins([P, ' = getelementptr inbounds ', SLL, ', ptr ', Base, ', i32 0, i32 ', Idx]),
-        ( BF == none -> Slot = P ; BF = bf(RunLL, Off, W, Signed), Slot = bf(P, RunLL, Off, W, Signed) )
+        ( BF == none -> Slot = P ; BF == empty -> Slot = empty(P) ; BF = bf(RunLL, Off, W, Signed), Slot = bf(P, RunLL, Off, W, Signed) )
     ;   ir_fail(no_member(N, ST)) ).
 ir_slot_addr(bf(_, _, _, _, _), _) :- !, ir_fail(address_of_bitfield).
+ir_slot_addr(empty(P), A) :- !, A = P.        % a `[[no_unique_address]]' member HAS an address (C++ gives it one, possibly shared); what it has not is bytes
 ir_slot_addr(A, A).
 %% a load from a slot (an array decays to its address); a bitfield's bits shifted out of its run
 ir_load_slot(Slot, T, V) :- ir_type(T, LL), ir_load_slot(Slot, T, LL, V).
@@ -276,6 +282,11 @@ ir_load_slot(bf(P, RunLL, Off, W, Signed), _, LL, V) :- !,
     ( Signed == true -> Op = ashr ; Op = lshr ),
     ( Sh2 =:= 0 -> V2 = V1 ; ir_fresh(V2), ir_ins([V2, ' = ', Op, ' ', RunLL, ' ', V1, ', ', Sh2]) ),
     ir_int_convert(V2, RunLL, Signed, LL, V).
+%% A MEMBER THAT OWNS NO STORAGE MOVES NO BYTES: a `[[no_unique_address]]' member of an empty class occupies
+%% nothing, and its address may be one past its holder's own bytes -- a load answers the type's zero (there is no
+%% state to read) and a store writes nothing. The desugaring says the same at its own doors (cpp_zero_fill); this
+%% is the net under every road that reaches a member slot.
+ir_load_slot(empty(_), _, LL, V) :- !, ir_zero(LL, V).
 ir_load_slot(A, T, LL, V) :- ir_load_or_decay(A, T, LL, V).
 %% a store to a slot; a bitfield's bits masked into its run
 ir_store_slot(Slot, T, V) :- ir_type(T, LL), ir_store_slot(Slot, T, LL, V).
@@ -289,6 +300,7 @@ ir_store_slot(bf(P, RunLL, Off, W, _), _, LL, V) :- !,
     ( Off =:= 0 -> S = M ; ir_fresh(S), ir_ins([S, ' = shl ', RunLL, ' ', M, ', ', Off]) ),
     ir_fresh(R), ir_ins([R, ' = or ', RunLL, ' ', C, ', ', S]),
     ir_ins(['store ', RunLL, ' ', R, ', ptr ', P, ', align 1']).
+ir_store_slot(empty(_), _, _, _) :- !.
 ir_store_slot(A, _, LL, V) :- ir_ins(['store ', LL, ' ', V, ', ptr ', A]).
 %% an integer constant as LLVM writes it for iK: two's complement when the top bit is set
 ir_iconst(Val, K, Lit) :- ( K < 64, Val >= 1 << (K - 1) -> Lit is Val - (1 << K) ; Lit = Val ).
@@ -843,7 +855,7 @@ ir_ref_slot(A0, T0, A, T) :- ( T0 = ref(_, T) ; T0 = rref(_, T) ), !, ir_fresh(A
 ir_ref_slot(A, T, A, T).
 %% what a reference is bound to: an lvalue's address, or a call's reference result as it is
 ir_ref_of(move(E), R) :- !, ir_ref_of(E, R).   % a reference bound to `std::move(x)' binds x (the move stays on a class value since 0.83)
-ir_ref_of(E, P) :- ir_lvalue_form(E), !, ir_lval(E, P, _, _).
+ir_ref_of(E, P) :- ir_lvalue_form(E), !, ir_lval(E, Slot, _, _), ir_slot_addr(Slot, P).   % the ADDRESS, through the one door: a slot may be a bitfield's or a member that owns no storage, and neither is a pointer
 ir_ref_of(ccast(_, T, E), P) :- !, ir_ref_of(cast(T, E), P).                          % a C++ cast keeps its word to here
 ir_ref_of(cast(T, E), P) :- ( T = ref(_, _) ; T = rref(_, _) ), !, ir_ref_of(E, P).   % the bind again: no temporary between
 ir_ref_of(call(F, Args), P) :- !, ir_call(F, Args, V, RT),
@@ -1174,6 +1186,7 @@ ir_gelems([], _, _, _, []).
 ir_gelems([LL|Ls], Idx, Map, Vals, [P|Ps]) :-
     findall(M, ( member(M, Map), M = m(_, Idx, _, _) ), Here),
     (   Here == [] -> ir_zero(LL, Z), atomic_list_concat([LL, ' ', Z], P)
+    ;   Here = [m(_, _, _, empty)] -> ir_zero(LL, Z), atomic_list_concat([LL, ' ', Z], P)   % a member with no bytes: the `{}' element's own zero, never the bitfield packer below
     ;   Here = [m(N, _, MT, none)] -> ( memberchk(N-V, Vals) -> ir_gconst(V, MT, C) ; ir_zero(LL, C) ), atomic_list_concat([LL, ' ', C], P)
     ;   ir_gpack(Here, Vals, 0, Packed), ir_array_count(LL, K),
         ir_le_bytes(Packed, K, Bytes), ir_escape(Bytes, Esc), atomic_list_concat([LL, ' c"', Esc, '"'], P) ),

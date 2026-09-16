@@ -249,7 +249,13 @@ being microseconds -- for `ccl_typedef_of/2`, `ccl_tag/2`, a typedef's
 full resolution (`ccl_resolve_type`, the chain walked once), a struct's
 layout (`ccl_members_layout/4`), the file scope's names and `ir_type/2`;
 `ccl_tables_changed/0` empties every cache and is called wherever a table
-is written (the noters, the summaries, `ccl_with_file`'s restore). **A
+is written (the noters, the summaries, `ccl_with_file`'s restore). **A cached predicate is not
+re-entrant**: `ccl_cached/4` reads the cache ONCE before it calls the goal and writes the list
+back afterwards, so a NESTED ask on the same cache from inside that goal has its entry restored
+away by the outer write -- harmless, since it costs only a recomputation, but a predicate that
+asks its own cache while computing an entry takes the `_nocache' form, or does not ask at all:
+`ccl_empty_layout' was written inside `ccl_members_layout_' that way and now answers from the
+members alone (`ccl_no_data_members'), which is both re-entrant-safe and the right question. **A
 cache keyed by a NAME whose values may be large -- a tag's members, a
 typedef's resolution, a function's type -- is a global per name**
 (`ccl_cached_named/4`: `'$ccl_tag:node'`, `'$ccl_r:size_t'`, `'$ccl_g:f'`,
@@ -3939,6 +3945,126 @@ being new here -- 28.6 s: this step's one addition to the hot path costs nothing
 The libc++ gate ran in a window with no sleep in it and is the honest comparison: 945 s against
 859 at 0.87, for one header more.
 
+**M6's fifty-sixth step (0.89): THE LAYOUT RULES A CLASS'S BYTES ARE MADE OF -- the empty
+class, the empty base, `alignas' and `[[no_unique_address]]'.** 0.88's not-done list opened
+with a PAIR that cannot be taken one at a time, and said so: `sizeof' AN EMPTY CLASS IS ONE
+in C++ ([class]/4) -- two objects of it must have two addresses, an array of three is three
+bytes, and `new' must hand back something -- while an EMPTY BASE takes NO BYTES (the empty
+base optimization), so the first rule written alone would grow every class derived from an
+empty one by a byte C++ does not give it, and libc++'s allocators, comparators, tuple leaves
+and `__weak_result_type' are empty bases everywhere. It became a TRIO, since two more of that
+list are the same question asked of a member: `alignas' was dropped by the reader, so
+`std::function''s inline buffer came out aligned 1, and `[[no_unique_address]]' was dropped
+with it, so libc++'s marked allocators and paddings each took a byte the ABI does not give
+them. THE FOUR RULES: (1) A CLASS WITH NO DATA MEMBERS AT ALL IS ONE BYTE (`ccl_class_size',
+in cpp only: in C an empty struct is a GNU extension of no bytes and stays so), and the test
+is the MEMBERS and not the layout -- keyed on `lays out to zero', `struct Z { char p[0]; }'
+came out 1 where C's answer and clang's is 0, and libc++'s compressed-pair padding, `char
+__padding_[sizeof(_ToPad) - __datasizeof_v<_ToPad>]', is exactly such a member. (2) AN EMPTY
+BASE HAS NO SUB-OBJECT (`cpp_base_layout_'): no `$base' member is laid down for it, the
+base's address IS the object's (`cpp_base_place', `cpp_base_src', `cpp_base_hop', the three
+doors that named `$base' on their own), and its typedefs, statics and methods are found
+through `cpp_base_scope' as the EXTRA empty bases have been found since 0.71 -- this is that
+rule, moved to the first base, where 0.71 could only have it after the first. A MEMBERWISE
+COPY MUST NAME THE SOURCE'S BASE AS THE BASE (`cpp_base_src''s reference cast): handed the
+object itself, the overload choice looked for a base constructor taking the DERIVED class and
+refused `base_constructor'. AND SLICING TO SUCH A BASE IS A CHANGE OF TYPE AND NOTHING ELSE:
+`cpp_copies_' sliced a derived object handed to a by-value base parameter only where the base
+walk gave HOPS (0.79's rule), and an empty base leaves none -- libc++'s `__priority_tag<N> :
+__priority_tag<_N - 1>' is a CHAIN of empty classes, so `__priority_tag<1>()' reached the
+`__priority_tag<0>' fallback of `__try_key_extraction_impl' carrying its own type and LLVM
+refused the store (`stdmapown' in the C++ gate, the one fixture of 149 that said so). With no
+hops every base on the path is empty, so the value carries nothing and only the TYPE moves; the
+argument's evaluation is kept beside the base's own empty aggregate, since it may have effects. (3) `alignas' ON A CLASS, A STRUCT OR A UNION ([dcl.align]) is
+KEPT by the reader where every other attribute is dropped -- as `align_as(E)' at the END of
+the members, the head being where `union_tag' and `enum_base' sit -- folded in the class's
+own words by the desugaring as a bitfield's width and an array's bound are (`cpp_align_tag'),
+and read by the layout (`ccl_align_as' through `ccl_tag_size': never smaller than the natural
+alignment, the size rounded up to it). AND AN EMPTY BASE STILL CONTRIBUTES ITS ALIGNMENT
+though it takes no bytes ([class.derived]: the optimization is about storage), which is
+written as an `align_as' marker of its own (`cpp_empty_base_align'): libc++ finds the widest
+alignment a platform has by deriving `__max_align_impl' from six `alignas'-carrying EMPTY
+bases and asking `alignof' of it, and with their alignment dropped it answered 1 --
+`alignof(T)' itself has folded since 0.88, so the alignment was there to be read and nothing
+carried it. `alignas(T)' is read as that same `alignof_type(T)' (`ccl_align_arg', the type
+name tried once and only where a `)' follows it, so `alignas(16)' stays the expression it is).
+(4) `[[no_unique_address]]' ([dcl.attr.nouniqueaddr]) is C++20's empty base optimization for a
+MEMBER, and the ONE attribute the reader does not drop: an empty member marked with it takes
+no bytes and keeps its alignment, a member with bytes of its own lies where it always did.
+libc++ marks every container's allocator and comparator with it. The mark is noted as the
+attribute goes past (`ccl_skip_attr', since the attributes sit inside `ccl_decl_specs', which
+every declaration in both languages shares) and CLEARED ONCE PER MEMBER in `ccl_members' --
+not in the declarator, since `ccl_member_decl' has a clause that drops an attribute and
+RECURSES, and a reset there wiped the very flag that attribute had just set; it travels in
+the member's BIT-WIDTH slot, where a width would sit and no width can (`ccl_plain_width',
+`cpp_bit_width'), so nothing else in the passes changes shape, and the layout gives `lay(N,
+T, Off, empty)'. AND THE LOWERING'S SHAPE AGREES WITH THE LAYOUT (`ir_struct_shape' through
+`ccl_tag_size'): an empty class is one byte in LLVM too, an `alignas' class is padded to the
+size its alignment gives it, and a marked empty member is a zero-sized element, `{}', so the
+GEP still gives its address.
+AND A MEMBER THAT OWNS NO STORAGE MOVES NO BYTES, which the byte of rule (1) made urgent: an
+empty class's byte is PADDING as a complete object and NO byte at all as a marked member,
+whose address may be one past its holder's own or shared with a neighbour. So such a member is
+zero-filled by nothing and copied by nothing (`cpp_zero_fill', at the four value-initialisation
+doors and the memberwise copy beside them), and in the lowering a store through its slot writes
+nothing while a load answers the type's zero (`ir_store_slot', `ir_load_slot' over the `empty'
+mark the shape map now keeps) -- the net under every road that reaches a member slot. Before
+it, libc++'s `: __alloc_()' over a marked allocator was a `memset' of sizeof, zero before this
+step and ONE after, at an address the member does not own. Two roads fell out of writing it:
+`ir_ref_of' handed a SLOT out as a pointer without passing `ir_slot_addr', which leaked a
+bitfield's slot into the emitted text long before this step, and `ir_gelems' had no clause for
+a member with no bytes and would have fallen into the bitfield packer for a global.
+AND THE TEST FOR AN EMPTY CLASS IS ITS MEMBERS, NOT ITS LAYOUT -- written ONCE
+(`ccl_no_data_members', asked by `ccl_class_size' and `ccl_empty_layout' alike). Written as
+`lays out to zero' the second was wrong in exactly the way the first had already been wrong in
+this same step, and I did not carry the lesson three lines down: `ccl_members_layout_' SKIPS a
+member whose type it cannot size yet (its last clause takes any term), so a class whose members
+are not resolvable at the moment of asking lays out to zero and reads as EMPTY. libc++'s
+`_LIBCPP_COMPRESSED_PAIR' marks `__rep_' ITSELF with `[[no_unique_address]]', so basic_string's
+24-byte union became a member of no bytes: the emitted struct was `{ {}, padding, {}, {} }'
+with no `__rep_' in it at all, `a + ", "' came back EMPTY and `substr' then aborted on
+out_of_range, while `a' alone still printed `hello' and `sizeof(std::string)' still read 24.
+AND THE RIGHT LAYOUT IS CHEAPER, measured on the same machine within the hour, the spread cold at
+reader 71 before and after the one-line rule: `stdvector' 82 -> 14 s and 788 -> 380 MB,
+`stdfunctional' 253 -> 60 s and 1412 -> 894 MB -- a struct whose union had vanished sent the
+desugaring down roads the program never needed.
+FOUND ON THE WAY, each a defect older than this step: A PLAIN STRUCT NAMED AS A BASE IS A
+CLASS (`cpp_note_bases', `'$cpp_base_named''), since `struct Tag { }; struct X : Tag { ... }'
+is everyday C++ and every empty base there is, while the reader keeps a C++ struct of data
+members as C's -- nothing registered Tag and the derived class refused
+`base_not_registered'; the names are collected BEFORE anything is registered, as the free
+functions have been since 0.56, since a base is named after its own item and the decision
+must be made once for the registration and the emission alike. THE LAYOUT MARKERS ARE TAKEN
+OUT AT ONE DOOR (`ccl_members_of'): the check's field walks and the lowering's member roads
+read that predicate, and an `align_as' where a `member/3' is expected failed a walk without a
+word -- `phase(check)', the diagnostic 0.53 put there for exactly this. AND A TAG WHOSE
+MEMBER LIST CARRIES A MARKER IS STILL A PLAIN STRUCT (`ccl_class_shape', one predicate where
+two places tested the shape by hand): read as a class's, an `alignas' struct answered its raw
+class where its desugared struct was meant and `sizeof' had nothing to lay out.
+Reader version 71 -- 70 for `alignas', 71 for the mark, and BOTH bumps were owed: the mark
+lives in the member terms an AST beside a summary holds, so left at 70 every cached header
+kept serving members with `none', `sizeof(std::string)' read 40 against the library's 24 and
+its `__data_' sat one byte late, which read as a fresh defect and was a stale cache. The rule
+this repository already had (a change to what the AST holds bumps the version, 0.71) covers
+the index and covers this.
+Lowering version 34.
+Gated by `test/cpp/run/emptyclass.cpp' (an empty class, an empty base, two of them, a MEMBER
+of empty class type taking its byte, an array of three, and a pointer to an empty base at the
+object's own address), `alignas.cpp' (on a struct, over-aligned, `alignas(T)', on a union, as
+a member of another class, on an empty base, and the object's address checked at run time) and
+`nounique.cpp' at C++20 (a marked empty member costing nothing and the same member unmarked
+taking its byte, two marked, an over-aligned one, a marked member WITH bytes lying where it
+always did, a trailing one, and libc++'s compressed pair's shape), clang++'s numbers.
+NOT DONE: an empty marked member that is NOT THE FIRST lies one past the members before it where
+clang overlaps it with them, and two marked members of ONE empty type share an address where C++
+gives them two -- the SIZES agree with clang in both, the addresses do not; `sizeof' a pointer to
+member function is still 8 and not the ABI's 16; and A CONVERSION NEVER FIRES FOR A REFERENCE
+PARAMETER -- `ccl_resolve_type' passes a `ref' through unchanged and the type-level class test
+must not unref (0.51's rule), so `cpp_conv_fits' falls to `RT == RCT' and fails -- which is why
+`std::string_view v = s;' takes string_view's COPY constructor over the string's own bytes; that
+one is older than this step, found by a probe written for it, and a step of its own (the
+by-value road, which is what `__concatenate_strings' uses, works).
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -4497,6 +4623,25 @@ module (a segfault that looked like the error path's). The build mirrors `module
   while a sleeping machine leaves the progress in bursts. This is the third instrument in
   these findings that answers confidently without measuring what was asked -- macOS's memory
   counters, the installer's completeness check, and now the clock.
+* **AN INSTRUMENT THAT RE-RUNS THE LAST BUILD'S BINARY REPORTS THE LAST BUILD** (2026-09-16,
+  chasing `stdstringops' at 0.89). My own `ipfull.sh' ran the fixture `if [ -x $BIN ]' -- and when
+  a build FAILED the binary from the PREVIOUS build was still lying there, so it ran that one and
+  printed its output under this build's heading. The screen showed the compiler refusing with a
+  named error AND a run with a plausible diff, side by side, for two different programs; I read the
+  diff as this build's answer and spent a turn on it. It removes the binary before building now.
+  This is the fourth instrument in these findings that answers without measuring what was asked --
+  macOS's memory counters, the installer's completeness check, the gate's clock, and now a stale
+  binary -- and the tell is always the same: the answer arrived too cheaply, or arrived at all when
+  the thing that would produce it had just failed. AND THE SAME AFTERNOON, THE OTHER HALF OF THE
+  LESSON: a number that looks right is not a measurement either. With the `[[no_unique_address]]'
+  rule stubbed off, `a + ", "' printed size 7 -- the right answer -- and I took it as proof that the
+  road worked; it was right because 5 + 2 is 7 whatever bytes the views held, and the probe I then
+  wrote to check it (`std::string_view v = s;') exercised a DIFFERENT road, so its garbage sent me
+  to correct a conclusion that had been correct. The fix is the one this repository already has: one
+  variable, and the baseline measured -- the same fixture built against the COMMITTED library
+  (`GUARD_LIB' with `git show HEAD:library/X.pl' in a scratch directory, under its own HOME so the
+  reader's summaries are not disturbed) answered in 79 s and told me in one line that the regression
+  was mine.
 * **No cocolog run of mine is unguarded, not even a small fixture:**
   `scratchpad/guard.sh SECS MB LOG QUERY [HOME]` runs one query under
   `perl -e 'alarm N; exec @ARGV'` (SIGALRM survives exec, so the alarm
