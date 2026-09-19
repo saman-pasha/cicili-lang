@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(34).   % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
+ccl_lowering_version(35).   % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -263,7 +263,17 @@ ir_base_walk(V, _, [], V) :- !.
 ir_base_walk(V, D, [BN|Rest], V1) :- ir_member_slot(V, base([], [struct(D, none)]), BN, P, MT), ccl_resolve_type(MT, base(_, [struct(B, _)])), ir_base_walk(P, B, Rest, V1).
 %% ... and the same walk for a REFERENCE bound to a derived object (`const A &r = x', `f(x)' over an `A &'): the
 %% address the bind takes is the sub-object's
-ir_ref_to(E, RefT, P) :- ir_ref_of(E, P0), ( ccl_type_of(E, ET), ET \== unknown, ccl_unref(ET, ET1), ccl_resolve_type(ET1, base(_, [struct(D, _)])), ccl_unref(RefT, RT), ccl_resolve_type(RT, base(_, [struct(A, _)])), D \== A, ir_base_path(D, A) -> ir_base_hops(P0, D, A, P) ; P = P0 ).
+%% A CAST TO A REFERENCE IS A CONVERSION OF ITS OWN, and the offset is from the OPERAND's class to the
+%% CAST's target: `ccl_type_of' of the cast answers that target, so taken whole the two classes were
+%% equal, no hops were walked and the object's own address went out --
+%% `L1::sw(static_cast<L1 &>(o))', which is how libc++'s tuple swaps its leaves, then swapped the
+%% second leaf of `this' with the FIRST of the argument. The cast's own conversion is made here, and
+%% whatever the binding still needs after it (a base of the target) follows on the result.
+ir_ref_to(E0, RefT, P) :- ir_ref_cast(E0, T, E), !, ir_ref_to(E, T, P0), ir_ref_hops(P0, T, RefT, P).
+ir_ref_to(E, RefT, P) :- ir_ref_of(E, P0), ( ccl_type_of(E, ET) -> true ; ET = unknown ), ir_ref_hops(P0, ET, RefT, P).
+ir_ref_cast(cast(T, E), T, E) :- ( T = ref(_, _) ; T = rref(_, _) ).
+ir_ref_cast(ccast(_, T, E), T, E) :- ( T = ref(_, _) ; T = rref(_, _) ).   % a C++ cast keeps its word to here
+ir_ref_hops(P0, ET, RefT, P) :- ( ET \== unknown, ccl_unref(ET, ET1), ccl_resolve_type(ET1, base(_, [struct(D, _)])), ccl_unref(RefT, RT), ccl_resolve_type(RT, base(_, [struct(A, _)])), D \== A, ir_base_path(D, A) -> ir_base_hops(P0, D, A, P) ; P = P0 ).
 ir_member_slot(Base, ST, N, Slot, T) :-
     (   ir_is_union(ST) -> ( ccl_member_type(ST, N, T) -> Slot = Base ; ir_fail(no_member(N, ST)) )
     ;   ir_type(ST, SLL), nb_getval('$ir_maps', Maps), memberchk(SLL-shape(_, Map), Maps), memberchk(m(N, Idx, T, BF), Map)

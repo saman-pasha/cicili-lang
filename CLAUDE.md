@@ -52,14 +52,14 @@ bin/cicili               the command: clang's arguments, one cocolog run over ~/
 bin/cicili++             cicili for C++ (M5): the same, every input read as C++, in memory, linked by c++
 test/cpp.pl, cpp.sh      the C++ reader's gate: 34 checks over test/cpp/*.cpp (the mangler's is c34), the six C++ files of Cicili's
                          test suite read whole, hello.cpp built through cicili++, and again from the summaries
-test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set>, <optional>, <memory> and <functional> flattened and read WHOLE, under a fresh HOME,
+test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <map>, <set>, <unordered_map>, <unordered_set>, <optional>, <memory>, <functional> and <tuple> flattened and read WHOLE, under a fresh HOME,
                          and at the levels: <set>, <map>, <unordered_map>, <unordered_set> at C++20, <optional>, <string> at C++23, <optional> at C++26;
                          test/cpp/run/std*.cpp are the standard streams built against libc++ and run: cout, endl, cin, getline, get, ws,
                          the extractors and inserters (stdistream, stdistream2, stdostream), the manipulators (stdmanip), and the
                          containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap,
                          stdset, stdsetstring, stdset2, stdset3, stdunorderedmap, stdunorderedmapstring, stdunorderedmap2,
                          stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2, stdnodehandle, stdmapinit, stdmapemplace, stdmapown,
-                         stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, the smart pointers (stduniqueptr, stdsharedptr, stdmemory),
+                         stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, stdtuple, the smart pointers (stduniqueptr, stdsharedptr, stdmemory),
                          the callables (stdfunction, stdbind, stdfunctional) with multibase and detectbase beside them,
                          and at the levels stdcontains (C++20), stdoptional3 (C++23),
                          stdoptionalref (C++26);
@@ -4055,6 +4055,24 @@ a member of another class, on an empty base, and the object's address checked at
 `nounique.cpp' at C++20 (a marked empty member costing nothing and the same member unmarked
 taking its byte, two marked, an over-aligned one, a marked member WITH bytes lying where it
 always did, a trailing one, and libc++'s compressed pair's shape), clang++'s numbers.
+Seven gates GREEN at cocolog 1.2.16, warm (the cache had been warmed outside them at all four
+levels when the reader moved to 71): the reader's 94 checks, 6 s and 99 MB; the compile gate's 73
+at 226 MB; the driver's 23 at 67; the objects' 29; the proof; the C++ one 149 checks -- 146 and
+this step's three -- at 1739 MB; the libc++ one's 17 reads, 993 s, 2035 MB.
+AND THE C++ GATE'S CLOCK IS A NUMBER THIS TIME, and it is a bad one: 6147 s against 0.87's 1995
+for 141 checks, with `pmset -g log' showing NO sleep in the window (the first thing to ask since
+0.88). The libc++ gate, which only READS the headers, is 993 s against 945 -- five percent -- so
+the reader is untouched and every one of those minutes is in the passes that COMPILE. I NAMED A
+CAUSE AND IT WAS WRONG: this step put `ccl_tag_size' inside `ccl_size_align', the hottest
+predicate there is, with a `findall' in `ccl_align_as' allocating at every struct sizing, and that
+is a good story -- but measured one variable at a time, warm against warm, the same fixture built
+against the COMMITTED 0.88 costs the SAME (`stdmap': 37.5 s of user time at 0.89, 38.6 at 0.88,
+519 MB against 420). The layout rules cost nothing measurable. The gate's average is 41 s a check
+where 0.87's was 14, so the time is in OUTLIERS and not spread evenly -- `stdset3' alone took
+twenty minutes of it -- and an outlier is where the next measurement goes. A THIRD number of mine
+was no measurement either: the spread's `stdmap' at 105 s and 1182 MB, which I offered as evidence
+of a slowdown, was the same code on a MIXED-AGE summary cache; wiped and warmed it is 31 s and
+519 MB.
 NOT DONE: an empty marked member that is NOT THE FIRST lies one past the members before it where
 clang overlaps it with them, and two marked members of ONE empty type share an address where C++
 gives them two -- the SIZES agree with clang in both, the addresses do not; `sizeof' a pointer to
@@ -4064,6 +4082,112 @@ must not unref (0.51's rule), so `cpp_conv_fits' falls to `RT == RCT' and fails 
 `std::string_view v = s;' takes string_view's COPY constructor over the string's own bytes; that
 one is older than this step, found by a probe written for it, and a step of its own (the
 by-value road, which is what `__concatenate_strings' uses, works).
+
+**M6's fifty-seventh step (0.90): `<tuple>`, and the conversion 0.89 left named.** The owner's rule
+of 0.78 (a module at once) over `<tuple>`, whose every element libc++ keeps in a BASE of its own
+(`__tuple_impl<__index_sequence<_Indx...>, _Tp...> : public __tuple_leaf<_Indx, _Tp>...'), so the
+module rests on 0.88's multiple inheritance and 0.89's empty base -- and the first thing it found
+was that neither of those laid an object out wrong, but a CAST to one of them did. THE FORMS, each
+named: (1) A CAST TO A REFERENCE IS A CONVERSION OF ITS OWN, and the offset is from the OPERAND's
+class to the CAST's target ([expr.static.cast]): `ccl_type_of' of a cast answers that target, so
+taken whole by `ir_ref_to' the two classes were EQUAL, no base hops were walked and the object's
+own address went out -- `L1::sw(static_cast<L1 &>(o))', which is how libc++'s tuple swaps its
+leaves, swapped the second leaf of `this' with the FIRST of the argument (`t.swap(u)' on two
+tuples gave 5 1 / 2 6 where C++ gives 5 6 / 1 2). The cast's own conversion is made at the one
+door and whatever the binding still needs after it follows on the result; a local reference and a
+pointer already took their offsets, which is why this survived 0.72. Lowering version 35;
+`test/cpp/run/basecast.cpp'. (2) THE TUPLE PROTOCOL ([dcl.struct.bind]/4): where
+`std::tuple_size<E>::value' is a constant, THAT many bindings are asked for and each is `get<i>(e)'
+-- a tuple has no data member of its own, so the by-position member road found none and refused
+`bindings_count'; an E that is no tuple has no such constant and the member road stands. (3) A
+BOUND TYPE PARAMETER CALLED takes its ARGUMENTS SUBSTITUTED FIRST and its arity read off the
+result, since a PACK EXPANSION is ONE element until it expands: `_TupleDst(std::get<_Indices>(
+std::forward<_TupleSrc>(__src))...)' was taken for the one-argument functional cast and its pattern
+substituted whole, refusing `pack_unexpanded'. One predicate for the three shapes (`cpp_type_called',
+the owner's rule) where three clauses each matched an arity of the RAW list;
+`test/cpp/run/packcall.cpp'. (4) AN ARRAY BOUND DEDUCES ([temp.deduct.type]/9: `T (&a)[N]' binds N
+from the argument's own bound), which a REFERENCE parameter brings undecayed -- there was no clause
+for an array PATTERN at all, only for a pointer pattern against an array argument. (5) A STATIC
+MEMBER ARRAY's initializer is RECORDED (the `static' sits in the innermost base's qualifiers, so an
+array's is reached through `cpp_static_type' as 0.72 already reached its type; a plain `base(Q, _)'
+missed it) and is ITS OWN DEFINITION, `linkonce', as a folding scalar's has been since 0.45
+(`cpp_static_aggregate', the items desugared in the class's words); and A STATIC DEFINED IN THE
+CLASS IS NOT A SHIPPED SYMBOL -- named by its Itanium symbol (0.73) libc++'s `__matches' had no
+type at the call that searches it. (6) A CONSTEXPR CALL AND AN INDEX INTO A CONSTANT ARRAY FOLD
+WHEREVER THEY SIT: libc++ writes its search as `__i == _Nx ? __not_found : __find_idx_return(__i,
+__find_idx(__i + 1, __matches), __matches[__i])', a conditional whose arms hold the recursive call,
+so `ccl_const_eval' failed on the whole expression and nothing reached 0.72's call clause; the
+forms that one evaluator cannot take are folded to their literals first and the arithmetic left to
+it (the table is written once). (4) to (6) together are `std::get<T>', the by-type get;
+`test/cpp/run/arraybound.cpp' has the shape on the program's own classes. (7) A HEADER'S INLINE
+VARIABLE WITH NO INITIALIZER, which C++ VALUE-INITIALIZES ([dcl.init]/8; a `constexpr' object must
+be initialized and none written is that): `inline constexpr __ignore_type ignore;' is
+`std::ignore', and the index took only an inline variable WITH an initializer, so it was never
+registered and reached the lowering as an `external global' the link named. Only an EMPTY class is
+taken -- a class with a constructor would have to be constructed, and nothing here is evaluated at
+compile time. The index is what the AST beside a summary is written by, so reader version 72.
+(8) AND AN ASSIGNMENT TEMPLATE COUNTS where a class is asked whether it is ASSIGNABLE, as a
+constructor template already counted in `cpp_ctor_arity_fits' (0.46): `__ignore_type''s only
+`operator=' is `template <class _Tp> const __ignore_type &operator=(const _Tp &) const', so
+`is_assignable<__ignore_type &, int const &>' read FALSE, tuple's CONVERTING assignment
+(`operator=(tuple<_Up...> const &)') was rejected with it, and the copy assignment then took a
+`tuple<int, int>' for a `tuple<int &, __ignore_type &>' -- an int read as an address, and
+`std::tie(a, std::ignore) = f()' died before its first line. It was hidden until (7) made
+`std::ignore' link at all.
+AND THE CONVERSION 0.89 NAMED AND LEFT: a class value where `const T &' is wanted converts through
+its `operator T()' and the reference binds to the PRVALUE the operator makes ([over.ics.user],
+[dcl.init.ref]/5), so neither the reference NOR THE `const' ON IT is the conversion's business. THE
+SCORER AND THE EMITTER DISAGREED: `cpp_arg_fit_' unrefs the parameter before it asks and so looks
+through `const Yards &', and then `cpp_ref_args_' handed `cpp_conv_to' the type AS WRITTEN, where
+`cpp_conv_fits' had neither an arithmetic pair nor two pointers nor two REGISTERED classes to
+compare -- a plain struct is no registered class -- and fell to `RT == RCT', which the reference,
+and then the `const' under it, each defeat on their own. Stripping at the emitter's one door leaves
+every SCORE where it was and only makes the emission agree with the choice. 0.89 recorded the
+symptom as string_view taking its copy constructor over the string's bytes; measured one variable
+at a time against the committed library, `std::string_view v = s;' SEGFAULTS at 0.89 and gives
+C++'s answer with this. `test/cpp/run/convref.cpp'.
+WHAT RUNS: `test/cpp/run/stdtuple.cpp' -- a tuple built, subscripted by index and BY TYPE, written
+through, made by `make_tuple' and `forward_as_tuple' and from a `pair', its `tuple_size' and
+`tuple_element', `tie' and `tie' with `std::ignore', the comparisons, structured bindings by value
+and by const reference, a `std::string' held and a tuple of them MOVED, a copy, the member `swap'
+and `std::swap', and `std::apply' -- clang++ line for line, and `<tuple>' read WHOLE in the libc++
+gate. Beside it `basecast.cpp', `packcall.cpp', `arraybound.cpp' and `convref.cpp', each the shape
+on the program's own classes.
+Seven gates GREEN at cocolog 1.2.16, the cache warmed OUTSIDE them first at all four levels (the
+reader moved to 72): the reader's 94 checks, 44 s and 393 MB; the compile gate's 73 at 365 MB; the
+driver's 23 at 80; the objects' 29; the proof; the C++ one 154 checks -- 149 and this step's five --
+6850 s at 1760 MB, with no sleep in its window (`pmset -g log', the rule since 0.88); the libc++
+one's 18 reads, 1096 s, 2310 MB, `<tuple>' 182 items. The C++ gate's 6850 s against 0.89's 6147 for
+149 is the five new fixtures and nothing else measurable -- `stdtuple' alone builds in 125 s -- and
+0.89's open question, why a check averages 41 s where 0.87's averaged 14, is untouched by this step
+and still wants its outlier measured.
+AND SEVEN GATES GREEN A SECOND TIME, at cocolog 1.2.18 with the module rebuilt (0.79's precedent for
+recording both): the reader's 94 checks, 6 s and 150 MB; the compile gate's 73 at 184 MB; the
+driver's 23 at 68; the objects' 29 at 74; the proof; the libc++ one's 18 reads, 1242 s, 1903 MB,
+every item count identical to the 1.2.16 run; the C++ one's 154 checks, 6460 s, 1858 MB, no sleep in
+its window. NOTHING IS CLAIMED FROM THOSE NUMBERS: the reader's 44 s and 393 MB at 1.2.16 were the
+FIRST run after the reader version moved to 72, so they paid the initialization phase over a fresh
+store where today's 6 s reads a warm one -- cold against warm, the trap 0.89 recorded -- and the C++
+gate's 6850 -> 6460 s and 1760 -> 1858 MB are inside this machine's up-to-a-fifth noise. What the
+re-gate says is only what a gate ever says: the engine moved under us (1.2.17's pooled prewarm,
+1.2.18's module clauses reaching the knowledge base, both STORE changes, which is why the cheap
+store-using gates are the ones that mattered here) and nothing of ours moved with it.
+NOT DONE: `std::tuple_cat'. It is the one function of the surface that does not compile, and the
+stop is named: `__tuple_cat<tuple<_Types...>, __tuple_indices<_I0...>, __tuple_indices<_J0...> >()
+(...)' builds a TEMPORARY of a three-pack class template and calls its `operator()', a member
+TEMPLATE with a trailing `_Tuples...', and the recursive overload of that operator is neither
+matched by arity nor by its arguments (`member_refused(..., operator(()), argument_mismatch)' then
+`arity_mismatch'), so the call stays raw and the lowering meets a call whose callee is a compound
+literal. The return-type chain BEHIND it is right -- the trace shows
+`__tuple_cat_return_impl.tuple.int_int_double_char' and `tuple_size.tuple.int_int_double_char' ->
+`integral_constant.size_t.4' -- and so is `__tuple_cat_select_element_wise', whose pack (3) above
+fixed; what is left is the member template on an instance of a class template over three packs, and
+it is a step of its own. Also not done, both found on the way and older than this step: a QUALIFIED
+DATA MEMBER inside a derived class, `L0::v = a;', is `undeclared('L0.v')' (a qualified METHOD call
+has gone through the base hops since 0.73; the data member has no road), and an OUT-OF-CLASS
+definition of a static ARRAY member, `const bool Holder::flags[3] = {...};', is
+`member_of_class(scoped(['Holder'], flags))' -- the in-class initializer is what (5) defines, and
+the out-of-class form is another.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
@@ -4642,6 +4766,37 @@ module (a segfault that looked like the error path's). The build mirrors `module
   (`GUARD_LIB' with `git show HEAD:library/X.pl' in a scratch directory, under its own HOME so the
   reader's summaries are not disturbed) answered in 79 s and told me in one line that the regression
   was mine.
+* **A DEBUG `write/1' FROM INSIDE THE LIBRARY DOES NOT REACH THE SCREEN THROUGH `bin/cicili'**
+  (2026-09-17, chasing the reference conversion at 0.90). The command's output filter keeps only
+  `: error: ', `: note: ', `cicili: ' and `unit(' lines (`bin/cicili', the one `awk' pass), so a
+  `write(dbg(...))' put in a clause to see whether it is reached prints NOTHING -- and silence there
+  reads exactly like a predicate that never ran. I instrumented `cpp_ref_args_', saw nothing, moved
+  the instrument one predicate out, saw nothing again, and concluded the whole road was dead; it was
+  running all along. Prefix the term with `cicili: ' (`write('cicili: '), write(dbg(...)), nl') and
+  it comes through, or run the query under `scratchpad/guard.sh', which has no filter. This is the
+  fifth instrument in these findings that answers without measuring what was asked, and the first
+  whose answer is silence -- the tell is that ABSENCE is not evidence unless the channel is known to
+  carry a presence.
+* **AND 0.58's LESSON IS A SHELL LESSON TOO**: `scratchpad/ipfull.sh' had its watchdog appended to a
+  line that already carried a `#' comment, so `sh $S/watch.sh 2800 $secs ... &' was inside the
+  comment and every fixture built with NO memory cap at all -- the runs that produced this step's
+  numbers before it was found were unguarded, which is the one rule this repository does not bend. A
+  comment ends the LINE in `sh' as it does in a cocolog clause, and a line is never rewritten with
+  one in the middle.
+* **A MISSING RUNNER READS EXACTLY LIKE A PASSING ONE WHEN ITS OLD LOG SURVIVES** (2026-09-19, the
+  gates after cocolog's binary went to 1.2.18). The session scratchpad had been reaped of some of its
+  files -- `gate.sh' and `watch.sh' among them, `guard.sh' and 560 others left -- so my five-gate loop
+  printed `gate.sh: No such file or directory' to stderr and then, for each gate, GREEN and a timing
+  read by `grep' out of the log file from TWO DAYS BEFORE. Five GREEN lines, nothing run. The tell was
+  that the numbers were yesterday's TO THE SECOND (reader 44 s and 393 MB, compile 39 s and 365 MB),
+  and the structural one is better: `gate.sh' truncates its log before it starts, so a log holding old
+  content is proof the runner never ran. Two rules out of it, both in the scripts now: a runner
+  REFUSES when its watchdog is not beside it (`gate.sh' exits 2 rather than run a gate with no memory
+  cap -- the same hole 0.90 found in `ipfull.sh', arrived at from the other side), and a loop over
+  gates takes the runner's EXIT STATUS and stops, never reading a log it did not just see written.
+  This is the sixth instrument in these findings that answers without measuring what was asked, and
+  the second whose answer comes from ABSENCE -- the debug `write' whose silence read as a dead
+  predicate, and now a tool whose disappearance read as a pass.
 * **No cocolog run of mine is unguarded, not even a small fixture:**
   `scratchpad/guard.sh SECS MB LOG QUERY [HOME]` runs one query under
   `perl -e 'alarm N; exec @ARGV'` (SIGALRM survives exec, so the alarm
