@@ -2102,6 +2102,19 @@ cpp_aggregate_inits([member(_, '$vptr', _)|Ds], Es, Obj, L, Inits) :- !, cpp_agg
 %% FEWER ITEMS THAN MEMBERS: the rest are VALUE-INITIALIZED ([dcl.init.aggr]/5) -- an array zeroed, a class default-
 %% constructed, a scalar zero -- where they were left as garbage; `Grid2 g2{}' names nothing and gets all three
 cpp_aggregate_inits([member(MT, M, _)|Ds], [], Obj, L, Inits) :- !, cpp_value_init(MT, member(Obj, M), L, Inits, Inits1), cpp_aggregate_inits(Ds, [], Obj, L, Inits1).
+%% BRACE ELISION ([dcl.init.aggr]/15): an ARRAY member whose item is no braced list of its own takes as
+%% many of the items that FOLLOW as it has elements. `std::array<int, 4> a = {1, 2, 3, 4}' is the struct
+%% `{ int __elems_[4]; }' -- ONE member and four items -- and libc++ writes every `std::array' so. The
+%% guard is that more items than members REMAIN, which is what tells this from 0.84's array member taken
+%% from an array VALUE (`S s = {arr}': one item, one member, and its bytes are meant).
+cpp_aggregate_inits([member(MT, M, _)|Ds], [E|Es], Obj, L, Inits) :- E \= init(_),
+    ccl_resolve_type(MT, arr(B, _)), catch(ccl_const_eval(B, K), _, fail), K > 1,
+    length(Ds, ND), length(Es, NE), NE > ND, !,
+    cpp_elide_take(K, [E|Es], Take, Rest), findall(item(none, V), member(V, Take), Items),
+    cpp_member_from(MT, member(Obj, M), init(Items), L, Inits, Inits1), cpp_aggregate_inits(Ds, Rest, Obj, L, Inits1).
+cpp_elide_take(0, Es, [], Es) :- !.
+cpp_elide_take(_, [], [], []) :- !.
+cpp_elide_take(K, [E|Es], [E|Take], Rest) :- K1 is K - 1, cpp_elide_take(K1, Es, Take, Rest).
 cpp_aggregate_inits([member(MT, M, _)|Ds], [E|Es], Obj, L, Inits) :- cpp_member_from(MT, member(Obj, M), E, L, Inits, Inits1), cpp_aggregate_inits(Ds, Es, Obj, L, Inits1).
 %% ONE MEMBER FROM ITS ITEM: an array from a nested braced list element by element (the rest zero) or from an array
 %% value as its bytes; a nested aggregate from its own braced list; a class with constructors through them (the
@@ -3416,7 +3429,25 @@ cpp_params_accept([P|Ps], [A|As], B) :- ( P = param(PT0, _) ; P = param(PT0, _, 
 cpp_params_accept([_|Ps], [_|As], B) :- cpp_params_accept(Ps, As, B).
 cpp_param_accepts(PT, A) :- cpp_nullptr_param(PT), !, cpp_null_constant(A).   % `nullptr_t' TAKES A NULL POINTER CONSTANT AND NOTHING ELSE ([conv.ptr]), in the template road too (0.81 had it at the fit and the last resort): libc++ writes `unique_ptr(nullptr_t)' and `explicit unique_ptr(pointer)' as two constructor TEMPLATES with the same guard, so both held for `unique_ptr<int> p(new int(5))' and the first declared won -- p was constructed empty and `*p' read null
 cpp_param_accepts(PT, A) :- cpp_fn_template_ref(A, F), !, cpp_fn_target(PT, FnT), cpp_target_deduces(F, FnT).   % a template's name: only a function-pointer parameter whose target deduces it
-cpp_param_accepts(PT, A) :- ( cpp_deduce_type(A, AT) -> cpp_unref_all(PT, PT1), cpp_unref_all(AT, AT1), cpp_type_accepts(PT1, AT1) ; true ).   % THE ARGUMENT TYPED AS THE DEDUCTION TYPES IT (cpp_deduce_type: through the desugaring where the inference cannot): a class's name called, `__optional_construct_from_invoke_tag{}', was unknown to the inference and passed every class parameter -- optional's `in_place_t' constructor took the invoke tag, level by level down its storage chain
+%% ... AND HOW A REFERENCE BINDS IS PART OF WHETHER IT BINDS ([over.ics.ref], [over.ics.rank]): the road
+%% below unrefs BOTH sides, so `tuple<_Tp...> &', `const tuple<_Tp...> &' and `tuple<_Tp...> &&' -- the
+%% overloads libc++ writes `std::get' as -- are one candidate to it, all hold, and the tie falls to the
+%% first declared; `std::get<0>(std::forward<_Tuple0>(__t0))' then answered `int &' where C++ answers
+%% `int &&'. THE TEST IS A WHITELIST AND NOT `\+ cpp_lvalue': that predicate is a partial list (id,
+%% member, arrow, deref, index, a call returning `ref'), and every temporary this compiler builds is a
+%% `stmt_expr' outside it -- read as rvalues they were refused from binding `T &' and three fixtures fell.
+%% Only a call whose DECLARED result is an rvalue reference is certain, which is what `std::forward' and
+%% `std::move' are and all the shape needs.
+cpp_param_accepts(PT, A) :- cpp_xvalue_call(A), cpp_ref_lvalue_only(PT), !, fail.   % an rvalue never binds a non-const `T &'
+cpp_param_accepts(PT, A) :- ( cpp_deduce_type(A, AT) -> cpp_ref_rank(PT, A), cpp_unref_all(PT, PT1), cpp_unref_all(AT, AT1), cpp_type_accepts(PT1, AT1) ; true ).   % THE ARGUMENT TYPED AS THE DEDUCTION TYPES IT (cpp_deduce_type: through the desugaring where the inference cannot): a class's name called, `__optional_construct_from_invoke_tag{}', was unknown to the inference and passed every class parameter -- optional's `in_place_t' constructor took the invoke tag, level by level down its storage chain
+cpp_xvalue_call(call(id(F), _)) :- atom(F), ccl_declared(F, fn(rref(_, _), _, _)).   % `std::forward<T>(x)', `std::move(x)': a call whose DECLARED result is an rvalue reference is an xvalue ([basic.lval])
+cpp_ref_lvalue_only(ref(Q, T)) :- \+ memberchk(const, Q), ( T = base(Q2, _) -> \+ memberchk(const, Q2) ; true ).
+%% ... and among the ones that do bind, an rvalue prefers `T &&' to `const T &' ([over.ics.rank]/3.2.3),
+%% which this road already has a place to say: the candidate with the FEWEST conversions wins (0.45), so
+%% the worse binding costs one. The `const' of `const T &' sits on the REFERENT's qualifiers, not the
+%% reference's own, which is why the first writing of this charged nothing and the tie stood.
+cpp_ref_rank(ref(Q, T), A) :- ( memberchk(const, Q) -> true ; T = base(Q2, _), memberchk(const, Q2) ), cpp_xvalue_call(A), !, cpp_converted.
+cpp_ref_rank(_, _).
 cpp_unref_all(T, T1) :- ( ccl_unref(T, T0), T0 \== T -> cpp_unref_all(T0, T1) ; T1 = T ).   % EVERY reference layer: a forwarding `_Tp &&' bound to an lvalue is `T & &&' before it collapses, and one layer off it was a reference to a class and no class -- libc++'s piecewise key extraction refused argument_mismatch on its piecewise_construct_t
 cpp_type_accepts(PT, AT) :- cpp_type(PT, PT2), cpp_class_of_type(PT2, C), !, ( cpp_class_of_type(AT, D) -> ( D == C -> true ; cpp_class_fits(D, C) -> cpp_converted ; cpp_conv_result(D, PT2, _) -> cpp_converted ; cpp_class_converts(C, D), cpp_converted ) ; cpp_converting(C, AT), cpp_converted ).
 %% ... or the parameter's class has a constructor that takes the argument's class ([over.ics.user]): libc++'s tree

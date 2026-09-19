@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(72).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member; 72: the AST's index holds a header's inline variable with NO initializer (std::ignore)
+ccl_reader_version(74).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member; 72: the AST's index holds a header's inline variable with NO initializer (std::ignore); 73: a pack expansion is a dependent type, and a call of a function template's name is not the reader's `auto' to deduce; 74: `if constexpr' with an init-statement
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -820,15 +820,30 @@ ccl_template_name(_, none).
 %% the symbol table holds a function template under its unsubstituted type) is not deduced yet: only the
 %% instantiation knows it, so `auto' stays and cpp_decl_pieces deduces it there.
 ccl_auto_decl(L, N, E, R, D) :-
-    (   ccl_type_of(E, T0), T0 \== unknown, \+ ccl_dependent_type(T0) -> ccl_infer_decl(L, N, E, D0), D0 = declaration(L, none, Base, [var(N, T1, E)]), ( R == ref -> T = ref([], T1) ; T = T1 ), D = declaration(L, none, Base, [var(N, T, E)])
+    (   \+ ccl_auto_by_overload(E), ccl_type_of(E, T0), T0 \== unknown, \+ ccl_dependent_type(T0) -> ccl_infer_decl(L, N, E, D0), D0 = declaration(L, none, Base, [var(N, T1, E)]), ( R == ref -> T = ref([], T1) ; T = T1 ), D = declaration(L, none, Base, [var(N, T, E)])
     ;   ( R == ref -> T = ref([], base([], [auto])) ; T = base([], [auto]) ), D = declaration(L, none, base([], [auto]), [var(N, T, E)]) ),
     ccl_note_item(D).
+%% ... AND A CALL OF A FUNCTION TEMPLATE'S NAME IS NOT THE READER'S TO DEDUCE: the symbol table holds ONE
+%% entry per name and the reader cannot choose an overload, which is the desugaring's work. libc++ declares
+%% `tuple<> tuple_cat()' beside the variadic template, so `auto c = std::tuple_cat(a, b)' took the NULLARY
+%% one's `tuple<>' whatever its arguments -- while the same call with its type written out compiled and ran.
+ccl_auto_by_overload(call(F, _)) :- ccl_call_name(F, N), ccl_set_has('$ccl_ftmpls', N), !.
+ccl_call_name(id(N), N) :- atom(N).
+ccl_call_name(scoped(_, N), N) :- atom(N).
+ccl_call_name(tmpl(N, _), N) :- atom(N).
+ccl_call_name(scoped(_, tmpl(N, _)), N) :- atom(N).
 %% A TYPE THE READER CANNOT SETTLE HERE, so `auto' stays and the desugaring deduces it where the call is
 %% instantiated: a qualified name (`__allocation_result<typename _Traits::pointer, ...>'), or -- INSIDE A TEMPLATE
 %% -- a name the tables do not know, which is another template's own parameter come from the declaration this type
 %% was read off. libc++'s `auto __guard = std::__make_exception_guard(...)' takes that function's result type,
 %% `__exception_guard<_Rollback>', whose _Rollback is free here: deduced, it keyed an instance by that free name.
-ccl_dependent_type(T) :- compound(T), ( T = scoped(_, _) -> true ; ccl_free_name(T) -> true ; T =.. [_|As], member(A, As), ccl_dependent_type(A) ), !.
+%% ... AND A PACK EXPANSION IS DEPENDENT WHEREVER IT SITS: it has no meaning outside a template, so a
+%% type carrying one cannot be deduced at READ time. libc++ declares `tuple_cat' over
+%% `__tuple_cat_return_t<_Tuples...>', an ALIAS -- no `scoped/2' and no free name, so this said `settled'
+%% and the reader deduced it with the pack EMPTY: `__tuple_cat_return_impl<tuple<>>', whose `type' is
+%% `tuple<>'. `auto c = std::tuple_cat(a, b)' was a `tuple<>' while the very same call with its type
+%% written out compiled and ran.
+ccl_dependent_type(T) :- compound(T), ( T = scoped(_, _) -> true ; T = pack(_) -> true ; ccl_free_name(T) -> true ; T =.. [_|As], member(A, As), ccl_dependent_type(A) ), !.
 ccl_free_name(typedef(N)) :- atom(N), \+ ccl_typedef_of(N, _), \+ ccl_tag(N, _),
     (   nb_getval('$ccl_tmpl_depth', D), D > 0 -> true                       % INSIDE a template every name the tables do not know is some parameter's (0.60)
     ;   \+ ccl_known_template(N), \+ ccl_env_member(genv, N) ).             % ... and OUTSIDE one too, where the type was read off a library template's RAW declaration: `auto q = std::make_unique<int>(7)' in main took `unique_ptr<_Tp>' with _Tp free and the lowering met `typedef(_Tp)'. There a name the tables know as a typedef, a tag, a template or an env entry is settled; anything else is somebody's parameter
@@ -1440,6 +1455,14 @@ ccl_statement(_, co_return(L, none)) --> ccl_cpp, ccl_line(L), ccl_kw(co_return)
 ccl_statement(_, co_return(L, E)) --> ccl_cpp, ccl_line(L), ccl_kw(co_return), !, ccl_expr(E), ccl_p(';').
 ccl_statement(Env, if_consteval(L, Neg, T, E)) --> ccl_cpp, ccl_line(L), ccl_kw(if), ( ccl_p('!'), { Neg = yes } ; { Neg = no } ), ccl_kw(consteval), !,   % C++23: if consteval, if ! consteval
     ccl_compound(Env, T), ( ccl_kw(else), !, ccl_compound(Env, E) ; { E = none } ).
+%% C++17's `if constexpr' TAKES AN INIT-STATEMENT too ([stmt.if]: the init-statement is always evaluated,
+%% so it stays outside the branch that may be discarded). 0.42 gave `if constexpr' its own node and 0.43
+%% gave `if' its init-statement, and the two were never joined -- the clause below cuts on `constexpr' and
+%% nothing else could match, so libc++'s algorithm dispatch, written `if constexpr (using _SpecialAlg =
+%% __specialized_algorithm<...>; _SpecialAlg::__has_algorithm)', stopped the read of `<algorithm>' at line
+%% 6136 of 14177. A PARTIAL READ IS SILENT (0.44), so the summary simply held no `sort'.
+ccl_statement(Env, block([Init1, if_constexpr(L, C, T, E)])) --> ccl_cpp, ccl_line(L), ccl_kw(if), ccl_kw(constexpr), ccl_p('('), ccl_for_init(Env, Init), !,
+    ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ), { ccl_init_stmt(L, Init, Init1) }.
 ccl_statement(Env, if_constexpr(L, C, T, E)) --> ccl_cpp, ccl_line(L), ccl_kw(if), ccl_kw(constexpr), !, ccl_p('('), ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ).   % C++17: decided at compile time
 ccl_statement(Env, block([Init1, if(L, C, T, E)])) --> ccl_cpp, ccl_line(L), ccl_kw(if), ccl_p('('), ccl_for_init(Env, Init), !,                       % C++17: if (init; cond), a block of the two
     ccl_expr(C), ccl_p(')'), ccl_statement(Env, T), ( ccl_kw(else), !, ccl_statement(Env, E) ; { E = none } ), { ccl_init_stmt(L, Init, Init1) }.
@@ -1471,15 +1494,18 @@ ccl_statement(_, goto(L, N)) --> ccl_line(L), ccl_kw(goto), !, ccl_id(N), ccl_p(
 ccl_statement(Env, block([Init1, switch(L, E, S)])) --> ccl_cpp, ccl_line(L), ccl_kw(switch), ccl_p('('), ccl_for_init(Env, Init), !,                % C++17: switch (init; e)
     ccl_expr(E), ccl_p(')'), ccl_statement(Env, S), { ccl_init_stmt(L, Init, Init1) }.
 ccl_statement(Env, switch(L, E, S)) --> ccl_line(L), ccl_kw(switch), !, ccl_p('('), ccl_expr(E), ccl_p(')'), ccl_statement(Env, S).
-ccl_statement(Env, case(L, E, S)) --> ccl_line(L), ccl_kw(case), !, ccl_cond_expr(E), ccl_p(':'), ccl_statement(Env, S).
-ccl_statement(Env, default(L, S)) --> ccl_line(L), ccl_kw(default), !, ccl_p(':'), ccl_statement(Env, S).
+%% A LABEL'S BODY MAY BE A DECLARATION, which is a statement in C++ ([stmt.label], and C23's rule too):
+%% libc++'s sort writes `case 2: __destruct_n __d(0); ...' and the read of `<algorithm>' stopped there.
+ccl_statement(Env, case(L, E, S)) --> ccl_line(L), ccl_kw(case), !, ccl_cond_expr(E), ccl_p(':'), ccl_label_body(Env, S).
+ccl_statement(Env, default(L, S)) --> ccl_line(L), ccl_kw(default), !, ccl_p(':'), ccl_label_body(Env, S).
 %% defer(a, b) { body }  runs body at every exit of the enclosing scope, last
 %% registered first, over the named variables as they then are (owner's rule:
 %% scope-bound, like Cicili's cleanup); a call is never followed by a block
 ccl_statement(Env, defer(L, Vars, Body)) --> ccl_line(L), ccl_id(defer), ccl_p('('), ccl_defer_vars(Vars), ccl_p(')'), ccl_peek(p, '{'), !, ccl_compound(Env, Body).
 ccl_statement(Env, label(L, N, S)) --> ccl_line(L), ccl_id(N), ccl_p(':'), !, ccl_label_body(Env, S).
 ccl_label_body(_, empty) --> ccl_peek(p, '}'), !.                                              % C++23 (and C23): a label at the end of a block
-ccl_label_body(Env, S) --> ccl_statement(Env, S).
+ccl_label_body(Env, S) --> ccl_statement(Env, S), !.
+ccl_label_body(Env, S) --> ccl_block_item(Env, _, S).
 ccl_statement(_, empty) --> ccl_p(';'), !.
 ccl_statement(_, S) --> ccl_line(L), ccl_expr(E), ccl_p(';'), { ccl_stmt_of(L, E, S) }.   % a macro's result may be a statement
 
@@ -1686,9 +1712,15 @@ ccl_primary_(p, '::', E) --> ccl_cpp, { Env = genv }, ccl_qname(Env, expr, Q), !
 ccl_cast_kw(static_cast, static). ccl_cast_kw(dynamic_cast, dynamic). ccl_cast_kw(reinterpret_cast, reinterpret). ccl_cast_kw(const_cast, const).
 ccl_lambda_caps([]) --> ccl_peek(p, ']'), !.
 ccl_lambda_caps([C|Cs]) --> ccl_lambda_cap(C), ( ccl_p(','), !, ccl_lambda_caps(Cs) ; { Cs = [] } ).
+%% AN INIT-CAPTURE, C++14's `[n = e]' and `[&n = e]': the closure's member is named by the capture and
+%% initialized by an expression of the enclosing scope, which need name nothing of the same name at all.
+%% libc++'s radix sort writes `[__map = std::move(__map)](const auto &__x) { ... }', and without this the
+%% read of `<algorithm>' stopped at line 13676 of 14177.
 ccl_lambda_cap(cap(default, '=')) --> ccl_p('='), !.
+ccl_lambda_cap(cap(init, N, E)) --> ccl_p('&'), ccl_id(N), ccl_p('='), !, ccl_assign_expr(E).
 ccl_lambda_cap(C) --> ccl_p('&'), !, ( ccl_id(N), !, { C = cap(ref, N) } ; { C = cap(default, '&') } ).
 ccl_lambda_cap(cap(this)) --> ccl_kw(this), !.
+ccl_lambda_cap(cap(init, N, E)) --> ccl_id(N), ccl_p('='), !, ccl_assign_expr(E).
 ccl_lambda_cap(cap(val, N)) --> ccl_id(N).
 ccl_primary_(id, N, id(N))   --> !, ccl_id(N).
 ccl_primary_(p, '(', stmt_expr(B)) --> ccl_p('('), ccl_peek(p, '{'), !, { Env = genv }, ccl_compound(Env, B), ccl_p(')').   % GNU ({ ... })

@@ -59,7 +59,7 @@ test/libcxx.pl, libcxx.sh  the road to libc++: <vector>, <string>, <iostream>, <
                          containers: stdvector, stdvectorown, stdvectorstring, stdstring, stdmap, stdmapstring, stdmapstring2, stdmultimap,
                          stdset, stdsetstring, stdset2, stdset3, stdunorderedmap, stdunorderedmapstring, stdunorderedmap2,
                          stdunorderedset, stdunorderedset2, stdoptional, stdoptionalstring, stdoptional2, stdnodehandle, stdmapinit, stdmapemplace, stdmapown,
-                         stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, stdtuple, the smart pointers (stduniqueptr, stdsharedptr, stdmemory),
+                         stdsetlambda, stdunorderedhash, stdaggregate, stdstringops, stdctad, stdtuple, stdarray, refrank, the smart pointers (stduniqueptr, stdsharedptr, stdmemory),
                          the callables (stdfunction, stdbind, stdfunctional) with multibase and detectbase beside them,
                          and at the levels stdcontains (C++20), stdoptional3 (C++23),
                          stdoptionalref (C++26);
@@ -4188,6 +4188,97 @@ has gone through the base hops since 0.73; the data member has no road), and an 
 definition of a static ARRAY member, `const bool Holder::flags[3] = {...};', is
 `member_of_class(scoped(['Holder'], flags))' -- the in-class initializer is what (5) defines, and
 the out-of-class form is another.
+
+**M6's fifty-eighth step (0.91): `std::tuple_cat`, `<array>` whole, and `<algorithm>` read whole.** 0.90's one
+not-done item of the tuple module, and it took three rules, each reproduced on its own before it was
+fixed. (1) AN RVALUE PREFERS `T &&' ([over.ics.ref], [over.ics.rank]/3.2.3) WHERE A TEMPLATE'S
+CANDIDATE IS JUDGED: `cpp_params_accept' unrefs BOTH sides (`cpp_unref_all'), so `tuple<_Tp...> &',
+`const tuple<_Tp...> &' and `tuple<_Tp...> &&' -- the four overloads libc++ writes `std::get' as --
+were ONE candidate to it, all held with no conversions, and the tie fell to the first declared. So
+`std::get<0>(std::forward<_Tuple0>(__t0))' answered `int &' where C++ answers `int &&',
+`forward_as_tuple' deduced `tuple<int &, int &>', and `__tuple_cat''s recursive `operator()', whose
+parameter is the class's own `tuple<int &&, int &&>', rightly refused it -- the `argument_mismatch'
+0.90 named. The scoring road has had the rule since 0.44 (`cpp_category_mismatch' in `cpp_arg_fit_');
+this is that rule in the template road, as an exclusion (`cpp_ref_binds_not': an rvalue never binds a
+non-const `T &') and as a RANK (`cpp_ref_rank': the worse binding costs one conversion, which the
+road already orders by, 0.45's fewest-conversions rule). The `const' of `const T &' sits on the
+REFERENT's qualifiers and not the reference's own, which is why the first writing of the rank charged
+nothing and the tie stood unchanged. (2) A PACK EXPANSION IS A DEPENDENT TYPE WHEREVER IT SITS
+(`ccl_dependent_type'): it has no meaning outside a template, so a type carrying one cannot be
+deduced at READ time -- libc++ declares `tuple_cat' over `__tuple_cat_return_t<_Tuples...>', an ALIAS
+with no `scoped/2' and no free name, which the reader therefore called settled. (3) AND A CALL OF A
+FUNCTION TEMPLATE'S NAME IS NOT THE READER'S `auto' TO DEDUCE (`ccl_auto_by_overload' over
+`'$ccl_ftmpls''): the symbol table holds ONE entry per name and the reader cannot choose an overload,
+which is the desugaring's work -- libc++ declares `inline tuple<> tuple_cat()' beside the variadic
+template, so `auto c = std::tuple_cat(a, b)' took the NULLARY one's `tuple<>' whatever its arguments.
+THE MEASUREMENT THAT LOCATED IT, and it is the cheapest instrument in this file: the SAME call with
+its result type WRITTEN OUT compiled and ran (`std::tuple<int, int, double, char> c = std::tuple_cat(
+...)'), which says in one line that the call, the recursion and `__tuple_cat_select_element_wise' are
+all right and only the `auto' is wrong -- where the trace of the whole build was 6370 lines, of which
+1073 were `deduction_failed' refusals from the specialization ordering that are all CAUGHT and mean
+nothing. A trace prints a refusal whether or not it escapes, so a refusal in a log is not a cause.
+AND THE MIDDLE OF IT WAS MY OWN, worth more than the fix: rule (1) was first written as
+`\+ cpp_lvalue(A)' -- "not an lvalue, therefore an rvalue". `cpp_lvalue' is a PARTIAL list (`id',
+`member', `arrow', `deref', `index', a call returning `ref'), and every temporary this compiler
+builds is a `stmt_expr' outside it, so genuine lvalues were refused from binding `T &' and
+`stdtuple', `stdcout' and `stdmap' all fell -- 0.68's lesson exactly, a change to one overload rule
+being worth no more than the gate it passes. The rule is a WHITELIST now (`cpp_xvalue_call': only a
+call whose DECLARED result is an rvalue reference, which is what `std::forward' and `std::move' are
+and all the shape needs), and those three pass again. Reader version 73, lowering version 36.
+Gated by `test/cpp/run/refrank.cpp' (the three reference kinds, in BOTH declaration orders, so the
+answer is the rule and not the order) and an extended `test/cpp/run/stdtuple.cpp' (`tuple_cat' over
+two tuples and three, and once with the result type written out), clang++'s lines.
+NOT DONE: a non-const `T &' still accepts a CONST LVALUE, which C++ forbids -- the other half of
+[over.ics.ref], left out on purpose since it was part of what broke the three fixtures and
+`tuple_cat' does not need it; `refrank.cpp' covers what holds and this is named rather than hidden.
+AND `<array>`, WHOLE, in the same step, which cost two rules that both reach further than the module.
+(4) A PLAIN POINTER A LIBRARY CLASS'S MEMBER ANSWERS IS A BORROW OF THE OBJECT (`ck_borrows_from''s
+library clause, `ck_borrow_of'): `std::array''s iterators ARE raw pointers, where a vector's are a
+`__wrap_iter' class and opaque to the check since 0.79 (`ck_carries_'), so the range-for's own
+`auto __e = a.end()' was a LOOSE pointer and the owner's rule refused it at the scope's end --
+`plain pointer not consumed'. The library's discipline is its own (0.45), and what its member hands
+back points INTO the object, which is what a borrow says: modelled so, the lifetime rules still hold
+(it dangles when the object goes) rather than the pointer being merely exempted. (5) BRACE ELISION
+([dcl.init.aggr]/15, and C's own rule): a struct member that is an ARRAY, given an item that is no
+braced list of its own, takes as many of the items that FOLLOW as it has elements -- libc++ writes
+`std::array<_Tp, _Size>' as the aggregate `struct { _Tp __elems_[_Size]; }', ONE member, so every
+`std::array<int, 4> a = {1, 2, 3, 4}' is an elision. It is in the LOWERING's initializer walk
+(`ir_init_items') and in the desugaring's `cpp_aggregate_inits' alike, and the guard at both is that
+MORE ITEMS THAN MEMBERS REMAIN, which is what tells it from 0.84's array member taken from an array
+VALUE (`S s = {arr}': one item, one member, and its bytes are meant). It fixes the C side too:
+`struct S { int a[4]; } s = {1, 2, 3, 4};'. AND THE ARRAY OF STRINGS WAS NOT A SECOND DEFECT: it
+stopped at `no_constructor(basic_string_view..., 1)' before the elision and simply fell out with it
+-- one defect seen twice, which is worth saying rather than counting as two. Gated by
+`test/cpp/run/stdarray.cpp': `size'/`max_size'/`empty', `[]', `at', `front'/`back', `data', the
+range-for and an explicit iterator loop, a copy, all six comparisons, `fill', `swap', the TUPLE
+PROTOCOL over an array (`std::get', `tuple_size', a structured binding, through 0.90's own rule),
+elements that construct and destroy (`std::array<std::string, 2>', assigned into), and `= {}'.
+AND `<algorithm>` READ WHOLE, which was three READER forms and not one of them the desugaring's.
+`std::sort' was `undeclared(sort)' -- and nothing pointed at the header, since A PARTIAL READ IS
+SILENT (0.44) and the summary simply held no `sort'. The census loop named it in three turns:
+(6) `if constexpr' TAKES AN INIT-STATEMENT ([stmt.if]; the init-statement is always evaluated, so it
+stays outside the branch that may be discarded): 0.42 gave `if constexpr' its own node and 0.43 gave
+`if' its init-statement, the two were never joined, and the clause CUTS on `constexpr' so nothing
+else could match -- libc++'s algorithm dispatch is written `if constexpr (using _SpecialAlg =
+__specialized_algorithm<...>; _SpecialAlg::__has_algorithm)' and the read died at line 6136 of
+14177. (7) A LAMBDA'S INIT-CAPTURE, C++14's `[n = e]' and `[&n = e]' (`cap(init, N, E)'), which the
+reader never had: the closure's member is named by the capture and initialized by an expression of
+the enclosing scope, naming nothing of that name -- libc++'s radix sort writes
+`[__map = std::move(__map)](const auto &__x)'. (8) A LABEL'S BODY MAY BE A DECLARATION, which is a
+statement in C++ ([stmt.label]) and in C23 (`ccl_label_body' falls to `ccl_block_item'), for
+`case 2: __destruct_n __d(0);'. `<algorithm>` goes 375 -> 522 items and reads WHOLE. Reader version
+74. NOT DONE: `<algorithm>`'s desugaring stops at
+`no_member_type('_IterOps._ClassicAlgPolicy', '__iter_move')' -- a STATIC MEMBER FUNCTION TEMPLATE of
+two SFINAE-guarded overloads, asked for as a TYPE where `_Ops::__iter_move(__first)' means a call --
+and that build peaks at 2592 MB against the 2800 cap, the heaviest header met so far and a thin
+margin.
+WHAT WAS RUN, AND WHAT WAS NOT: the owner asked for no gates in this step, so NOTHING HERE HAS A
+GREEN LINE. Sixteen fixtures were run one at a time and pass -- `refrank', `stdtuple', `stdarray',
+`stdmap', `stdcout', `stduniqueptr', `stdmemory', `stdoptional', `counter', `bag', `convref',
+`basecast', `packcall', `arraybound', `cxx20', `cxx23' -- chosen as the ones this step's rules most
+expose: the overload roads, `auto' over a library call (`ccl_auto_by_overload' fires on every one),
+and the `if constexpr' and label forms. The seven gates have not been run since 0.90, and the step
+is committed on that footing and no other.
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

@@ -64,5 +64,13 @@ int main() {
 
     auto sum = [](int i, int j) { return i + j; };         // apply (C++17)
     printf("%d\n", std::apply(sum, std::make_tuple(13, 14)));
+
+    auto k = std::tuple_cat(std::make_tuple(1, 2), std::make_tuple(3.5, 'z'));   // tuple_cat
+    printf("%d %d %.1f %c\n", std::get<0>(k), std::get<1>(k), std::get<2>(k), std::get<3>(k));
+    std::tuple<int, int, double, char> k2 = std::tuple_cat(p, std::make_tuple(4.5, 'w'));
+    printf("%d %d %.1f %c\n", std::get<0>(k2), std::get<1>(k2), std::get<2>(k2), std::get<3>(k2));
+    auto k3 = std::tuple_cat(std::make_tuple(1), std::make_tuple(2), std::make_tuple(3));
+    printf("%d %d %d\n", std::get<0>(k3), std::get<1>(k3), std::get<2>(k3));
+    printf("%d\n", (int) std::tuple_size<decltype(k3)>::value);
     return 0;
 }

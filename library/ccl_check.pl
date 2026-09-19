@@ -650,6 +650,15 @@ ck_borrows_from(comma(_, B), St, P) :- !, ck_borrows_from(B, St, P).
 ck_borrows_from(stmt_expr(block(Is)), St, P) :- append(_, [expr(_, E)], Is), !, ck_borrows_from(E, St, P).
 %% a call whose result is tied to a parameter borrows from that argument (an
 %% own result is an owner instead: fresh, checked against the tie where it lands)
+%% A PLAIN POINTER A LIBRARY CLASS'S MEMBER ANSWERS IS A BORROW OF THE OBJECT, never fresh memory:
+%% `std::array''s iterators ARE raw pointers, where a vector's are a `__wrap_iter' class and opaque since
+%% 0.79 (`ck_carries_'), so the range-for's own `auto __e = a.end()' was a loose pointer and the owner's
+%% rule refused it at the scope's end (`plain pointer not consumed'). The library's discipline is its own
+%% (0.45's decision), and what its member hands back points INTO the object -- which is what a borrow says,
+%% so the lifetime rules still hold rather than the pointer being merely exempted.
+ck_borrows_from(call(id(F), [addr(E)|_]), St, P) :- ccl_lang(cpp), atom(F), cpp_library_function(F), ck_path_root(E, R), !, ck_borrow_of(R, St, P).
+ck_borrow_of(R, St, P) :- ck_state(St, R, S), !, ( ck_borrow_source(R, S, P) -> true ; P = R ).
+ck_borrow_of(R, _, R).
 ck_borrows_from(call(F, Args), St, P) :- ck_callee_sig(F, fn(R, _, _)), \+ ck_own_type(R), ck_call_tie(call(F, Args), St, P0), !, P = P0.
 ck_call_tie(call(F, Args), St, P) :-
     ck_callee_sig(F, fn(R, Ps, _)), ccl_tie_of(R, Y),

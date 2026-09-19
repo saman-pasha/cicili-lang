@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(35).   % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
+ccl_lowering_version(36).   % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -922,6 +922,21 @@ ir_init_string(Addr, arr(_, _), S) :- append(S, [0], Cs), ir_init_chars(Cs, Addr
 ir_init_chars([], _, _).
 ir_init_chars([C|Cs], Addr, I) :- ir_fresh(P), ir_ins([P, ' = getelementptr inbounds i8, ptr ', Addr, ', i64 ', I]), ir_ins(['store i8 ', C, ', ptr ', P]), I1 is I + 1, ir_init_chars(Cs, Addr, I1).
 ir_init_items([], _, _, _).
+%% BRACE ELISION ([dcl.init.aggr]/15, and C's own rule): a STRUCT member that is an ARRAY, given an item
+%% that is no braced list of its own, takes as many of the items that FOLLOW as it has elements --
+%% `struct S { int a[4]; } s = {1, 2, 3, 4}' in C, and every `std::array<T, N>' in C++, which libc++
+%% writes as exactly one such member. The guard is that MORE ITEMS THAN MEMBERS remain, which is what
+%% tells this from an array member given a whole array VALUE, where its bytes are meant.
+ir_init_items([item([], V)|Is], Addr, T, I) :- V \= init(_),
+    ccl_resolve_type(T, T1), T1 = base(_, _), ccl_members_of(T1, Ms), I1 is I + 1,
+    ccl_nth(I1, Ms, member(MT, _, _)), ccl_resolve_type(MT, arr(B, _)), catch(ccl_const_eval(B, K), _, fail), K > 1,
+    length(Ms, NM), length(Is, NI), NI > NM - I1, !,
+    K1 is K - 1, ir_elide_take(K1, Is, More, Rest),
+    findall(item([], W), member(W, [V|More]), Sub),
+    ir_init_slot(Addr, T1, I, [], init(Sub)), ir_init_items(Rest, Addr, T, I1).
+ir_elide_take(0, Is, [], Is) :- !.
+ir_elide_take(_, [], [], []) :- !.
+ir_elide_take(K, [item(_, W)|Is], [W|More], Rest) :- K1 is K - 1, ir_elide_take(K1, Is, More, Rest).
 ir_init_items([item(Ds, V)|Is], Addr, T, I) :-
     ccl_resolve_type(T, T1),
     (   Ds = [at(int(K))|Rest] -> I0 = K, Ds1 = Rest
