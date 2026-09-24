@@ -248,6 +248,7 @@ ck_carries_(arr(_, E)) :- !, ck_carries_type(E).
 ck_carries_(base(_, [struct(N, _)])) :- ccl_lang(cpp), ck_library_class(N), !, fail.   % A LIBRARY CLASS'S VALUE IS OPAQUE: its pointers are libc++'s own discipline, as its functions' bodies are (0.45) -- a map's iterator, `auto it = m.find(3)', holds a node pointer the safe part cannot follow and need not, since nothing here frees it
 ck_carries_(T) :- ccl_members_of(T, Ms), member(member(MT, _, _), Ms), ck_carries_type(MT), !.
 ck_library_class(N) :- atom(N), catch(cpp_lib_class(N), _, fail).
+ck_library_root(P) :- ccl_lang(cpp), atom(P), ccl_type_of(id(P), T), T \== unknown, catch(ccl_resolve_type(T, base(_, [struct(N, _)])), _, fail), ck_library_class(N).   % a borrow rooted at a local of a library class's type
 
 %% the own fields of a variable: N->f under an own pointer to a struct, N.f in a
 %% struct held by value; a member held by value opens its own fields too
@@ -1192,7 +1193,7 @@ ck_args_([A|As], Callee, I, St0, St) :-
         ;   A = move(_) -> ck_expr(A, St0, St1)
         ;   ck_path(A, K), ck_by_value(A), ck_own_under(St0, K, Fs), Fs \== [] -> ck_expr(A, St0, St1a), ck_move_out(St1a, Fs, Form, St1)
         ;   ck_borrows_from(A, St0, P), ck_state(St0, P, loose) -> ck_expr(A, St0, St1a), ck_consume_loose(St1a, P, St1)   % loose memory freed, or taken by an own parameter
-        ;   ck_kind(A, St0, borrow(P)) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)
+        ;   ck_kind(A, St0, borrow(P)), \+ ck_library_root(P) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)   % ... unless the borrow is of a LIBRARY OBJECT (0.94): a plain pointer a library class's member answers is a borrow of it (0.91, so an array's `end()' is no loose pointer), and what the program then does with it is the library's discipline -- `delete u.release()' is how a unique_ptr hands its object out, and the check refused it as a borrow freed
         ;   ck_expr(A, St0, St1) )
     ;   ck_strip_move(A, A1), ck_path(A1, K), ck_by_value(A1), ck_own_under(St0, K, Fs), Fs \== [], ck_param_by_value(Callee, I)   % a struct with owners handed by value: its fields go to the callee's copy
     ->  ck_expr(A1, St0, St1a), ck_move_out(St1a, Fs, call(Callee, [A|As]), St1)

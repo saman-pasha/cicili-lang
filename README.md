@@ -747,6 +747,21 @@ what runs today.
   `/usr/lib/llvm-NN`, and the four C gates run GREEN on Ubuntu 24.04
   with clang 18 as on macOS; the C++ gate and the libc++ gate are run
   there too, their results in CLAUDE.md's entry for 0.93.
+* **64-BIT CONSTANTS, and the streams and containers on libc++ 18.** A
+  literal past 2^60 is `big(Atom)` in both lexers (cocolog's integers
+  are 61-bit), the constant evaluator computes in 64 bits on base-2^30
+  limbs and a cast to an integer type wraps to its width, so
+  `LLONG_MAX`, `numeric_limits<long long>::max()` and `~0ULL` are what
+  C says (`test/c/run/bigint.c`); libc++ bounds a string read by
+  `numeric_limits<streamsize>::max()`, which was -1. On libc++ 18: a
+  class argument converts to a scalar parameter only through a
+  conversion operator whose result fits, the reference-binding rules
+  rank as a secondary key, a nested enum and a C struct spell in a
+  mangled name, a call through a cast to a base's reference calls the
+  base's operator, and an empty class value moves no bytes
+  (`basecastcall.cpp`, `emptyassign.cpp`); the stream and container
+  fixtures print clang++'s lines on Ubuntu, the gates' numbers in
+  CLAUDE.md's entry for 0.94.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

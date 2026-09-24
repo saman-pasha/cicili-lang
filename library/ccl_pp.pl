@@ -363,7 +363,7 @@ pp_finish(Out, Tokens) :- pp_finish_(Out, Tokens, []).
 pp_finish_([], T, T).
 pp_finish_([pp_out(K)|Xs], T0, T) :- !, nb_getval(K, Sub), nb_setval(K, none), pp_finish_(Sub, T0, T1), pp_finish_(Xs, T1, T).   % a file's output, spliced (its global freed of it)
 pp_finish_([X|Xs], [T|Ts], Tail) :- pp_unwrap(X, T0, _), pp_norm(T0, T), pp_finish_(Xs, Ts, Tail).
-pp_norm(tok(num, Cs, L), tok(int, V, L)) :- pp_plain_int(Cs), !, number_codes(V, Cs).   % a plain decimal, most of them: no lexer run
+pp_norm(tok(num, Cs, L), tok(int, V, L)) :- pp_plain_int(Cs), !, ccl_int_value(Cs, V).   % ... through the reader's one door, so a literal past 2^60 is big(Atom) here too (0.94)   % a plain decimal, most of them: no lexer run
 pp_norm(tok(num, Cs, L), T) :- !, nb_getval('$ccl_hash', M), nb_setval('$ccl_hash', line), atom_codes(A, Cs), ( ccl_lex_atom(A, 0, [tok(K, V, _)], []) -> T = tok(K, V, L) ; T = tok(int, 0, L) ), nb_setval('$ccl_hash', M).
 pp_norm(T, T).
 

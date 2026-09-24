@@ -4795,7 +4795,12 @@ four levels: the reader's 95 checks GREEN in 4 s; the compile gate's 76 in 4 s; 
 `<unordered_set>` 925 at C++20; `<optional>` 397 and `<string>` 522 at C++23; `<optional>` 397 at C++26 -- libc++ 18's
 counts, larger than libc++ 21's on macOS for every header, the cold flatten of each on a box whose two spare cores the
 C++ gate shared; the watchdog's 4304 MB peak is the SUM of both gates' processes and no number of this gate's own).
-THE C++ GATE, whole and capped per fixture on the library as it stands, IS RUNNING AS THIS IS COMMITTED: its line
+THE C++ GATE, whole and capped per fixture (2400 s) on 0.93's library, RED: 152 checks ok and 31 fixtures failed in
+21064 s, every failure of the 31 named and classified in 0.94's entry below -- four timeouts in the two-range algorithm
+family (`stdalgorithm2', `stdalgorithm6', `stdalgorithm7', `stdalgorithmstr'), one fixture beyond libc++ 18
+(`stdoptionalref': its `<optional>' still declares a reference type ill-formed), and twenty-six defects of this compiler's
+on libc++ 18's shapes, which 0.94 takes up. The watchdog's 5521 MB peak is the SUM of every cocolog process on the
+box, the probes run beside the gate included, and no number of the gate's own.
 follows in the commit that carries its numbers, with every fixture that fails on this box named as the environment's
 or as this step's.
 Before them, run whole on this box without a cap: 105 of the C++ gate's fixtures passed and `stdalgorithm7' had run
@@ -5737,3 +5742,154 @@ Every commit ends with
 
 and the push is `git push git@github.com:saman-pasha/cicili-lang.git main:main`.
 Never commit `library/*.so`, `module/*.c`, `module/sdk.cicili` or `proof/forty2`.
+
+**M6's sixty-first step (0.94): THE 64-BIT CONSTANT, and the stream and container fixtures on libc++ 18.** 0.93's C++
+gate on Linux, run whole, failed every stream fixture and half the map ones, and the road from those verdicts to their
+causes went through seven rules, each reproduced in a file of ten to twenty lines before it was fixed.
+(1) A CLASS ARGUMENT FOR A SCALAR PARAMETER CONVERTS ONLY THROUGH A CONVERSION OPERATOR WHOSE RESULT FITS IT
+([over.ics.user]; `cpp_type_accepts''s last clause through `cpp_conv_result'): ANY conversion operator counted, so
+basic_string's `operator basic_string_view()' let the CHAR inserter, `operator<<(basic_ostream<_CharT, _Traits> &,
+_CharT)', take a string -- and on libc++ 18, where the ten char and `char *' inserters are declared before the string
+one, it won the tie and the struct was sign-extended to a byte (`invalid cast opcode', stdcin's first line).
+(2) THE REFERENCE-BINDING RULES ARE A SECONDARY KEY, NEVER A CONVERSION ([over.ics.rank]/3.2.3 and /3.2.6 rank two
+standard conversion sequences that are otherwise INDISTINGUISHABLE): 0.93's rule 53 charged them as a conversion, so
+`const basic_string &' bound to a non-const lvalue string cost one and tied with (1)'s user-defined conversion. A
+candidate's cost is `Conversions-Demerits' now (`cpp_conversions', `'$cpp_refbind'', `cpp_ref_demerit'), compared in
+standard order by `cpp_min_of', and the trace prints `holds(1-0)'.
+(3) A NESTED ENUM IS A NESTED NAME in a mangled name (`cpp_ita_type_' on `enum(N, _)', `cpp_class_scope_' through the
+holder's `'$cpp_class_types'' entry): `basic_streambuf<char>::seekoff(off_type, ios_base::seekdir, openmode)' is shipped
+as `..7seekoffExNS_8ios_base7seekdirEj', and the tag resolved to its enum spec, which no clause took -- the vtable
+named the slot by its plain name and the link named it (stdcout, stdendl, every stream fixture).
+(4) A C STRUCT IN A MANGLED NAME IS ITS UNSCOPED NAME ([basic.link]: a typedef of an unnamed struct gives it its name for
+linkage purposes, the FIRST typedef that names it; `cpp_ita_c_struct', asked BEFORE the resolution, since resolving
+`mbstate_t' walks through `__mbstate_t' to the anonymous struct and loses the only name it has):
+`basic_streambuf<char>::seekpos(fpos<mbstate_t>, openmode)' is `..7seekposENS_4fposI11__mbstate_tEEj'; a named C struct
+reached through its tag is its tag (`struct tm' is `2tm').
+(5) A LITERAL PAST 2^60 IS `big(Atom)' IN BOTH LEXERS (reader version 81): cocolog's integers are 61-bit (the finding),
+so `9223372036854775807LL' arrived as -1. The atom is the value's decimal digits for a decimal literal and `0x' plus its
+lowercase hex digits for a hex, binary or octal one (`ccl_lx_big' in the module, `ccl_int_value' and kin in the DCG,
+`pp_norm' through the same door; k84 compares them on `test/c/lexer.c', which carries every form); its type is the first
+of long and unsigned long that holds it (`ccl_big_type'); the lowering spells it into the IR as it is, `u0x...' for the
+hex form (`ir_big_text', lowering version 41); a `_BitInt' literal past 2^60 folds nowhere. `test/c/run/bigint.c'.
+(6) THE CONSTANT EVALUATOR COMPUTES IN 64 BITS, and a CAST TO AN INTEGER TYPE WRAPS ([conv.integral]; `ccl_w_*' over
+base-2^30 limbs, `ccl_mag_*'; `ccl_w_cast', `ccl_w_wrap'). The lexer half alone was not enough: libc++ computes every
+`numeric_limits<...>::max()' as `type(type(~0) ^ __min)' with `__min = _Tp(_Tp(1) << 63)', and folded in 61 bits with
+the casts transparent that is -1 -- on macOS as on Linux. A folded value is a cocolog integer where it fits and
+`big(Atom)' beyond; an operation whose result could pass 61 bits takes the limbs; `/' and `%' truncate toward zero,
+`>>' of a negative is arithmetic, the bitwise operators are the mathematical two's complement (`~0' is -1) and the
+casts make the 64-bit patterns: `(long long) (1ULL << 63)' is -2^63, `(unsigned long) ~0' is 2^64-1. THE ANSWER IT
+BOUGHT: libc++ 18's string extractor bounds its loop by `numeric_limits<streamsize>::max()' -- with -1 it never looped,
+`cin >> word' read nothing and the stream failed; `test/cpp/run/stdcin.cpp' prints clang++'s lines on Linux.
+(7) A CALL THROUGH A CAST TO A BASE'S REFERENCE CALLS THE BASE'S operator() OVER THE BASE SUB-OBJECT (`cpp_call''s
+`ccast' clause, `cpp_operand_class', `cpp_base_operator_call'; dispatched when virtual): libc++ 18's
+`__map_value_compare' writes `static_cast<const _Compare &>(*this)(x.first, y.first)' over its empty base `less<K>',
+and `*this' -- the reader's `deref(this)', the bare atom -- was untyped, so 0.93's rule 44 took the operand's own road
+and the comparator called ITSELF until the stack was gone: every map of strings segfaulted before its first line
+(stdmapinit, stdmapown, stdmapstring, stdmapstring2). The operand `*this' is the class being walked (the call's
+context); a class the cast does not change takes the operand's road, a base of it its own operator.
+`test/cpp/run/basecastcall.cpp'.
+AND THE GATE NAMES A TIMEOUT: a fixture that ran past `CPP_FIXTURE_SECS' printed its `TIMEOUT' under the six-line
+head of a diff, invisible when the expectation had six lines -- four of 0.93's algorithm verdicts were read off the
+gate's directory (no binary, so no build finished) rather than the log; the verdict line says it now.
+(8) AN EMPTY CLASS VALUE MOVES NO BYTES (`ir_store_slot' and `ir_load_slot' through `ir_empty_class'): its one byte
+([class]/4, 0.89) is padding as a complete object and, as an EMPTY BASE reached through a reference, somebody else's.
+libc++ 18's compressed pair swaps its second element too, `swap(second(), __x.second())' over `static_cast<_Base2
+&>(*this)', which for a `unique_ptr<int>' is the deleter, an empty base at the pair's own address -- and the byte the
+assignment stored there was the POINTER's low byte: `p.swap(q)' left one pointer clobbered, and its destructor freed it
+(`free(): invalid pointer', stdmemory). `test/cpp/run/emptyassign.cpp' has the shape on the program's own classes,
+where the assignment of an empty base through a reference swapped the low bytes of two ints.
+(9) A LOCAL SHADOWS AN ENUMERATOR (`ir_expr(id(N))' asks `ir_lookup' first; `ccl_const_eval(id(N))' folds nothing a
+frame of `ccl_locals' declares): every enumerator is a global name here, a scoped enum's included (0.71), and libc++'s
+`<format>', in the C++20 closure of `<set>', declares `basic_format_arg''s `__arg_t' with an enumerator `__ptr' (14)
+-- so `iterator __r(__ptr)' in the tree's `__remove_node_pointer' built its iterator from 14 where `__ptr' was the
+parameter, and every erase by iterator in a C++20 program over `<set>' walked a wild node (stdcontains). C and C++
+both let a local hide an enumerator; the reproduction on the program's own code is `test/cpp/run/enumshadow.cpp' and
+`test/c/run/enumshadow.c'. THE INSTRUMENT: the IR of the reduction, `cicili++ -emit-llvm', read function by function --
+`inttoptr i32 14 to ptr' where the parameter's slot should have been loaded said it in one line, where the backtrace
+named only the wild node. AND A QUALIFIED ENUMERATOR IS ITS VALUE WHATEVER A LOCAL IS NAMED (`cpp_expr' on
+`scoped(Path, N)' through `cpp_enum_scope', and `cpp_targ_value''s two clauses, all asking `ccl_enum_value' directly):
+flattened to `id(ptr)', `Kind::ptr' met the parameter that now shadows the bare name -- the fixture's own first run.
+(10) A POINTER TO A CLASS TAKES A POINTER TO THAT CLASS OR A CLASS DERIVED FROM IT ([conv.ptr]; `cpp_pointees_agree'
+over `cpp_pointee_kind': a class or a struct tag on each side the same or derived, an arithmetic type on each side,
+anything unsettled passing -- in the scoring's `cpp_pointee_fit', and through `cpp_scalar_mismatch' in the template
+acceptance and the arity-only last resort, where the detection idiom is decided). Any class pointer took any, so
+libc++ 18's `__has_destroy<allocator<__tree_node<string>>, string *>' held, `allocator<__tree_node>::destroy(__tree_node
+*)' ran the NODE's destructor on the STRING's address, and the string it destroyed lay eight bytes past the block --
+valgrind's `Invalid read ... 8 bytes after a block of size 56', on a set of strings, nondeterministic: stdset3 passed
+two runs in six (stdsetstring the same). `test/cpp/run/ptrfit.cpp' has the detection and three overloads by pointee
+on the program's own classes, clang++'s numbers.
+(11) A BORROW OF A LIBRARY OBJECT MAY BE CONSUMED (`ck_library_root' at the borrow-consumed refusal in `ck_args_'):
+0.91 made a plain pointer a library class's member answers a borrow of the object, so an array's `end()' is no loose
+pointer at the scope's end -- and `Tag *raw = u.release(); delete raw;', how a unique_ptr hands its object out, was
+refused as a borrow freed (stduniqueptr, which passed at 0.86 and had not been through a gate since 0.90). What the
+program does with such a pointer is the library's discipline, as its functions' bodies are (0.45): the check neither
+follows it nor refuses it.
+(12) AN OPERATOR OVER A CLASS OPERAND THAT NO ROAD ANSWERS IS ILL-FORMED (`cpp_operator''s last resort refuses
+`no_operator(Op)' where a class stands on either side; with `Plain = none', the rewritten `!=' road's ask, it stays a
+failure): kept as the raw form, `int == nullopt_t' read as an `int' inside a `decltype', so libc++ 18's constraint on the
+generic `operator==(const optional<_Tp> &, const _Up &)', `is_convertible_v<decltype(declval<const _Tp &>() ==
+declval<const _Up &>()), bool>', HELD, that candidate beat the `nullopt_t' one, and its body met the same comparison
+(stdoptional2: `type(unknown)' in the lowering). Refused, a constraint's `decltype' is the substitution failure C++ has
+there, and anywhere else the defect is named instead of reaching the lowering as an operator over a struct.
+(13) THE BIT COUNT FOLDS OVER THE VALUE WRAPPED TO ITS TYPE'S WIDTH, unsigned (`cpp_popcount' through `ccl_w_wrap',
+the limbs counted): 0.60's fold took `V >= 0' on the engine's integer, and `(unsigned long) ~(unsigned long) 0' is 2^64-1
+now, a `big' -- `type_error(evaluable, ...)' on libcxxforms.cpp, the first thing 0.94's own C++ gate said. AND THE MANGLER'S
+CLASS LOOKUPS ARE GUARDED for a process without the desugaring's registries (`cpp_class_known'): test/cpp.pl's c34 spells its
+nine symbols with no class registered, and rules (3) and (4) asked `'$cpp_cls'' there -- an existence error, the second
+thing that gate said. Both found by the gate and none by the probes, which is what a gate is for.
+AND RULE (9)'S GUARD ASKS THE LOCAL'S TYPE (`ccl_shadowed_constant'): a `const' local with a constant initializer IS
+the constant (0.63's rule 11), and refused as a shadow it never folded -- libc++'s `__mu' writes `const size_t __indx =
+is_placeholder<_Ti>::value - 1;' and indexes a tuple by it, and stdbind, which passed at 0.93, refused
+`type_pack_index(id(__indx))' in 0.94's first gate: the third thing that gate said, and again none of the probes.
+AND RULE (12) LEAVES `!', `&&' AND `||' ALONE: their class operand converts contextually through its `operator bool'
+AFTER the operator road (0.72's rule 19), and refused there `return !__f;', how std::function compares with nullptr,
+stopped stdfunction in 0.94's first gate -- the fourth thing that gate said, none of them a probe's.
+(14) A CLASS'S OWN STATIC SHADOWS A GLOBAL ENUMERATOR OF ITS NAME IN A STATIC'S INITIALIZER ([basic.lookup.unqual]: class
+scope before namespace scope; `cpp_shadowing_static' guards the raw fold in `cpp_fold_static', which then folds in the
+class's words): ios_base writes `static const fmtflags floatfield = scientific | fixed;', and libc++ 18's flattened
+<iostream> also holds `enum class chars_format { scientific = 1, fixed = 2, ... }', whose enumerators are global names
+here (0.71), so the raw fold read 1 | 2 = 3 where the class means 256 | 4 = 260, `setf(fixed, floatfield)' masked the flag
+away, and `std::fixed' and `std::scientific' printed defaultfloat -- stdmanip's fifth line, the fifth thing 0.94's first
+gate said. The reduction printed the three constants first (`4 256 3' against clang++'s `4 256 260'), which named the fold
+before the manipulator road was read at all: print the constants a road turns on before reading the road.
+THE GATES, ON LINUX (Ubuntu 24.04, x86_64, four cores, 16 GB; clang 18, libc++ 18, cocolog 1.8.1, the module
+rebuilt as 0.94), on this tree at reader 81 and lowering 41, each alone under the 7000 MB cap, the fixtures' summaries
+warm: the reader's 95 checks GREEN in 9 s at 107 MB; the compile gate's 78 GREEN in 7 s at 268 MB (`bigint.c' and
+`enumshadow.c' among them); the driver's 25 in 6 s; the objects' 29; the proof; THE C++ GATE, whole and capped per fixture (2400 s), RED: 180 checks ok
+and 7 failures in 22047 s, against 0.93's 152 and 31 -- twenty-five of 0.93's failures pass (every stream fixture:
+stdcin, stdcout, stdendl, stdget, stdgetline, stdistream, stdistream2, stdostream, stdmanip, stdws; the string maps,
+stdmapinit, stdmapown, stdnodehandle, stdset2, stdset3, stdsetstring, the four unordered ones, stdmemory,
+stduniqueptr, stdoptional2), and the seven left are the five two-range algorithm timeouts (`stdalgorithm2',
+`stdalgorithm6', `stdalgorithm7', `stdalgorithm9', `stdalgorithmstr'), `stdcontains' and `stdoptionalref', each
+measured below; the gate's own peak is 5881 MB, and the 7129 MB its first watchdog killed at was the SUM with a probe
+of mine beside it (below); THE LIBC++ GATE GREEN, its 18 reads whole under a fresh HOME in 5489 s at 3218 MB, alone, every item count
+0.93's (`<vector>' 806 ... `<optional>' 397 at C++26). The six gates ran one after another in one chain, each under
+its own 7000 MB watchdog, and the C++ gate's summaries were warm.
+AND THE FIRST C++ GATE OF THIS STEP, on the tree before rules (13) and (14) were carried in, is the record of what a gate
+finds that no probe does: 139 checks ok and 14 failures when the box restarted under it at `stdset3' (its log stops
+there; the run before it, killed the same way, is the reason a gate's peak line is written by its watchdog and not by
+the gate) -- c34, libcxxforms, stdbind, stdfunction, stdmanip, stdmemory and stdoptional, each fixed above and each
+verified one at a time under the edited library before the gate above ran; the four two-range algorithm timeouts;
+`stdcontains' (below); `stdoptionalref' (beyond libc++ 18); and `stdaggregate', which crashed ONCE in that gate and
+passed twenty-four runs alone, valgrind clean, and is named here rather than explained.
+NOT DONE, AND MEASURED: the two-range algorithm family stays past the gate's cap on this box (`stdalgorithm2',
+`stdalgorithm6', `stdalgorithm7', `stdalgorithmstr', 0.92's finding under libc++ 18's `__introsort' and `__merge'
+roads), and `stdalgorithm9' (the heap and the permutations) joins them here where 0.93's gate passed it -- and it is NO
+REGRESSION, measured one variable at a time, each build ALONE on the box: 2222 s at 776 MB under the committed 0.93
+library with its own reader-80 cache, 2214 s at 761 MB under this tree, against a 2400 s cap; 0.93's gate passed it
+inside the cap by a margin the box's noise covers, and the gate here ran it beside a probe of mine for its last
+thirteen minutes. Its memory is FLAT at 755 MB for the whole build under both libraries, the shape 0.92 named for
+`stdalgorithm8'. A first comparison beside the gate was KILLED at 171 s by the gate's watchdog, which sums every
+cocolog process (the finding below, met once more): a comparison is made alone or not at all.
+`stdcontains' (C++20: the four containers with `contains' and `erase_if') PASSES ALONE -- 480 s at 3652 MB over the
+scratch cache and 487 s at 3666 MB over the user's own, clang++'s lines, where 0.93's gate made its binary and it
+SEGFAULTED (rule 9's enumerator) -- and FAILED IN THE GATE, killed at the 7000 MB sum with that same probe beside it,
+the probe's own watchdog reading 742 MB at its peak and the gate's watchdog 7129 MB for every cocolog process at one
+instant; what the gate's fixture alone had reached at that instant no instrument recorded, and a build alone never
+passes 3.7 GB, so the gate's number is unexplained rather than explained away, and the next C++ gate, run with
+nothing beside it, is the measurement. THE INSTRUMENT that closed it: a build ALONE over the SAME cache the gate used,
+which is the only comparison that means anything (0.89's finding on a mixed-age cache, and this step's on a probe
+beside a gate). `stdoptionalref' is beyond libc++ 18 (its `<optional>' declares a reference type ill-formed; the expectation is
+libc++ 21's); `stdalgorithm8' stays uncommitted (0.92's rule); the type keys still carry no qualifiers (0.93's item
+55); and `stdaggregate' crashed ONCE in this step's first gate, passed twenty-four builds alone, valgrind clean, and
+passed the gate above.

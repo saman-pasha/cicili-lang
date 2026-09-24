@@ -48,6 +48,7 @@ for src in "$ROOT"/test/cpp/run/*.cpp; do
   inp="$ROOT/test/cpp/run/$n.stdin"; [ -f "$inp" ] || inp=/dev/null   # a fixture that READS gives its input as NAME.stdin (stdcin.cpp); the rest read nothing
   bout=$(ccl_capped "$CPP_FIXTURE_SECS" "$ROOT/bin/cicili++" $flags "$src" -o "$n"); bst=$?
   if [ "$bst" -eq 0 ]; then got=$(printf '%s' "$bout"; "./$n" < "$inp"; echo "exit $?"); else got=$bout; fi
+  case "$got" in *"TIMEOUT after"*) echo "FAIL $n.cpp: $(printf '%s' "$got" | tail -1), the build never finished (the environment's cost, named rather than hidden)"; failures=$((failures + 1)); continue ;; esac
   if [ "$got" = "$(cat "$ROOT/test/cpp/run/$n.expect")" ]; then echo "ok   $n.cpp: built through cicili++, runs, and prints what it should"; else echo "FAIL $n.cpp"; echo "$got" | diff "$ROOT/test/cpp/run/$n.expect" - 2>&1 | head -6 | sed 's/^/     /'; failures=$((failures + 1)); fi
 done
 got=$("$ROOT/bin/cicili++" "$ROOT/test/cpp/classes.cpp" -o classes 2>&1 && { ./classes; echo "exit $?"; })

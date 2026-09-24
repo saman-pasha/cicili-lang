@@ -74,7 +74,8 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(80).   % 80: a template template parameter's name un-noted at its item's end, a tag or a typedef no concept (<variant>'s `template <_Trait X, ...>' read as a constrained type parameter); 79: a braced default argument, C++20's brace-designated initializer (libc++ 18 at C++20); 78: an unnamed parameter of an unknown type name in a C++ parameter list, a destructor called with its template arguments (libc++ 18); 77: _Generic chosen at the read, an unbounded array sized by its initializer, _BitInt in the table, the OS's predefined macros, <limits.h> and the C23 headers; 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member; 72: the AST's index holds a header's inline variable with NO initializer (std::ignore); 73: a pack expansion is a dependent type, and a call of a function template's name is not the reader's `auto' to deduce; 74: `if constexpr' with an init-statement; 75: a member FUNCTION template's name is a template and no type; 76: __OPTIMIZE_SIZE__ predefined, so libc++'s algorithms are the scalar ones
+ccl_reader_version(81).   % 81: a literal past 2^60 is big(Atom) in every summary's item
+%% ccl_reader_version(80).   % 80: a template template parameter's name un-noted at its item's end, a tag or a typedef no concept (<variant>'s `template <_Trait X, ...>' read as a constrained type parameter); 79: a braced default argument, C++20's brace-designated initializer (libc++ 18 at C++20); 78: an unnamed parameter of an unknown type name in a C++ parameter list, a destructor called with its template arguments (libc++ 18); 77: _Generic chosen at the read, an unbounded array sized by its initializer, _BitInt in the table, the OS's predefined macros, <limits.h> and the C23 headers; 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member; 72: the AST's index holds a header's inline variable with NO initializer (std::ignore); 73: a pack expansion is a dependent type, and a call of a function template's name is not the reader's `auto' to deduce; 74: `if constexpr' with an init-statement; 75: a member FUNCTION template's name is a template and no type; 76: __OPTIMIZE_SIZE__ predefined, so libc++'s algorithms are the scalar ones
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -186,15 +187,37 @@ ccl_utf8(U, [A, B|T], T) :- U < 2048, !, A is 192 + U // 64, B is 128 + U mod 64
 ccl_utf8(U, [A, B, C|T], T) :- U < 65536, !, A is 224 + U // 4096, B is 128 + (U // 64) mod 64, C is 128 + U mod 64.
 ccl_utf8(U, [A, B, C, D|T], T) :- A is 240 + U // 262144, B is 128 + (U // 4096) mod 64, C is 128 + (U // 64) mod 64, D is 128 + U mod 64.
 
-ccl_number(L, T) --> [0'0, X], { X =:= 0'x ; X =:= 0'X }, !, ccl_hex_digits(Ds), { Ds \== [], ccl_hex_value(Ds, 0, N) }, ccl_int_suffix(K), { T = tok(K, N, L) }.
-ccl_number(L, T) --> [0'0, X], { X =:= 0'b ; X =:= 0'B }, !, ccl_bin_digits(Ds), { Ds \== [], ccl_bin_value(Ds, 0, N) }, ccl_int_suffix(K), { T = tok(K, N, L) }.   % C23 and C++14: 0b1011
+ccl_number(L, T) --> [0'0, X], { X =:= 0'x ; X =:= 0'X }, !, ccl_hex_digits(Ds), { Ds \== [], ccl_hex_int(Ds, N) }, ccl_int_suffix(K), { T = tok(K, N, L) }.
+ccl_number(L, T) --> [0'0, X], { X =:= 0'b ; X =:= 0'B }, !, ccl_bin_digits(Ds), { Ds \== [], ccl_bin_int(Ds, N) }, ccl_int_suffix(K), { T = tok(K, N, L) }.   % C23 and C++14: 0b1011
 ccl_number(L, T) --> ccl_digits(Is), { Is \== [] }, ccl_number_rest(Is, L, T).
 ccl_number_rest(Is, L, tok(float, F, L)) --> [0'.], ccl_digits(Fs), ccl_exponent(Es), !, ccl_float_suffix,
     { ( Fs == [] -> Fs1 = [0'0] ; Fs1 = Fs ), append(Is, [0'.|Fs1], A), append(A, Es, B), number_codes(F, B) }.
 ccl_number_rest(Is, L, tok(float, F, L)) --> ccl_exponent(Es), { Es \== [] }, !, ccl_float_suffix,
     { append(Is, [0'., 0'0|Es], B), number_codes(F, B) }.
-ccl_number_rest([0'0|Os], L, tok(K, N, L)) --> { Os \== [], ccl_octal_digits(Os) }, !, ccl_int_suffix(K), { ccl_octal_value(Os, 0, N) }.
-ccl_number_rest(Is, L, tok(K, N, L)) --> ccl_int_suffix(K), { number_codes(N, Is) }.
+ccl_number_rest([0'0|Os], L, tok(K, N, L)) --> { Os \== [], ccl_octal_digits(Os) }, !, ccl_int_suffix(K), { ccl_octal_int(Os, N) }.
+ccl_number_rest(Is, L, tok(K, N, L)) --> ccl_int_suffix(K), { ccl_int_value(Is, N) }.
+%% A LITERAL PAST 2^60 IS `big(Atom)' (0.94): cocolog's integers are 61-bit (the finding), so `9223372036854775807LL' read
+%% as -1 -- and libc++ bounds a string read by `numeric_limits<streamsize>::max()', which then never looped. The atom is
+%% the value's decimal digits for a decimal literal, `0x' and its lowercase hex digits (no leading zeros) for a hex, binary
+%% or octal one; nothing folds it (ccl_const_eval fails), its type is the first of long and unsigned long that holds it,
+%% and the lowering spells it into the IR as it is (`u0x...' for the hex form). The native lexer (ccl_lx_big) agrees digit
+%% for digit; the preprocessor's number finish (pp_norm) takes the same door. A value past 2^64 is nobody's.
+ccl_int_value(Is, N) :- ( ccl_big_decimal(Is) -> atom_codes(A, Is), N = big(A) ; number_codes(N, Is) ).
+ccl_big_decimal(Is) :- length(Is, L), ( L > 19 -> true ; L =:= 19, atom_codes('1152921504606846975', M), Is @> M ).
+ccl_hex_int(Ds, N) :- ccl_strip_zeros(Ds, Ds1), length(Ds1, L), ( L >= 16 -> ccl_lower_hex(Ds1, Ls), atom_codes(A, [0'0, 0'x|Ls]), N = big(A) ; ccl_hex_value(Ds, 0, N) ).
+ccl_bin_int(Ds, N) :- ccl_strip_zeros(Ds, Ds1), length(Ds1, L), ( L >= 61 -> ccl_bits_hex(Ds1, Hs), atom_codes(A, [0'0, 0'x|Hs]), N = big(A) ; ccl_bin_value(Ds, 0, N) ).
+ccl_octal_int(Os, N) :- ccl_strip_zeros(Os, Os1), length(Os1, L), ( L >= 21 -> ccl_octal_bits(Os1, Bs), ccl_strip_zeros(Bs, Bs1), ccl_bits_hex(Bs1, Hs), atom_codes(A, [0'0, 0'x|Hs]), N = big(A) ; ccl_octal_value(Os, 0, N) ).
+ccl_strip_zeros([0'0|Ds], R) :- Ds \== [], !, ccl_strip_zeros(Ds, R).
+ccl_strip_zeros(Ds, Ds).
+ccl_lower_hex([], []).
+ccl_lower_hex([D|Ds], [E|Es]) :- ( D >= 0'A, D =< 0'F -> E is D + 32 ; E = D ), ccl_lower_hex(Ds, Es).
+ccl_octal_bits([], []).
+ccl_octal_bits([D|Ds], [A, B, C|Bs]) :- V is D - 0'0, A is 0'0 + V // 4, B is 0'0 + (V // 2) mod 2, C is 0'0 + V mod 2, ccl_octal_bits(Ds, Bs).
+ccl_bits_hex(Bs, Hs) :- length(Bs, L), P is (4 - L mod 4) mod 4, length(Pad, P), ccl_fill_zero(Pad), append(Pad, Bs, Bs1), ccl_bits_hex_(Bs1, Hs).
+ccl_fill_zero([]).
+ccl_fill_zero([0'0|T]) :- ccl_fill_zero(T).
+ccl_bits_hex_([], []).
+ccl_bits_hex_([A, B, C, D|Bs], [H|Hs]) :- V is (A - 0'0) * 8 + (B - 0'0) * 4 + (C - 0'0) * 2 + (D - 0'0), ( V < 10 -> H is 0'0 + V ; H is 0'a + V - 10 ), ccl_bits_hex_(Bs, Hs).
 ccl_digits([D|Ds]) --> [D], { ccl_digit(D) }, !, ccl_digits(Ds).
 ccl_digits([D|Ds]) --> [39, D], { ccl_digit(D) }, !, ccl_digits(Ds).       % the DIGIT SEPARATOR (C++14, C23): 1'000'000, only between digits -- 39 is the apostrophe, which cocolog reads badly as 0''
 ccl_digits([]) --> [].

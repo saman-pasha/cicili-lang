@@ -45,7 +45,8 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(40).   % 40: a base clause naming a bound type parameter takes its class, a scope name is the class's own typedef first (libc++ 18), -lc++ on Linux; 39: C23 (_BitInt as iN, the overflow builtins, unreachable), a VLA at run time, thread_local, the wide literals, [[assume]]; 38: a conditional over two lvalues is an lvalue, and its address the phi of theirs;  % 37: wchar_t, char16_t and char32_t have LLVM types, and a function template's shipped instance its Itanium symbol;  % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
+ccl_lowering_version(41).   % 41: a literal past 2^60 spelled whole
+%% ccl_lowering_version(40).   % 40: a base clause naming a bound type parameter takes its class, a scope name is the class's own typedef first (libc++ 18), -lc++ on Linux; 39: C23 (_BitInt as iN, the overflow builtins, unreachable), a VLA at run time, thread_local, the wide literals, [[assume]]; 38: a conditional over two lvalues is an lvalue, and its address the phi of theirs;  % 37: wchar_t, char16_t and char32_t have LLVM types, and a function template's shipped instance its Itanium symbol;  % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -300,6 +301,7 @@ ir_load_slot(bf(P, RunLL, Off, W, Signed), _, LL, V) :- !,
 %% state to read) and a store writes nothing. The desugaring says the same at its own doors (cpp_zero_fill); this
 %% is the net under every road that reaches a member slot.
 ir_load_slot(empty(_), _, LL, V) :- !, ir_zero(LL, V).
+ir_load_slot(_, T, LL, V) :- ir_empty_class(T), !, ir_zero(LL, V).                     % AN EMPTY CLASS VALUE MOVES NO BYTES (0.94): its one byte is padding as a complete object and, as an EMPTY BASE reached through a reference, somebody else's -- libc++ 18's compressed pair swaps its deleter, `swap(second(), __x.second())' over `static_cast<_Base2 &>(*this)', and the byte stored at the pair's address was the pointer's low byte (unique_ptr::swap left one pointer clobbered, and its destructor freed it)
 ir_load_slot(A, T, LL, V) :- ir_load_or_decay(A, T, LL, V).
 %% a store to a slot; a bitfield's bits masked into its run
 ir_store_slot(Slot, T, V) :- ir_type(T, LL), ir_store_slot(Slot, T, LL, V).
@@ -314,6 +316,8 @@ ir_store_slot(bf(P, RunLL, Off, W, _), _, LL, V) :- !,
     ir_fresh(R), ir_ins([R, ' = or ', RunLL, ' ', C, ', ', S]),
     ir_ins(['store ', RunLL, ' ', R, ', ptr ', P, ', align 1']).
 ir_store_slot(empty(_), _, _, _) :- !.
+ir_store_slot(_, T, _, _) :- ir_empty_class(T), !.
+ir_empty_class(T) :- ccl_lang(cpp), ccl_resolve_type(T, RT), ccl_empty_layout(RT).
 ir_store_slot(A, _, LL, V) :- ir_ins(['store ', LL, ' ', V, ', ptr ', A]).
 %% an integer constant as LLVM writes it for iK: two's complement when the top bit is set
 ir_iconst(Val, K, Lit) :- ( K < 64, Val >= 1 << (K - 1) -> Lit is Val - (1 << K) ; Lit = Val ).
@@ -531,6 +535,10 @@ ir_hexn(N, K, A) :- D is N mod 16, N1 is N // 16, K1 is K - 1, ir_hexn(N1, K1, A
 %% instruction, a condition) stop deriving it again from the C type: half
 %% the lowering's 50,000 calls were the type machinery asked twice.
 ir_expr(E, V, T) :- ir_expr(E, V, T, _).
+ir_expr(int(big(A)), V, T, i64) :- !, ccl_big_type(A, T), ir_big_text(A, V).             % a literal past 2^60 (0.94): spelled into the IR as it is, `u0x...' for the hex form
+ir_expr(uint(big(A)), V, base([], [unsigned, long]), i64) :- !, ir_big_text(A, V).
+ir_expr(long(big(A)), V, base([], [long]), i64) :- !, ir_big_text(A, V).
+ir_expr(ulong(big(A)), V, base([], [unsigned, long]), i64) :- !, ir_big_text(A, V).
 ir_expr(int(N), N, T, LL) :- !, ( ( N > 2147483647 ; N < -2147483648 ) -> ir_long(T), LL = i64 ; ir_int(T), LL = i32 ).
 ir_expr(uint(N), N, base([], [unsigned]), i32) :- !.                       % the suffixes: what the literal is
 ir_expr(long(N), N, base([], [long]), i64) :- !.
@@ -549,7 +557,7 @@ ir_expr(u32str(S), Ref, ptr([], base([], [char32_t])), ptr) :- !, ir_wstring(S, 
 ir_expr(wchr(C), C, base([], [wchar_t]), i32) :- !.
 ir_expr(u16chr(C), C, base([], [char16_t]), i16) :- !.
 ir_expr(u32chr(C), C, base([], [char32_t]), i32) :- !.
-ir_expr(id(N), V, T, i32) :- ccl_enum_value(N, V), !, ir_int(T).          % an enumerator is its value
+ir_expr(id(N), V, T, i32) :- \+ ir_lookup(N, _), ccl_enum_value(N, V), !, ir_int(T).          % an enumerator is its value -- unless A LOCAL SHADOWS IT (0.94): libc++'s <format> has a scoped enum with an enumerator `__ptr' (14), every enumerator is a global name here, and `iterator __r(__ptr)' in the tree's node removal built its iterator from 14 where `__ptr' was the parameter (every erase by iterator in a C++20 program over <set> segfaulted)
 ir_expr(id(N), V, T, LL) :- !,
     ( ir_lookup(N, loc(Addr0, T00)) -> true ; ir_fail(undeclared(N)) ),
     ir_ref_slot(Addr0, T00, Addr, T0),
@@ -1231,6 +1239,13 @@ ir_sized_type(_, arr(none, E), init(Items), arr(int(K), E)) :- !, length(Items, 
 ir_sized_type(_, arr(none, E), str(S), arr(int(K), E)) :- !, length(S, K0), K is K0 + 1.
 ir_sized_type(T, _, _, T).
 ir_gconst(none, T, Z) :- !, ir_type(T, LL), ir_zero(LL, Z).
+ir_gconst(int(big(A)), _, V) :- !, ir_big_text(A, V).
+ir_gconst(uint(big(A)), _, V) :- !, ir_big_text(A, V).
+ir_gconst(long(big(A)), _, V) :- !, ir_big_text(A, V).
+ir_gconst(ulong(big(A)), _, V) :- !, ir_big_text(A, V).
+ir_gconst(neg(long(big(A))), _, V) :- !, \+ sub_atom(A, 0, 2, _, '0x'), atom_concat('-', A, V).   % LLVM takes a negative decimal, never `-u0x'
+ir_gconst(neg(int(big(A))), _, V) :- !, \+ sub_atom(A, 0, 2, _, '0x'), atom_concat('-', A, V).
+ir_big_text(A, V) :- ( sub_atom(A, 0, 2, _, '0x') -> sub_atom(A, 2, _, 0, H), atom_concat('u0x', H, V) ; V = A ).
 ir_gconst(int(N), _, N) :- !.
 ir_gconst(uint(N), _, N) :- !.
 ir_gconst(long(N), _, N) :- !.
