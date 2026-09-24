@@ -1,0 +1,7 @@
+make_heap 9 1
+push_heap 10
+pop_heap 10 9
+sort_heap 1 2 2 5 8 9
+next_permutation 1 3 2
+prev_permutation 1 2 3
+is_permutation 1

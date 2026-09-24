@@ -1,0 +1,10 @@
+remove 5 8 9 1
+remove_if 2 2 1
+replace 5 0 8 0 9 1
+replace_if 5 0 -1 0 -1 1
+swap_a 9 8 7
+swap_b 1 2 3
+reverse 1 9 2 8 2 5
+reverse_copy 1 9 2 8 2 5
+rotate 3 4 5 1 2
+unique 1 2 3 1

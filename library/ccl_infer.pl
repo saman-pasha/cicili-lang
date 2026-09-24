@@ -169,15 +169,15 @@ ccl_is_pointer(T) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, _) ; T1 = arr(_, _) 
 ccl_is_float(T) :- ccl_resolve_type(T, base(_, S)), ( memberchk(double, S) ; memberchk(float, S) ; memberchk('_Float16', S) ), !.
 ccl_is_integer(T) :- ccl_resolve_type(T, base(_, S)), \+ memberchk(double, S), \+ memberchk(float, S), \+ memberchk(void, S),
     ( memberchk(int, S) ; memberchk(char, S) ; memberchk(short, S) ; memberchk(long, S) ; memberchk(signed, S)
-    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; memberchk(char8_t, S) ; S = [enum(_, _)] ; S = [enum_class(_, _)] ), !.
+    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; memberchk(char8_t, S) ; memberchk(wchar_t, S) ; memberchk(char16_t, S) ; memberchk(char32_t, S) ; S = [enum(_, _)] ; S = [enum_class(_, _)] ), !.
 ccl_is_arith(T) :- ( ccl_is_integer(T) ; ccl_is_float(T) ), !.
 
 %% integer rank and signedness, for the usual arithmetic conversions
 ccl_int_rank(T, Rank, Unsigned) :-
     ccl_resolve_type(T, base(_, S)),
-    ( memberchk(unsigned, S) -> Unsigned = true ; Unsigned = false ),
-    ( ccl_count(long, S, 2) -> Rank = 5 ; memberchk(long, S) -> Rank = 4 ; memberchk(short, S) -> Rank = 2
-    ; memberchk(char, S) -> Rank = 1 ; memberchk('_Bool', S) -> Rank = 0 ; memberchk(bool, S) -> Rank = 0 ; Rank = 3 ).
+    ( memberchk(unsigned, S) -> Unsigned = true ; memberchk(char16_t, S) -> Unsigned = true ; memberchk(char32_t, S) -> Unsigned = true ; memberchk(char8_t, S) -> Unsigned = true ; Unsigned = false ),   % C++'s char16_t, char32_t and char8_t are UNSIGNED; wchar_t is signed on this ABI
+    ( ccl_count(long, S, 2) -> Rank = 5 ; memberchk(long, S) -> Rank = 4 ; memberchk(short, S) -> Rank = 2 ; memberchk(char16_t, S) -> Rank = 2
+    ; memberchk(char, S) -> Rank = 1 ; memberchk(char8_t, S) -> Rank = 1 ; memberchk('_Bool', S) -> Rank = 0 ; memberchk(bool, S) -> Rank = 0 ; Rank = 3 ).
 ccl_count(_, [], 0).
 ccl_count(X, [Y|T], N) :- ccl_count(X, T, N0), ( X == Y -> N is N0 + 1 ; N = N0 ).
 ccl_promote(T, P) :- ( ccl_int_rank(T, R, _), R < 3 -> P = base([], [int]) ; P = T ).
@@ -310,7 +310,7 @@ ccl_size_align(base(_, [enum_class(_, _)]), 4, 4) :- !.
 ccl_size_align(ref(_, _), 8, 8) :- !.                                            % C++: a reference is a pointer in memory
 ccl_size_align(rref(_, _), 8, 8) :- !.
 ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; memberchk('_Float16', S) -> N = 2 ; ccl_count(long, S, 2) -> N = 8
-    ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1 ; memberchk(bool, S) -> N = 1 ; memberchk(char8_t, S) -> N = 1
+    ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1 ; memberchk(bool, S) -> N = 1 ; memberchk(char8_t, S) -> N = 1 ; memberchk(char16_t, S) -> N = 2 ; memberchk(wchar_t, S) -> N = 4 ; memberchk(char32_t, S) -> N = 4
     ; memberchk(int, S) -> N = 4 ; memberchk(unsigned, S) -> N = 4 ; memberchk(signed, S) -> N = 4 ; memberchk(void, S) -> N = 1 ; fail ).
 ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).
 %% ccl_members_layout(+Members, -Lays, -Size, -Align): where every member lies --

@@ -4280,6 +4280,167 @@ expose: the overload roads, `auto' over a library call (`ccl_auto_by_overload' f
 and the `if constexpr' and label forms. The seven gates have not been run since 0.90, and the step
 is committed on that footing and no other.
 
+**M6's fifty-ninth step (0.92): `<algorithm>`, and the fifteen rules between its text and its
+answers.** 0.91 read `<algorithm>` whole and stopped in the DESUGARING at
+`no_member_type('_IterOps._ClassicAlgPolicy', '__iter_move')`. THE FORMS, each named and each cut
+to a file of ten to twenty lines that failed in ONE SECOND before it was fixed:
+(1) A MEMBER FUNCTION TEMPLATE'S NAME IS A TEMPLATE AND NO TYPE, 0.45's rule for a free one one
+scope deeper: libc++ writes `value_type __t(_Ops::__iter_move(__first));' (push_heap, rotate,
+sort), which read as a DECLARATION of a function `__t' taking a parameter of type
+`_Ops::__iter_move' -- the vexing parse C++ resolves by knowing what the member is. The class-body
+scan that notes member templates ahead (`ccl_member_templates_ahead', 0.81) says WHICH KIND each
+is now (`ccl_scan_did' answers `N-type' or `N-fn', `ccl_note_mt'), and a function's name joins
+`'$ccl_fn_templates'', which `ccl_qname_typish' excludes. AND THE GUARD THE CENSUS EARNED: a
+CONSTRUCTOR template's (or a destructor's) declarator-id is the CLASS's own name, so noting it as a
+function template made `pair<_T1, _T2>' no type at all and `<vector>' went PARTIAL at pair's
+deduction guide -- silent (0.44), and named in one line by `sh test/census.sh'
+(`PARTIAL, 210 items; stopped at line 3219').
+(2) A CALL'S EXPLICIT TEMPLATE ARGUMENTS ARE TEMPLATE ARGUMENTS, NOT TYPES: libc++'s sort writes
+`std::__introsort<_AlgPolicy, _Comp &, _Iter, __use_branchless_sort<_Comp, _Iter> >(...)', whose
+last argument is a VARIABLE TEMPLATE's id -- typed as a class it refused `instance_without_body'.
+0.63 evaluates an explicit argument where it BINDS (`cpp_bind_explicit'); `cpp_types' was the
+pre-pass that mangled it first, and `cpp_call_targs' diverts only the two shapes `cpp_type' gets
+wrong (a variable template's id and a concept-id), so nothing that types today types differently.
+(3) A FUNCTION TEMPLATE'S INSTANCE THE SHIPPED LIBRARY DEFINES takes its ITANIUM SYMBOL -- 0.61's
+and 0.73's named not-done item. libc++ declares `template <class _Comp, class _RandomAccessIterator>
+void __sort(_RandomAccessIterator, _RandomAccessIterator, _Comp);' with NO BODY ANYWHERE, compiles
+the instances into libc++.dylib and lists them `extern template ... __sort<__less<int>&, int*>' --
+which every `std::sort' of an arithmetic type calls. A function TEMPLATE's symbol differs from a
+plain function's in three places, all in `cpp_ita_fn_instance': the nested name carries the
+TEMPLATE-ID (`_ZN St3__1 6__sort I <args> E E', the template-PREFIX a substitution candidate and
+the function's own template-args never one), the bare-function-type that follows a template-id
+begins with the RETURN TYPE, and a parameter written as one of the template's own parameters is
+`T_' for the first and `T0_' for the second (decimal, where a substitution is base 36), each a
+candidate of its own. Measured against the shipped library: `_ZNSt3__16__sortIRNS_6__lessIiiEEPiEEvT0_S5_T_',
+character for character.
+(4) A PARTIAL SPECIALIZATION'S ARGUMENT LIST IS FILLED FROM THE PRIMARY'S DEFAULTS
+([temp.spec.partial]; `cpp_spec_pattern'): libc++ writes `template <class _Tp, class _Up, class = void>
+inline const bool __is_trivially_equality_comparable_impl = false;' and specializes it `<_Tp, _Tp>'
+-- TWO arguments where the primary takes three -- so the pattern's length matched nothing.
+(5) `__is_trivially_equality_comparable' IS ANSWERED (`cpp_trait_of'): `a == b' is `memcmp(&a, &b,
+sizeof(T))' for the integral types and pointers, never a float (0.0 == -0.0 with different bits),
+an enum (a user may write ==) or a class (padding). With (4) and (5) false, `std::find' took
+libc++'s overload guarded by the trait's NEGATION, whose body calls `__find' again: a STACK
+OVERFLOW on `std::find(v.begin(), v.end(), 5)'.
+(6) AND NO VECTOR EXTENSIONS, the third question of the shape 0.50 asked of exceptions and 0.86 of
+RTTI. libc++ vectorizes its algorithms behind `_LIBCPP_HAS_ALGORITHM_VECTOR_UTILS &&
+!defined(__OPTIMIZE_SIZE__)', and the first half is on because it asks whether the compiler is
+clang-based -- which this one answers yes to, its predefined table being clang's (0.87's hazard).
+`__find_vectorized' is built on `__attribute__((__vector_size__(N)))' types, GENERIC LAMBDAS and
+the vector builtins. `__OPTIMIZE_SIZE__' is the library's own switch for it and is read in EXACTLY
+TWO PLACES in all of libc++, both this one, so predefining it compiles the scalar algorithms the
+library ships for -Oz and changes nothing else. (`__builtin_reduce_and' and `__builtin_reduce_or'
+live only behind that guard and are still unanswered: reachable again if it ever changes.)
+(7) A GENERIC LAMBDA IS A CLOSURE WHOSE `operator()' IS A MEMBER TEMPLATE
+([expr.prim.lambda.closure]/3) -- refused by name since 0.42, and what libc++'s `__find_generic' is,
+`[&]<class _ValT>(_ValT&& __val) -> bool { return __val == __value; }'. The template's parameters
+are the lambda's own (`tparams(Ps)' among the captures) then one INVENTED per `auto' parameter
+(`cpp_auto_params', 0.42's rule for an abbreviated function template), and the result type is
+deduced at the CALL. The closure's member-template road, its instance's name (`op.call') and the
+fallback from `cpp_method' to `cpp_member_template_call' were all there from 0.44, so the rule is
+four lines on machinery eleven steps old.
+(8) `wchar_t', `char16_t' AND `char32_t' ARE ARITHMETIC TYPES with sizes, ranks, signedness and LLVM
+types (`ccl_is_integer', `ccl_basic_size', `ccl_int_rank', `ir_base'; the mangler knew them
+already): LP64 makes wchar_t four bytes and signed, char16_t two and unsigned, char32_t four and
+unsigned -- and `sizeof(int) == sizeof(wchar_t)' is why libc++'s `__find' of an INT goes through
+`__constexpr_wmemchr'.
+(9) THE WIDE MEMORY BUILTINS are the C library's functions, DECLARED here when no header did as the
+math builtins have been since 0.81: `__builtin_wmemchr', `__builtin_wmemcmp', `__builtin_wcslen'.
+(10) `__builtin_assume_dereferenceable' IS AN ASSUMPTION and nothing at run time, beside
+`__builtin_assume' and `__builtin_prefetch': libc++'s `__assume_valid_range' calls it on the way
+into EVERY range algorithm over a vector's iterators, so it would have failed most of the module's
+fixtures one at a time.
+(11) A NULL POINTER CONSTANT CONVERTS TO ANY POINTER ([conv.ptr]/1), which only `nullptr_t' knew
+(`cpp_null_to_pointer', asked at the three roads that judge an argument: the template acceptance,
+the scoring and the arity-only last resort): libc++'s stable_partition writes `pair<value_type *,
+ptrdiff_t> __p(0, 0);' and the pair's `(const _T1 &, const _T2 &)' constructor was refused for the
+literal 0, leaving no constructor of arity two. AND ACCEPTING IS NOT CONVERTING: bound to the
+`const _T1 &' the literal materialized an INT temporary whose ADDRESS went out as the pointer, so
+the fixture printed 4 where C++ prints 5 -- a WRONG ANSWER, not a refusal -- and the conversion
+goes in at `cpp_ref_args_', the door the class conversions already use.
+(12) A CONDITIONAL OVER TWO LVALUES IS AN LVALUE ([expr.cond]/4), so its ADDRESS is the phi of the
+arms' where the value form phis the values (`ir_lvalue_form(cond)', `ir_lval(cond)'): `std::min' is
+`return __b < __a ? __b : __a;' in a `const _Tp &'-returning function, and as a prvalue
+`ir_ref_of' materialized a temporary, stored the STRUCT into it and returned that dead temporary's
+address -- `std::min(a, b).c_str()' read its bytes.
+(13) A DELETED MEMBER TEMPLATE IS DROPPED as a deleted plain member has been since 0.44
+(`cpp_member_body' through the `template' wrapper): libc++ writes `unique_ptr(pointer,
+__libcpp_remove_reference_t<deleter_type> &&) = delete' under `is_reference<_Deleter>' to steer
+construction to the deleter-by-lvalue overload, and KEPT it won overload resolution and had no
+body to emit.
+(14) A PARAMETER IS RESOLVED IN ITS CLASS ON THE TEMPLATE ROAD -- 0.66's rule in the one place that
+never took it, as 0.70 found it missing from `cpp_args_no_clash': `cpp_params_accept' judged
+`const deleter_type &' with the INFERENCE, which knows typedefs and tags and no class scope, so
+`deleter_type' (unique_ptr's own typedef of `__destruct_n &') stayed opaque, the reference was
+never seen, and the class test -- which must not unref (0.51) -- met one and refused
+`argument_mismatch'.
+(15) A FREE OPERATOR SERVES A PLAIN STRUCT (`cpp_op_operand'): the road required a registered CLASS
+on one side and a struct of plain members is never promoted to one (0.84 promotes only a struct
+holding a class), so a program's own `bool operator<(const S &, const S &)' was never found
+anywhere -- inside a template or out -- and `x < y' stayed the raw `bin(<, ...)' the lowering
+cannot take.
+THE THREE THAT HID EACH OTHER, worth more than any of them: the `unique_ptr' failure was (13),
+(14) and 0.66's rule stacked, and each was invisible until the one in front of it MOVED -- the
+deleted constructor won while it existed, and only once dropped did the refusal name the candidate
+whose parameter never resolved. The trace named each in turn (`ctor_candidate', `ctor_no',
+`member_refused', 0.79's rule 9); guessing named none of them. AND A REDUCTION OF (14) THAT PUT THE
+TYPEDEF AT FILE SCOPE PASSED, because the inference can resolve one there and libc++'s is
+class-scope: a probe that passes can mean the PROBE is wrong, and the plain-constructor probe of
+the same rule passed for the same reason -- the plain road works and only the template road was
+broken.
+Reader version 76 (75 for the member-template kind, 76 for `__OPTIMIZE_SIZE__', every summary
+rewritten); lowering version 38.
+WHAT RUNS: `<algorithm>`'s surface as TEN fixtures --
+`test/cpp/run/stdalgorithm.cpp' (the predicates: all_of, any_of, none_of, for_each, count,
+count_if), `stdalgorithm2.cpp' (the searches: find, find_if, find_if_not, search, adjacent_find,
+find_end, find_first_of), `stdalgorithm3.cpp' (equal, mismatch, lexicographical_compare,
+min_element, max_element, minmax_element, min, max, minmax, clamp), `stdalgorithm4.cpp' (copy,
+copy_n, copy_if, copy_backward, fill, fill_n, transform unary and binary, generate),
+`stdalgorithm5.cpp' (remove, remove_if, replace, replace_if, swap_ranges, reverse, reverse_copy,
+rotate, unique), `stdalgorithm6.cpp' (the partitions and the sorts), `stdalgorithm7.cpp' (the
+binary searches and the merges), `stdalgorithm9.cpp'
+(the heap and the permutations) and `stdalgorithmstr.cpp' (ALL the `std::string' coverage), each
+matching clang++ line for line; beside them `nullconst.cpp', `condlvalue.cpp' and `refparam.cpp',
+each the shape of (11), (12) and (14) on the program's own classes.
+WHY TEN AND NOT ONE, AND THE MODEL THAT WAS WRONG: the surface written as one fixture was still
+building at TWENTY-SEVEN MINUTES and was killed. I split it by the NUMBER OF ALGORITHMS, inferring
+a superlinear cost from three points (5 algorithms 25-45 s, 12 with strings 263 s, 22 with strings
+>1600 s), and the split worked -- 33 s for six algorithms. THE MODEL WAS STILL WRONG, and one
+bisect said so: eleven probes identical but for one line, with a BASELINE that calls no algorithm
+at all (28 s, which is what including `<algorithm>' and `<vector>' costs), gave
+`min_element' 43 s, `max_element' 30, `minmax_element' 28, `min' 29, `max' 28, `minmax' 27,
+`clamp' 28 -- SEVEN AT THE BASELINE, free -- against `equal', `mismatch' and
+`lexicographical_compare' at over 180 s each. The cost is not the count: it is the TWO-RANGE
+family, and `stdalgorithm3' was slow because it happens to hold all three of them.
+NOT DONE, AND MEASURED HONESTLY: those three are still ~250 s each against the 28 s baseline, and I
+DID NOT FIX THEM. The trace shows what looks like the cause -- an `enable_if' instance keyed by an
+UNFOLDED conjunction spelled letter by letter,
+`enable_if.binbinbinbinbinbooltruebooltruebooltruenotscopedtmplisvolatilebaseintvalue...', from
+libc++'s `__enable_if_t<... && !is_volatile<_Tp>::value && ..., int>', with 1422 candidates and 637
+refusals and NO instance asked twice (so breadth, never a loop) -- but a bad thing in a trace is
+not a demonstration that it is THE COST. Two fixes failed: folding a static constant inside
+`cpp_const_reduce' fired on every `scoped' subterm of every constant evaluation, dragged
+`cpp_scope_class' into instantiating the detection idiom's `__test' and broke EVERY probe including
+the baseline (a file calling no algorithm cannot be broken by an algorithm fix -- that is the
+edit, immediately); and the same fold at `cpp_targ_value', the right place, never fires on
+libc++'s expression -- measured against the library with ONLY that clause stubbed off, 255 s
+without it and 239 s with, which is this machine's noise. Both were REVERTED. Two reductions of the
+shape fold correctly in one second, so the mechanism is not reproduced and that is why it is not
+fixed. THE SET OPERATIONS ARE NOT COMMITTED AT ALL: `stdalgorithm8.cpp' (set_union,
+set_intersection, set_difference, set_symmetric_difference) has NEVER been seen to pass -- killed
+at 16:40 pinned at 499 MB, and flat memory over that long is the shape of something other than
+ordinary work in an engine with no heap collector. They are two-range algorithms, so the family
+above is the likely reason and they would probably pass given twenty minutes; but the gate globs
+`test/cpp/run/*.cpp', so a fixture committed unverified is a fixture that may hang the gate for
+the owner, and it waits outside until it is measured.
+WHAT WAS RUN, AND WHAT WAS NOT: the owner asked for no gates, so NOTHING HERE HAS A GREEN LINE.
+The thirteen fixtures above were run one at a time and pass (`stdalgorithm' 39 s/350 MB,
+`stdalgorithm2' 44/427, `stdalgorithm4' 61/320, `stdalgorithm5' 88/329, `stdalgorithm6' 431/1245,
+`stdalgorithm7' 119/564, `stdalgorithm9' 40/540, `stdalgorithmstr' 171/676, `nullconst',
+`condlvalue' and `refparam' 1-2 s each); `stdalgorithm3' passes at about 1670 s and `stdalgorithm8'
+is unmeasured past 16 minutes, which is the open item above. The seven gates have not run since
+0.90, and the step is committed on that footing and no other.
+
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
 at the start of every unit (found on `$COCOLOG_LIBRARY`, which is also on
@@ -4888,6 +5049,28 @@ module (a segfault that looked like the error path's). The build mirrors `module
   This is the sixth instrument in these findings that answers without measuring what was asked, and
   the second whose answer comes from ABSENCE -- the debug `write' whose silence read as a dead
   predicate, and now a tool whose disappearance read as a pass.
+* **A WAITER WHOSE PATTERN MATCHES ITS OWN SHELL WAITS FOR EVER** (2026-09-19, the `<algorithm>`
+  fixtures). `while pgrep -f "cocolog --local query"; do sleep 3; done` never ends: the pattern is
+  in the command line of the shell RUNNING the loop, so `pgrep` finds itself. Three such waiters,
+  each gating a build, sat spinning while nothing ran -- and the builds they gated never started,
+  so the empty task outputs read exactly like "still building". The tell was three result files at
+  precisely 0 bytes with NO cocolog process anywhere, which is not what work in progress looks
+  like. The bracket trick is the fix (`pgrep -f "[c]ocolog --local query"`, which cannot match the
+  pattern's own text), or watch the RESULT (a line count in the output file) rather than a process.
+  This is the seventh instrument in these findings that answers without measuring what was asked,
+  and the third whose answer is ABSENCE -- the debug `write' whose silence read as a dead
+  predicate, the missing `gate.sh' whose stale log read as a pass, and now a waiter whose
+  self-match reads as a busy machine.
+* **`> CAP' IS NOT A MEASUREMENT, AND A PROBE WITH NO TIME CAP IS NOT A PROBE** (2026-09-19, the
+  same afternoon). Every run of mine has had a MEMORY cap since 0.46, because the rules demand one;
+  none had a TIME cap, and I carried a 27-minute fixture and then a 22-minute one without asking
+  why a probe -- whose whole virtue is being cheap -- was running unbounded. The owner asked for the
+  cap. Worse, the cap then produced a number I misused: with a 180 s cap `std::equal' read
+  `TIMEOUT', I changed one clause, it read 239 s, and I reported an improvement. It had always been
+  about 250 s; 180 was simply below it. A bound is not a value, and the only honest comparison is
+  against the same fixture built on the COMMITTED library with one clause stubbed off (0.89's
+  `GUARD_LIB'), which said 255 s against 239 -- noise, and the change was reverted. Measure the
+  thing BEFORE changing it, or the first number you own is worthless.
 * **No cocolog run of mine is unguarded, not even a small fixture:**
   `scratchpad/guard.sh SECS MB LOG QUERY [HOME]` runs one query under
   `perl -e 'alarm N; exec @ARGV'` (SIGALRM survives exec, so the alarm

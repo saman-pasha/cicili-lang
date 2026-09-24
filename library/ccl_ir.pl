@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(36).   % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
+ccl_lowering_version(38).   % 38: a conditional over two lvalues is an lvalue, and its address the phi of theirs;  % 37: wchar_t, char16_t and char32_t have LLVM types, and a function template's shipped instance its Itanium symbol;  % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -172,7 +172,8 @@ ir_base(S, double) :- memberchk(double, S), !.
 ir_base(S, float) :- memberchk(float, S), !.
 ir_base(S, half) :- memberchk('_Float16', S), !.
 ir_base(S, i8) :- ( memberchk(char, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; memberchk(char8_t, S) ), !.   % C++'s bool: a byte in memory, as clang has it; char8_t too
-ir_base(S, i16) :- memberchk(short, S), !.
+ir_base(S, i16) :- ( memberchk(short, S) ; memberchk(char16_t, S) ), !.
+ir_base(S, i32) :- ( memberchk(wchar_t, S) ; memberchk(char32_t, S) ), !.   % LP64: wchar_t is four bytes and signed, char32_t four and unsigned -- libc++'s __find of an int goes through __constexpr_wmemchr
 ir_base(S, i64) :- memberchk(long, S), !.
 ir_base(S, i32) :- ( memberchk(int, S) ; memberchk(unsigned, S) ; memberchk(signed, S) ), !.
 ir_base([enum(_, [enum_base(T)|_])], LL) :- !, ir_type(T, LL).   % `enum E : size_t' is an i64, and a conversion to size_t is none
@@ -881,7 +882,17 @@ ir_lvalue_form(member(_, _)).
 ir_lvalue_form(arrow(_, _)).
 ir_lvalue_form(stmt_expr(block(Is))) :- append(_, [expr(_, E)], Is), ir_lvalue_form(E).   % a temporary: the block ends with its object
 ir_lvalue_form(deref(_)).
+ir_lvalue_form(cond(_, A, B)) :- ir_lvalue_form(A), ir_lvalue_form(B).   % [expr.cond]/4: both arms lvalues of one type, so the conditional IS one
 ir_lval(deref(E), Addr, T, LL) :- !, ir_expr(E, Addr, PT, _), ir_elem(PT, T), ir_type(T, LL).
+%% A CONDITIONAL OVER TWO LVALUES IS AN LVALUE ([expr.cond]/4), so its ADDRESS is the phi of the arms' -- where
+%% the value form phis the values. `std::min' is `return __b < __a ? __b : __a;' in a `const _Tp &'-returning
+%% function, and with no clause here the conditional was a prvalue: `ir_ref_of' materialized a temporary, stored
+%% the STRUCT into it and returned its address, so `std::min(a, b).c_str()' read a dead temporary's bytes.
+ir_lval(cond(C, A, B), Addr, T, LL) :- ir_lvalue_form(A), ir_lvalue_form(B), !,
+    ir_label(LT), ir_label(LF), ir_label(LE), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LT, ', label %', LF]),
+    ir_block(LT), ir_lval(A, SA, T, LL), ir_slot_addr(SA, VA), ir_cur_label(LT1), ir_end(['br label %', LE]),
+    ir_block(LF), ir_lval(B, SB, _, _), ir_slot_addr(SB, VB), ir_cur_label(LF1), ir_end(['br label %', LE]),
+    ir_block(LE), ir_fresh(Addr), ir_ins([Addr, ' = phi ptr [ ', VA, ', %', LT1, ' ], [ ', VB, ', %', LF1, ' ]']).
 ir_lval(index(A, I), Addr, T, LL) :- !,
     ir_expr(A, P, PT, _), ir_elem(PT, T), ir_type(T, LL), ir_expr(I, IV, IT, IL), ir_convert(IV, IT, IL, base([], [long]), i64, I1),
     ir_fresh(Addr), ir_ins([Addr, ' = getelementptr inbounds ', LL, ', ptr ', P, ', i64 ', I1]).

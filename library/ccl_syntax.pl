@@ -74,7 +74,7 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(74).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member; 72: the AST's index holds a header's inline variable with NO initializer (std::ignore); 73: a pack expansion is a dependent type, and a call of a function template's name is not the reader's `auto' to deduce; 74: `if constexpr' with an init-statement
+ccl_reader_version(76).   % 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member; 72: the AST's index holds a header's inline variable with NO initializer (std::ignore); 73: a pack expansion is a dependent type, and a call of a function template's name is not the reader's `auto' to deduce; 74: `if constexpr' with an init-statement; 75: a member FUNCTION template's name is a template and no type; 76: __OPTIMIZE_SIZE__ predefined, so libc++'s algorithms are the scalar ones
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
 
@@ -1145,7 +1145,7 @@ ccl_scan_mts(_, 0) :- !.
 ccl_scan_mts([tok(p, '{', _)|Ts], D) :- !, D1 is D + 1, ccl_scan_mts(Ts, D1).
 ccl_scan_mts([tok(p, '}', _)|Ts], D) :- !, D1 is D - 1, ccl_scan_mts(Ts, D1).
 ccl_scan_mts([tok(kw, template, _), tok(p, '<', _)|Ts], 1) :- !,
-    ( ccl_scan_close(Ts, 0, Rest), ccl_scan_did(Rest, 0, none, N) -> ccl_note_template(N) ; true ), ccl_scan_mts(Ts, 1).
+    ( ccl_scan_close(Ts, 0, Rest), ccl_scan_did(Rest, 0, none, N-K) -> ccl_note_mt(K, N) ; true ), ccl_scan_mts(Ts, 1).
 ccl_scan_mts([_|Ts], D) :- ccl_scan_mts(Ts, D).
 ccl_scan_close([tok(p, '>', _)|Ts], 0, Ts) :- !.
 ccl_scan_close([tok(p, '<', _)|Ts], D, R) :- !, D1 is D + 1, ccl_scan_close(Ts, D1, R).
@@ -1155,8 +1155,8 @@ ccl_scan_close([tok(p, '>>', _)|Ts], D, R) :- !, D1 is D - 2, ccl_scan_close(Ts,
 ccl_scan_close([_|Ts], D, R) :- ccl_scan_close(Ts, D, R).
 ccl_scan_did([tok(p, '(', _)|Ts], 0, tok(_, W, _), N) :- ccl_scan_group_word(W), !, ccl_scan_parens(Ts, 0, Rest), ccl_scan_did(Rest, 0, none, N).   % `__attribute__((...))', `alignas(...)', `decltype(...)': a group, not the declarator; libc++ writes three attributes before every member's type
 ccl_scan_did([tok(p, '[', _), tok(p, '[', _)|Ts], D, _, N) :- !, ccl_scan_attr(Ts, Rest), ccl_scan_did(Rest, D, none, N).   % `[[...]]'
-ccl_scan_did([tok(kw, K, _), tok(id, N, _)|_], 0, _, N) :- memberchk(K, [struct, class, union]), !.   % a member CLASS template's name, `template <class, class _Yp> struct __shared_ptr_default_delete : ...': shared_ptr USES it two hundred lines before it declares it, which a complete-class context allows ([class.mem]/6), and read in order `__shared_ptr_default_delete < _Tp , _Yp > ( )' was a pair of comparisons
-ccl_scan_did([tok(p, '(', _)|_], 0, tok(id, N, _), N) :- !.
+ccl_scan_did([tok(kw, K, _), tok(id, N, _)|_], 0, _, N-type) :- memberchk(K, [struct, class, union]), !.   % a member CLASS template's name, `template <class, class _Yp> struct __shared_ptr_default_delete : ...': shared_ptr USES it two hundred lines before it declares it, which a complete-class context allows ([class.mem]/6), and read in order `__shared_ptr_default_delete < _Tp , _Yp > ( )' was a pair of comparisons
+ccl_scan_did([tok(p, '(', _)|_], 0, tok(id, N, _), N-fn) :- !.
 ccl_scan_did([tok(p, '(', _)|_], 0, _, _) :- !, fail.
 ccl_scan_did([tok(p, P, _)|_], 0, _, _) :- memberchk(P, [';', '{', '}']), !, fail.
 ccl_scan_did([tok(kw, K, _)|_], _, _, _) :- memberchk(K, [operator, template]), !, fail.
@@ -1164,6 +1164,13 @@ ccl_scan_did([T|Ts], D, _, N) :- T = tok(p, '<', _), !, D1 is D + 1, ccl_scan_di
 ccl_scan_did([T|Ts], D, _, N) :- T = tok(p, '>', _), !, D1 is max(0, D - 1), ccl_scan_did(Ts, D1, T, N).
 ccl_scan_did([T|Ts], D, _, N) :- T = tok(p, '>>', _), !, D1 is max(0, D - 2), ccl_scan_did(Ts, D1, T, N).
 ccl_scan_did([T|Ts], D, _, N) :- ccl_scan_did(Ts, D, T, N).
+%% a member FUNCTION template's name is a template and NO TYPE, as a free one has been since 0.45: libc++ writes
+%% `value_type __t(_Ops::__iter_move(__first));' (push_heap, rotate, sort), which read as a DECLARATION of a
+%% function `__t' taking a parameter of type `_Ops::__iter_move' -- the vexing parse C++ resolves by knowing what
+%% the member is, and `no_member_type(_IterOps._ClassicAlgPolicy, __iter_move)' is what that asks of the class
+ccl_note_mt(fn, N) :- ccl_current_class(C), C == N, !, ccl_note_template(N).   % a CONSTRUCTOR template's (or a destructor's) declarator-id is the CLASS's own name, and the class is a type: noted as a function template, `pair<_T1, _T2>' was no type and `<vector>' stopped at pair's deduction guide
+ccl_note_mt(fn, N) :- !, ccl_note_template(N), ccl_note_fn_template(N).
+ccl_note_mt(_, N) :- ccl_note_template(N).
 ccl_scan_group_word(W) :- memberchk(W, ['__attribute__', alignas, decltype, noexcept, '__declspec', sizeof, typeof, '__typeof__', alignof, '__alignof__', static_assert, requires]).
 ccl_scan_parens([tok(p, ')', _)|Ts], 0, Ts) :- !.
 ccl_scan_parens([tok(p, '(', _)|Ts], D, R) :- !, D1 is D + 1, ccl_scan_parens(Ts, D1, R).
