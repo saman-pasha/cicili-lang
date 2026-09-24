@@ -9,4 +9,10 @@ typedef int wchar_t;
 typedef long double max_align_t;
 #define NULL ((void *)0)
 #define offsetof(t, m) __builtin_offsetof(t, m)
+/* C23: nullptr's own type, and unreachable() -- the store keys a C23 read apart from the C17 one */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L
+typedef typeof(nullptr) nullptr_t;
+#define unreachable() __builtin_unreachable()
+#define __STDC_VERSION_STDDEF_H__ 202311L
+#endif
 #endif

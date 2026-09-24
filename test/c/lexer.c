@@ -27,7 +27,10 @@ int words = concept + requires + co_await + co_yield + co_return + consteval + c
 unsigned long z = 4uz + 5z + 6ZU; /* C++23: the size_t suffix, a long under LP64 */
 const char *esc = "\x{41}\o{102}\u{43}\104\u00e9\U0001F600\0\7x"; /* C++23: delimited escapes; universal character names as UTF-8; octal */
 char oct = '\101'; char ucn = '\u{7a}';
+int wbs = 1wb + 2uwb + 3WB + 4UWB + 5uWB + 0x1Fwb + 0b11uwb; /* C23: the _BitInt literal suffix, in both lexers */
+double efl = 1.5f16 + 2.5F32 + 3.0f64 + 4.0f128 + 0.5bf16 + 0.25BF16 + 1e2f32; /* C++23: the extended floating-point suffixes, dropped as f is */
 int last = 1;
 #if 0
 this is not C but the lexer reads it: @ $ ` are where it stops
 #endif
+const char *pfx = u8"utf8" "plain"; const int *w = L"wide" u"u16" U"u32"; int wc = L'w' + u'x' + U'y' + u8'z'; /* C11's prefixed literals, in both lexers */

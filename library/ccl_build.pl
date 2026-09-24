@@ -22,10 +22,16 @@ ccl_llvm_ready :- once(catch(use_module(library(ccl_llvm)), _, fail)), once(catc
 ccl_link(Objects, Flags, Out) :-
     ccl_words(Objects, Os), ccl_words(Flags, F),
     ( ccl_lang(cpp) -> Ld = 'c++' ; Ld = cc ),                                % cicili++ links through c++
-    atomic_list_concat([Ld, ' ', Os, ' ', F, ' -o \'', Out, '\' 2>&1'], Cmd),
+    ccl_link_libs(Libs),
+    atomic_list_concat([Ld, ' ', Os, ' ', F, Libs, ' -o \'', Out, '\' 2>&1'], Cmd),
     ccl_sh(Cmd, O, Exit),
     ( Exit =:= 0 -> true ; atom_codes(Msg, O), throw(error(link_failed(Msg), cicili_link(Out))) ).
 
+%% THE C++ RUNTIME IS NAMED ON LINUX (0.93): a program is compiled against libc++'s headers (the one tree this compiler reads,
+%% ccl_toolchain_dirs), and on macOS `c++' is clang, whose C++ library is libc++; on Debian and Ubuntu `c++' is g++, whose is
+%% libstdc++, so the link found no `std::__1::__libcpp_verbose_abort' -- libc++'s runtime, `-lc++', is asked for by name there.
+ccl_link_libs(' -lc++') :- ccl_lang(cpp), ccl_host_os(linux), !.
+ccl_link_libs('').
 ccl_sh(Cmd, Out, Exit) :- ( once(catch(proc_run(Cmd, 300000, Out, Exit), _, fail)) -> true ; Out = "could not run", Exit = 1 ).
 ccl_words([], '').
 ccl_words([W|Ws], A) :- ccl_words(Ws, A1), atomic_list_concat(['\'', W, '\' ', A1], A).

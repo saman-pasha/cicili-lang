@@ -436,6 +436,9 @@ ck_lvalue_form(deref(_)).
 %% a value that lives as long as the program: a string literal, a global's
 %% address, a global array or function used as a pointer
 ck_static_value(str(_)) :- !.
+ck_static_value(wstr(_)) :- !.
+ck_static_value(u16str(_)) :- !.
+ck_static_value(u32str(_)) :- !.
 ck_static_value(cast(_, E)) :- !, ck_static_value(E).
 ck_static_value(addr(E)) :- !, ck_storage_base(E, N), ck_is_global(N).
 ck_static_value(id(N)) :- !, ck_is_global(N), ccl_declared(N, T), ccl_resolve_type(T, T1), ( T1 = arr(_, _) ; T1 = fn(_, _, _) ), !.
@@ -778,6 +781,7 @@ ck_stmt(switch(L, E, S), St0, St) :- !, ck_line(L),
     ccl_scope_push, ck_push(St1, St2), ck_loop_enter(St2, switch), ck_switch_items(Is, St2, St2, St3), ck_loop_leave(Brk),
     ck_merge_all([St3|Brk], St4), ( ck_has_default(Is) -> St5 = St4 ; ck_merge(St4, St2, St5) ),
     ck_scope_end(St5, St), ccl_scope_pop.
+ck_stmt(assume(L, E), St0, St) :- !, ck_line(L), ck_expr(E, St0, St).   % C++23's [[assume(e)]]: its expression is read, nothing else
 ck_stmt(case(_, _, S), St0, St) :- !, ck_stmt(S, St0, St).
 ck_stmt(default(_, S), St0, St) :- !, ck_stmt(S, St0, St).
 ck_stmt(S, _, _) :- functor(S, F, _), nb_getval('$ck_fn', Fn), nb_getval('$ck_line', L), throw(error(not_lowered(F), where(Fn, line(L)))).   % a form of C++'s later steps
@@ -1062,6 +1066,14 @@ ck_expr(int(_), St, St) :- !.
 ck_expr(uint(_), St, St) :- !.
 ck_expr(long(_), St, St) :- !.
 ck_expr(ulong(_), St, St) :- !.
+ck_expr(wstr(_), St, St) :- !.
+ck_expr(u16str(_), St, St) :- !.
+ck_expr(u32str(_), St, St) :- !.
+ck_expr(wchr(_), St, St) :- !.
+ck_expr(u16chr(_), St, St) :- !.
+ck_expr(u32chr(_), St, St) :- !.
+ck_expr(wb(_), St, St) :- !.
+ck_expr(uwb(_), St, St) :- !.
 ck_expr(float(_), St, St) :- !.
 ck_expr(chr(_), St, St) :- !.
 ck_expr(str(_), St, St) :- !.

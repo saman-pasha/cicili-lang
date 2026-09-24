@@ -61,7 +61,13 @@ ccl_const_eval(int(N), N) :- !.
 ccl_const_eval(uint(N), N) :- !.
 ccl_const_eval(long(N), N) :- !.
 ccl_const_eval(ulong(N), N) :- !.
+ccl_const_eval(wchr(N), N) :- !.
+ccl_const_eval(u16chr(N), N) :- !.
+ccl_const_eval(u32chr(N), N) :- !.
+ccl_const_eval(wb(N), N) :- !.
+ccl_const_eval(uwb(N), N) :- !.
 ccl_const_eval(bool(true), 1) :- !.                                            % C++
+ccl_const_eval(comma(A, B), V) :- !, ( ccl_const_eval(A, _) -> true ; A = cast(base(_, [void]), _) ), ccl_const_eval(B, V).   % THE COMMA OPERATOR IS A CONSTANT EXPRESSION (C++11, [expr.const]): the right operand's value, the left one a constant or a `(void)' cast of anything. libc++ writes its conjunction as `_IsSame<__all_dummy<_Preds...>, __all_dummy<((void)_Preds, true)...>>', and unfolded the second instance was keyed by the term's spelling, so `__all<true, true, true>' was FALSE and every tuple constructed from another tuple lost its converting constructor (0.93)
 ccl_const_eval(bool(false), 0) :- !.
 ccl_const_eval(chr(C), C) :- !.
 ccl_const_eval(id(N), V) :- !, ccl_enum_value(N, V).
@@ -115,6 +121,7 @@ ccl_resolve_base([typedef(N)], Q, T) :- atom(N), ccl_cached_named('$ccl_r:', N, 
 ccl_resolve_base([typedef(N)], Q, T) :- atom(N), ccl_lang(cpp), ccl_tag(N, Ms), !, ccl_tag_type(N, Ms, Q, T).   % C++: a tag's name is a type name; a template-id (a compound) stays as it is
 %% typeof(x): the TYPE when a type was written (GNU's, and C23's own), else the expression's -- nothing
 %% resolved it before, so a `typeof' reached the lowering as a specifier it could not take
+ccl_resolve_base([typeof(unqual(X))], Q, T) :- !, ccl_resolve_base([typeof(X)], [], T0), ccl_strip_quals(T0, T1), ccl_add_quals(Q, T1, T).   % C23's typeof_unqual: the top-level qualifiers off
 ccl_resolve_base([typeof(X)], Q, T) :- ccl_type_term(X), !, ccl_resolve_type(X, T0), ccl_add_quals(Q, T0, T).
 ccl_resolve_base([typeof(X)], Q, T) :- ccl_type_of(X, T0), T0 \== unknown, !, ccl_resolve_type(T0, T1), ccl_add_quals(Q, T1, T).
 ccl_type_term(T) :- compound(T), functor(T, F, _), memberchk(F, [base, ptr, arr, fn, ref, rref]).
@@ -169,18 +176,22 @@ ccl_is_pointer(T) :- ccl_resolve_type(T, T1), ( T1 = ptr(_, _) ; T1 = arr(_, _) 
 ccl_is_float(T) :- ccl_resolve_type(T, base(_, S)), ( memberchk(double, S) ; memberchk(float, S) ; memberchk('_Float16', S) ), !.
 ccl_is_integer(T) :- ccl_resolve_type(T, base(_, S)), \+ memberchk(double, S), \+ memberchk(float, S), \+ memberchk(void, S),
     ( memberchk(int, S) ; memberchk(char, S) ; memberchk(short, S) ; memberchk(long, S) ; memberchk(signed, S)
-    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; memberchk(char8_t, S) ; memberchk(wchar_t, S) ; memberchk(char16_t, S) ; memberchk(char32_t, S) ; S = [enum(_, _)] ; S = [enum_class(_, _)] ), !.
+    ; memberchk(unsigned, S) ; memberchk('_Bool', S) ; memberchk(bool, S) ; memberchk(char8_t, S) ; memberchk(wchar_t, S) ; memberchk(char16_t, S) ; memberchk(char32_t, S) ; S = [enum(_, _)] ; S = [enum_class(_, _)] ; memberchk(bitint(_), S) ), !.   % C23's _BitInt(N) is an integer
 ccl_is_arith(T) :- ( ccl_is_integer(T) ; ccl_is_float(T) ), !.
 
 %% integer rank and signedness, for the usual arithmetic conversions
 ccl_int_rank(T, Rank, Unsigned) :-
     ccl_resolve_type(T, base(_, S)),
     ( memberchk(unsigned, S) -> Unsigned = true ; memberchk(char16_t, S) -> Unsigned = true ; memberchk(char32_t, S) -> Unsigned = true ; memberchk(char8_t, S) -> Unsigned = true ; Unsigned = false ),   % C++'s char16_t, char32_t and char8_t are UNSIGNED; wchar_t is signed on this ABI
-    ( ccl_count(long, S, 2) -> Rank = 5 ; memberchk(long, S) -> Rank = 4 ; memberchk(short, S) -> Rank = 2 ; memberchk(char16_t, S) -> Rank = 2
+    (   memberchk(bitint(E), S) -> ccl_bitint_width(E, W), ccl_bitint_rank(W, Rank)           % C23: below the standard type of its width, above every narrower one (6.3.1.1)
+    ; ccl_count(long, S, 2) -> Rank = 5 ; memberchk(long, S) -> Rank = 4 ; memberchk(short, S) -> Rank = 2 ; memberchk(char16_t, S) -> Rank = 2
     ; memberchk(char, S) -> Rank = 1 ; memberchk(char8_t, S) -> Rank = 1 ; memberchk('_Bool', S) -> Rank = 0 ; memberchk(bool, S) -> Rank = 0 ; Rank = 3 ).
+ccl_bitint_width(E, W) :- ( ccl_const_eval(E, W0) -> W = W0 ; W = 32 ).
+ccl_bitint_rank(W, R) :- ( W =< 8 -> R = 0.5 ; W =< 16 -> R = 1.5 ; W =< 32 -> R = 2.5 ; W =< 64 -> R = 3.5 ; R = 5.5 ).
+ccl_is_bitint(T) :- ccl_resolve_type(T, base(_, S)), memberchk(bitint(_), S), !.
 ccl_count(_, [], 0).
 ccl_count(X, [Y|T], N) :- ccl_count(X, T, N0), ( X == Y -> N is N0 + 1 ; N = N0 ).
-ccl_promote(T, P) :- ( ccl_int_rank(T, R, _), R < 3 -> P = base([], [int]) ; P = T ).
+ccl_promote(T, P) :- ( \+ ccl_is_bitint(T), ccl_int_rank(T, R, _), R < 3 -> P = base([], [int]) ; P = T ).   % a _BitInt is never promoted (C23 6.3.1.1/2)
 ccl_usual(A, B, T) :-
     (   ccl_is_float(A), ccl_is_float(B) -> ( ccl_resolve_type(A, base(_, SA)), memberchk(double, SA) -> T = A ; T = B )
     ;   ccl_is_float(A) -> T = A
@@ -189,6 +200,8 @@ ccl_usual(A, B, T) :-
             ccl_promote(A, PA), ccl_promote(B, PB), ccl_int_rank(PA, RA, UA), ccl_int_rank(PB, RB, UB),
             ( RA > RB -> T = PA ; RB > RA -> T = PB ; UA == true -> T = PA ; UB == true -> T = PB ; T = PA )
     ;   T = unknown ).
+%% `__builtin_add_overflow(a, b, &r)' and kin, the lowering's exact arithmetic with a bool for `did not fit'
+ccl_overflow_builtin('__builtin_add_overflow', add).  ccl_overflow_builtin('__builtin_sub_overflow', sub).  ccl_overflow_builtin('__builtin_mul_overflow', mul).
 ccl_size_type(T) :- ( ccl_typedef_of(size_t, _) -> T = base([], [typedef(size_t)]) ; T = base([], [unsigned, long]) ).
 ccl_sizeof_expr(sizeof(_)).
 ccl_sizeof_expr(sizeof_type(_)).
@@ -198,13 +211,23 @@ ccl_type_of(int(_), base([], [int])) :- !.
 ccl_type_of(uint(_), base([], [unsigned])) :- !.
 ccl_type_of(long(_), base([], [long])) :- !.
 ccl_type_of(ulong(_), base([], [unsigned, long])) :- !.
+ccl_type_of(wb(N), base([], [bitint(int(W))])) :- !, ccl_wb_width(N, W0), W is W0 + 1.   % C23's 9wb: a _BitInt of the width the value needs, plus the sign
+ccl_type_of(uwb(N), base([], [unsigned, bitint(int(W))])) :- !, ccl_wb_width(N, W).
+ccl_wb_width(N, W) :- ( N =:= 0 -> W = 1 ; W is msb(N) + 1 ).
 ccl_type_of(bool(_), base([], [bool])) :- !.                          % C++
 ccl_type_of(nullptr, ptr([], base([], [void]))) :- !.
 ccl_type_of(float(_), base([], [double])) :- !.
 ccl_type_of(chr(_), base([], [char])) :- ccl_lang(cpp), !.   % C++: a character literal is a char (C's is an int): `cout << ' '' takes the char inserter, not operator<<(int)
 ccl_type_of(chr(_), base([], [int])) :- !.
 ccl_type_of(str(_), ptr([], base([], [char]))) :- !.
+ccl_type_of(wstr(_), ptr([], base([], [wchar_t]))) :- !.                          % L"...": wchar_t's, u"..." char16_t's, U"..." char32_t's
+ccl_type_of(u16str(_), ptr([], base([], [char16_t]))) :- !.
+ccl_type_of(u32str(_), ptr([], base([], [char32_t]))) :- !.
+ccl_type_of(wchr(_), base([], [wchar_t])) :- !.
+ccl_type_of(u16chr(_), base([], [char16_t])) :- !.
+ccl_type_of(u32chr(_), base([], [char32_t])) :- !.
 ccl_type_of(id(N), T) :- !, ( ccl_declared(N, T0) -> ccl_unref(T0, T) ; T = unknown ).
+ccl_type_of(call(id(B), _), base([], [bool])) :- ccl_overflow_builtin(B, _), !.   % C23's <stdckdint.h> is written on them
 ccl_type_of(call(F, _), T) :- !,
     (   F = id(N), ccl_declared(N, fn(R, _, _)) -> ccl_unref(R, T)
     ;   ccl_type_of(F, FT), ccl_resolve_type(FT, FT1),
@@ -278,6 +301,18 @@ ccl_range_var_type(T, _, T).
 ccl_promoted_or_unknown(ET, T) :- ( ccl_is_integer(ET) -> ccl_promote(ET, T) ; ccl_is_float(ET) -> T = ET ; T = unknown ).
 %% an array decays to a pointer to its element, a function to a pointer to
 %% itself; anything else keeps its name (a typedef stays a typedef)
+%% the canonical form of a resolved type, for `_Generic' (the reader) -- every typedef resolved through the pointers,
+%% arrays and functions, the specifiers sorted with `signed' dropped (but on a char), `int' dropped beside short or
+%% long and supplied for a bare `unsigned', so `unsigned' and `unsigned int' are one type as C has them
+ccl_type_canon(T, K) :- ccl_resolve_type(T, T1), ccl_type_canon_(T1, K).
+ccl_type_canon_(base(Q, S), base(Q1, K)) :- !, msort(Q, Q1), msort(S, S1), ( memberchk(char, S1) -> S2 = S1 ; delete(S1, signed, S2) ),
+    ( ( memberchk(short, S2) ; memberchk(long, S2) ) -> delete(S2, int, S3) ; S2 == [unsigned] -> S3 = [int, unsigned] ; S3 = S2 ), ccl_canon_specs(S3, K).
+ccl_type_canon_(ptr(_, T), ptr(K)) :- !, ccl_type_canon(T, K).
+ccl_type_canon_(arr(N, T), arr(V, K)) :- !, ( ccl_const_eval(N, V) -> true ; V = N ), ccl_type_canon(T, K).
+ccl_type_canon_(fn(R, Ps, V), fn(RK, PKs, V)) :- !, ccl_type_canon(R, RK), findall(PK, ( member(param(PT, _), Ps), ccl_type_canon(PT, PK) ), PKs).
+ccl_type_canon_(T, T).
+ccl_canon_specs([], []).
+ccl_canon_specs([S|Ss], [K|Ks]) :- ( S = struct(Tag, _) -> K = struct(Tag) ; S = union(Tag, _) -> K = union(Tag) ; S = enum(Tag, _) -> K = enum(Tag) ; K = S ), ccl_canon_specs(Ss, Ks).
 ccl_decay(T, D) :- ccl_resolve_type(T, T1), ( T1 = arr(_, E) -> D = ptr([], E) ; T1 = fn(_, _, _) -> D = ptr([], T1) ; D = T ).
 
 %% ---- sizes, LP64 ---------------------------------------------------------------------
@@ -287,6 +322,8 @@ ccl_size_align(block(_, _), 8, 8) :- !.
 ccl_size_align(fn(_, _, _), 8, 8) :- !.
 ccl_size_align(memptr(_, _, fn(_, _, _)), 8, 8) :- !.                          % a pointer to member function: the address of the one function emitted for it
 ccl_size_align(arr(NE, E), N, A) :- !, ( ccl_size_align(E, EN0, A0) -> EN = EN0, A = A0 ; ccl_resolve_type(E, E1), ccl_size_align(E1, EN, A) ), ( ccl_const_eval(NE, K) -> N is K * EN ; N = 0 ).   % a flexible member, `T a[]' or `own T *a[n]': no bytes of its own; the ELEMENT resolved (the resolver leaves an array as it is, and `std::string s[2]' had no size)
+ccl_size_align(base(_, S), N, A) :- memberchk(bitint(E), S), !, ccl_bitint_width(E, W),     % _BitInt(N): the smallest integer type that holds it up to 64 bits; past that, whole eightbytes aligned 8 (the psABI)
+    ( W =< 8 -> N = 1 ; W =< 16 -> N = 2 ; W =< 32 -> N = 4 ; N is ((W + 63) // 64) * 8 ), ( N > 8 -> A = 8 ; A = N ).
 ccl_size_align(base(_, S), N, A) :- ccl_basic_size(S, N), !, A = N.
 ccl_size_align(base(_, [struct(_, Ms)]), N, A) :- Ms \== none, !, ccl_struct_layout(Ms, 0, 1, N0, A0), ccl_tag_size(Ms, N0, A0, N, A).
 ccl_size_align(base(_, [union(_, Ms)]), N, A) :- Ms \== none, !, ccl_union_layout(Ms, 0, 1, N0, A0), ccl_tag_size(Ms, N0, A0, N, A).
@@ -309,7 +346,7 @@ ccl_size_align(base(_, [enum(_, _)]), 4, 4) :- !.
 ccl_size_align(base(_, [enum_class(_, _)]), 4, 4) :- !.
 ccl_size_align(ref(_, _), 8, 8) :- !.                                            % C++: a reference is a pointer in memory
 ccl_size_align(rref(_, _), 8, 8) :- !.
-ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; memberchk('_Float16', S) -> N = 2 ; ccl_count(long, S, 2) -> N = 8
+ccl_basic_size(S, N) :- ( memberchk(double, S) -> N = 8 ; memberchk(float, S) -> N = 4 ; memberchk('_Float16', S) -> N = 2 ; memberchk('_Decimal32', S) -> N = 4 ; memberchk('_Decimal64', S) -> N = 8 ; memberchk('_Decimal128', S) -> N = 16 ; ccl_count(long, S, 2) -> N = 8
     ; memberchk(long, S) -> N = 8 ; memberchk(short, S) -> N = 2 ; memberchk(char, S) -> N = 1 ; memberchk('_Bool', S) -> N = 1 ; memberchk(bool, S) -> N = 1 ; memberchk(char8_t, S) -> N = 1 ; memberchk(char16_t, S) -> N = 2 ; memberchk(wchar_t, S) -> N = 4 ; memberchk(char32_t, S) -> N = 4
     ; memberchk(int, S) -> N = 4 ; memberchk(unsigned, S) -> N = 4 ; memberchk(signed, S) -> N = 4 ; memberchk(void, S) -> N = 1 ; fail ).
 ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).

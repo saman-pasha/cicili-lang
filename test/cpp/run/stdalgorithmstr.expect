@@ -5,3 +5,4 @@ min amy max cid
 lower 2
 copy amy cid
 reverse cid amy
+exit 0

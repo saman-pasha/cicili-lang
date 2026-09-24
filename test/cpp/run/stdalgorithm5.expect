@@ -8,3 +8,4 @@ reverse 1 9 2 8 2 5
 reverse_copy 1 9 2 8 2 5
 rotate 3 4 5 1 2
 unique 1 2 3 1
+exit 0

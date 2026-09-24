@@ -84,8 +84,8 @@ case "$store" in --embed*) kb_prepare "$KB" ;; esac
 res=$("$C" $store query "use_module(library(cicili)), ccl_drive($inputs, $opts)" 2>&1)
 # one pass over the answer: diagnostics on stderr, as clang; `cicili: ...' and `unit(...)' lines on stdout
 case "$opts" in
-  *preprocess*) printf '%s\n' "$res" | awk '/: error: |: note: / { print > "/dev/stderr"; next } /^cicili: |^ +[0-9]+\. use_module|answer\(s\)\.$/ { next } { print }' ;;   # -E: the text itself
-  *) printf '%s\n' "$res" | awk '/: error: |: note: / { print > "/dev/stderr"; next } /^cicili: ok$/ { next } /^cicili: |^unit\(/ { print }' ;;
+  *preprocess*) printf '%s\n' "$res" | awk '/: error: |: warning: |: note: / { print > "/dev/stderr"; next } /^cicili: |^ +[0-9]+\. use_module|answer\(s\)\.$/ { next } { print }' ;;   # -E: the text itself
+  *) printf '%s\n' "$res" | awk '/: error: |: warning: |: note: / { print > "/dev/stderr"; next } /^cicili: ok$/ { next } /^cicili: |^unit\(/ { print }' ;;
 esac
 case "$res" in
   *"cicili: ok"*) exit 0 ;;

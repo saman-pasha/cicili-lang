@@ -18,7 +18,8 @@ s0=$(date +%s); first=$("$CICILI" "$R/run/hello.c" -o hello && ./hello); t_first
 check "cicili hello.c -o hello: a binary that runs" "$first" "hello, cicili-lang"
 check "and with no -o, a.out, as clang" "$("$CICILI" "$R/run/forty2.c"; ./a.out; echo "exit $?")" "exit 42"
 check "-c makes NAME.o in the working directory" "$("$CICILI" -c "$R/run/forty2.c" && ls forty2.o)" "forty2.o"
-check "-S makes NAME.s with _main in it" "$("$CICILI" -S "$R/run/forty2.c" && grep -c '^_main:' forty2.s)" "1"
+case $(uname -s) in Darwin) MAIN='^_main:'; SO=dylib; SOTEXT='dynamically linked shared library' ;; *) MAIN='^main:'; SO=so; SOTEXT='shared object' ;; esac   # Mach-O prefixes a C name with `_'; ELF does not
+check "-S makes NAME.s with main in it" "$("$CICILI" -S "$R/run/forty2.c" && grep -c "$MAIN" forty2.s)" "1"
 check "-emit-llvm -c makes NAME.ll with the IR" "$("$CICILI" -emit-llvm -c "$R/run/forty2.c" && grep -c 'define i32 @main' forty2.ll)" "1"
 check "an own array's drain is a generated function in the IR" "$("$CICILI" -emit-llvm -c "$R/run/btree.c" && grep -c 'define internal void @ccl_drain_node' btree.ll)" "1"
 check "-fsyntax-only refuses a program the safe part refuses, exit 1, one line" "$("$CICILI" -fsyntax-only "$R/safe/use_after_free.c" 2>&1 | grep -c 'error: use after move of')-$("$CICILI" -fsyntax-only "$R/safe/use_after_free.c" >/dev/null 2>&1; echo $?)" "1-1"
@@ -30,7 +31,14 @@ check "a .o from -c links with a .c" "$("$CICILI" -c "$R/link/lib.c" -o lib.o &&
 check "structs by value cross the ABI both ways, as clang has it" "$(clang -c "$R/link/abi_helper.c" -o abi_helper.o && "$CICILI" "$R/link/abi_main.c" abi_helper.o -o abi && ./abi > abi.out && clang "$R/link/abi_main.c" "$R/link/abi_helper.c" -o abi_ref && ./abi_ref > abi_ref.out && cmp -s abi.out abi_ref.out && echo same && wc -l < abi.out | tr -d ' ')" "same
 5"
 check "-I adds to the inclusion path (a typedef from box.h)" "$("$CICILI" -I "$R/inc" "$R/inc/uses_box.c" -o boxed && ./boxed)" "42"
-check "-shared -O1 makes a library" "$("$CICILI" -shared -O1 "$R/link/lib.c" -o libtwice.dylib && file libtwice.dylib | grep -c 'dynamically linked shared library')" "1"
+check "-shared -O1 makes a library" "$("$CICILI" -shared -O1 "$R/link/lib.c" -o libtwice.$SO && file libtwice.$SO | grep -c "$SOTEXT")" "1"
+printf '#warning mind the gap\nint main(void) { return 3; }\n' > warn.c
+check "#warning in the file is printed, clang's shape, and is no error" "$("$CICILI" warn.c -o warn 2>&1 >/dev/null | head -1; ./warn; echo "exit $?")" "warn.c:1: warning: mind the gap
+exit 3"
+printf '#error not here\nint main(void) { return 0; }\n' > err.c
+errout=$("$CICILI" err.c -o err 2>&1 >/dev/null); errcode=$?
+check "#error in the file is a diagnostic, exit 1" "$(echo "$errout" | head -1; echo "exit $errcode")" "err.c:1: error: not here
+exit 1"
 check "-ast-dump prints the unit" "$("$CICILI" -ast-dump "$R/run/forty2.c" | grep -c '^unit(\[function(')" "1"
 check "an unknown argument is an error, as clang says it" "$("$CICILI" --frobnicate x.c 2>&1)" "cicili: error: unknown argument: '--frobnicate'"
 check "no input files is an error" "$("$CICILI" -c 2>&1)" "cicili: error: no input files"
