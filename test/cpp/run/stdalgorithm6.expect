@@ -8,3 +8,4 @@ partial_sort 1 2 2
 nth_element 2
 is_sorted 1 0
 is_sorted_until 1
+exit 0

@@ -271,7 +271,7 @@ k56 :- check('a prototype is a declaration of a function type',
     ( unit('rich.c', unit(Is)), member(declaration(_, none, _, [var(apply, fn(_, _, _), none)]), Is) )).
 
 k57 :- check('an array of pointers with a designated initializer',
-    ( unit('rich.c', unit(Is)), member(declaration(_, none, base([const], [char]), [var(names, arr(none, ptr([], _)), init(L))]), Is), length(L, 3), last(L, item([at(int(3))], _)) )).
+    ( unit('rich.c', unit(Is)), member(declaration(_, none, base([const], [char]), [var(names, arr(int(4), ptr([], _)), init(L))]), Is), length(L, 3), last(L, item([at(int(3))], _)) )).   % the bound is one past the designator's index, taken at the read
 
 k58 :- check('designators by field',
     ( unit('rich.c', unit(Is)), member(declaration(_, _, _, [var(origin, _, init([item([field(x)], int(0))|_]))]), Is) )).
@@ -363,6 +363,35 @@ k87 :- check('C23 (-std=c23): constexpr a constant that folds, enum : unsigned c
       member(static_assert(_, bin('>', id('K'), int(0)), none), Is),
       member(static_assert(_, bin('==', sizeof_type(_), int(4)), str(_)), Is),
       member(typedef(_, [var(kint, base([], [typeof(id('K'))]), none)]), Is) )).
+k89 :- check('C23: __VA_OPT__ keeps or drops its group, #embed puts the resource\'s bytes where it stood (limit, prefix, suffix, if_empty), __has_embed and __has_c_attribute answer',
+    ( unit_c('run/c23pp.c', 23, unit(Is)),
+      member(declaration(_, static, _, [var(data, _, init([item(_, int(104)), item(_, int(101)), item(_, int(108)), item(_, int(108)), item(_, int(111))]))]), Is),
+      member(declaration(_, static, _, [var(part, _, init([item(_, int(1)), item(_, int(104)), item(_, int(101)), item(_, int(108)), item(_, int(99))]))]), Is),
+      member(declaration(_, static, _, [var(none, _, init([item(_, int(7)), item(_, int(8))]))]), Is),
+      member(directive(_, '#define E1 1'), Is), member(directive(_, '#define E2 1'), Is), member(directive(_, '#define E3 1'), Is), member(directive(_, '#define A1 1'), Is),
+      member(function(_, _, _, main, _, _, block(B)), Is),
+      member(expr(_, call(id(printf), [str(_)])), B),
+      member(expr(_, call(id(printf), [str(_), int(1), int(2)])), B) )).
+k91 :- check('C11 and C17: L"wide" is wstr, u"..." u16str, U"..." u32str, u8"..." a plain str, the chars alike; _Thread_local is the qualifier thread_local; int v[n] keeps its bound',
+    ( unit('run/c17rest.c', unit(Is)),
+      member(declaration(_, none, base(Q, [int]), [var(counter, _, int(5))]), Is), memberchk(thread_local, Q),
+      member(declaration(_, static, base(Q2, [int]), [var(hidden, _, none)]), Is), memberchk(thread_local, Q2),
+      member(function(_, _, _, main, _, _, block(B)), Is),
+      member(declaration(_, none, _, [var(v, arr(id(n), base([], [int])), none)]), B),
+      member(declaration(_, none, _, [var(w, _, wstr([119, 105, 100, 101]))]), B),
+      member(declaration(_, none, _, [var(u, _, str([117, 116, 102, 56]))]), B),
+      member(declaration(_, none, _, [var(s16, _, u16str([97, 98]))]), B),
+      member(declaration(_, none, _, [var(s32, _, u32str([120, 121, 122, 195, 169]))]), B),
+      member(expr(_, call(id(printf), [_, cast(_, sizeof(wchr(120)))|_])), B) )).
+k90 :- check('C23: _BitInt(N) a specifier, _Generic chosen at the read, _Alignof and alignof, _Alignas dropped, nullptr_t and unreachable() from <stddef.h>',
+    ( unit_c('run/c23b.c', 23, unit(Is)),
+      member(declaration(_, none, base(_, [bitint(int(7))]), [var(small, _, int(60))]), Is),
+      member(declaration(_, none, base(_, S12), [var(twelve, _, int(4000))]), Is), memberchk(bitint(int(12)), S12), memberchk(unsigned, S12),
+      member(function(_, _, _, main, _, _, block(B)), Is),
+      member(declaration(_, none, _, [var(np, base([], [typedef(nullptr_t)]), nullptr)]), B),
+      member(declaration(_, none, base([], [int]), [var(aligned, _, int(5))]), B),
+      member(expr(_, call(id('__builtin_unreachable'), [])), B),
+      member(expr(_, call(id(printf), [_, int(1), int(2), int(3), int(4), int(9), cast(_, alignof_type(_)), id(mut)])), B) )).
 k88 :- check('C23: bool/true/false and nullptr are the language\'s, auto deduces, an array bound folds from a constexpr, 0b101010 and 1\'000\'000 are numbers',
     ( unit_c('run/c23.c', 23, unit(Is)), member(function(_, _, _, main, _, _, block(B)), Is),
       member(declaration(_, none, base([], [bool]), [var(t, _, bool(true))]), B),
@@ -483,6 +512,9 @@ t_checks :-
     k86,
     k87,
     k88,
+    k89,
+    k90,
+    k91,
     section('where it stops'),
     k69,
     k70,

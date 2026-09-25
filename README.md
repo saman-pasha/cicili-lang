@@ -720,6 +720,48 @@ what runs today.
   deducing, and `static_assert` with or without a message, checked in C
   where it folds. Both lexers read `0b1011` and the digit separator
   `1'000'000`, the preprocessor's pp-number included. GREEN.
+* **C17 and C23, THE REST (0.93).** What the two levels still lacked,
+  each gated. C11 and C17: `_Generic`, chosen at the read from the
+  controlling expression's type (`<stdbit.h>` is written on it),
+  `_Alignof` and `_Alignas`, a variable length array allocated at run
+  time with `sizeof` computed, `_Thread_local` (one per thread, a static
+  local's too), and the prefixed literals `u8"…"`, `L"…"`, `u"…"`, `U"…"`
+  with their chars, the wide ones lowered as arrays of `wchar_t`,
+  `char16_t` and `char32_t`. C23: `_BitInt(N)` sized, ranked and lowered
+  as LLVM's `iN` exactly, with the `wb` literal suffix; `__VA_OPT__`;
+  `#embed` with `limit`, `prefix`, `suffix` and `if_empty`, and
+  `__has_embed`; `__has_c_attribute` answering the standard attributes;
+  `#warning` printed and the file's own `#error` a diagnostic (it had
+  compiled to `cicili: ok`); `nullptr_t` and `unreachable()` from the
+  compiler's `<stddef.h>` at the level; `typeof_unqual` dropping the
+  qualifiers; `<stdckdint.h>` over the overflow builtins (exact in 128
+  bits) and `<stdbit.h>` over the bit builtins, the compiler's own
+  freestanding headers, `<limits.h>` beside them (glibc defines none of
+  the limits itself); the decimal floating types read and refused by
+  name. An unbounded array takes its bound from its initializer at the
+  read, so a global's `sizeof` is right. `test/c/run/c17rest.c`,
+  `c23pp.c`, `c23b.c`; the reader's `k89`-`k91`. GREEN.
+* **THE LINUX PORT.** The predefined macros are the host's
+  (`__linux__` and `__ELF__`, or `__APPLE__` and `__MACH__`, from the
+  module's compile-time answer), libc++ is found under Debian's
+  `/usr/lib/llvm-NN`, and the four C gates run GREEN on Ubuntu 24.04
+  with clang 18 as on macOS; the C++ gate and the libc++ gate are run
+  there too, their results in CLAUDE.md's entry for 0.93.
+* **64-BIT CONSTANTS, and the streams and containers on libc++ 18.** A
+  literal past 2^60 is `big(Atom)` in both lexers (cocolog's integers
+  are 61-bit), the constant evaluator computes in 64 bits on base-2^30
+  limbs and a cast to an integer type wraps to its width, so
+  `LLONG_MAX`, `numeric_limits<long long>::max()` and `~0ULL` are what
+  C says (`test/c/run/bigint.c`); libc++ bounds a string read by
+  `numeric_limits<streamsize>::max()`, which was -1. On libc++ 18: a
+  class argument converts to a scalar parameter only through a
+  conversion operator whose result fits, the reference-binding rules
+  rank as a secondary key, a nested enum and a C struct spell in a
+  mangled name, a call through a cast to a base's reference calls the
+  base's operator, and an empty class value moves no bytes
+  (`basecastcall.cpp`, `emptyassign.cpp`); the stream and container
+  fixtures print clang++'s lines on Ubuntu, the gates' numbers in
+  CLAUDE.md's entry for 0.94.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
@@ -975,7 +1017,7 @@ Cicili's own test suite -- `objects.cpp`, `emit_report.cpp` with
 read whole, `hello.cpp` built and run, and built again from the
 summaries: 30 seconds served, two minutes the first time.
 
-## C++17, C++20 and C++23
+## C++17, C++20, C++23 and C++26
 
 `cicili++` compiles C++ against libc++ as the system ships it, never
 against a standard library of its own: the compiler's own headers are the
@@ -1011,10 +1053,24 @@ class's `operator[]`; `auto(x)` and `auto{x}`; a lambda's specifiers
 without parentheses, a static lambda; an alias in an init-statement; a
 label ending a block; the size suffix `4uz`; the escapes `\x{…}`,
 `\o{…}`, `\u{…}` and the universal character names, into a string as
-UTF-8; `#elifdef`, `#elifndef`; `static operator()`. Not yet: `\N{…}`,
-the extended floating-point suffixes, `[[assume]]` told to LLVM.
-**C++26**: its macros, so libc++ takes its paths, its forms still to
-come. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>`, `<optional>` and `<memory>`
+UTF-8; `#elifdef`, `#elifndef`; `static operator()` and `static
+operator[]`; `[[assume(e)]]` told to LLVM as its intrinsic; the extended
+floating-point suffixes `f16`, `f32`, `f64`, `f128` and `bf16` (doubles
+here, as `1.5f` always was). Not yet: `\N{…}`. **C++20, the rest**: the
+defaulted comparisons -- `operator==` and `operator<=>` written `=
+default` compare the members in order, a defaulted `<=>` brings a
+defaulted `==`, and `<`, `>`, `<=`, `>=` and `!=` are the rewritten
+candidates through them (an int where C++ has `std::strong_ordering`);
+`__VA_OPT__`; a constrained `auto` (`Number auto x = e`, `f(Number auto
+x)`) checked where the type is deduced, refused by the concept's name.
+**C++26**: pack indexing (`Ts...[0]` as a type, `args...[1]` as an
+expression), `= delete("why")`, the placeholder `_` declared more than
+once in a block, a structured binding as a condition (`if (auto [a, b] =
+f())`) and as an init-statement, `friend Ts...;`, the contract assertions
+`pre` and `post` read and ignored (the standard's own `ignore`
+semantic), the relocation words on a class head, `#embed`; the level's
+macros, so libc++ takes its paths. Not yet: reflection, `std::execution`,
+contracts evaluated. The library itself: the reader reads `<vector>`, `<string>`, `<iostream>`, `<map>`, `<set>`, `<unordered_map>`, `<unordered_set>`, `<optional>` and `<memory>`
 (and the containers at C++20, `<optional>` and `<string>` at C++23, `<optional>` at C++26)
 whole, the desugaring registers a flattened header's items by name
 as a program asks for them, and `std::vector<int>` gets several

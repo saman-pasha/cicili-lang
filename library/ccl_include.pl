@@ -110,12 +110,13 @@ ccl_lang_of_file(F, c) :- sub_atom(F, _, _, 0, '.c'), !.
 ccl_read_file_(File, AST, Rest) :-
     ccl_kb_cached(File, top, AST0), !, AST = AST0, Rest = [], nb_setval('$ccl_far', 0).
 ccl_read_file_(File, AST, Rest) :-
-    catch(ccl_pp_top(File, Tokens, _), lexical(L), throw(error(syntax_error(cicili_ast(File, lexical, line(L))), cicili_ast(File)))),   % the user's file through the preprocessor
+    catch(catch(ccl_pp_top(File, Tokens, _), lexical(L), throw(error(syntax_error(cicili_ast(File, lexical, line(L))), cicili_ast(File)))),   % the user's file through the preprocessor
+          pp_error(PL, PM), throw(error(pp_error(PM), here(File, PL)))),                                                                     % its own #error, an #embed of nothing
     ccl_with_file(File, ( ccl_unit(Tokens, AST, Rest), ccl_farthest(F) )),
     nb_setval('$ccl_far', F),
     ( Rest == [] -> ccl_kb_remember(File, top, AST) ; true ).
 
-ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V0), ( ccl_lang(cpp) -> ccl_std(S), V = cpp(V0, S) ; V = V0 ).
+ccl_kb_key(Path, key(T, V)) :- once(catch(time_file(Path, T), _, fail)), ccl_reader_version(V0), ( ccl_lang(cpp) -> ccl_std(S), V = cpp(V0, S) ; ccl_c_std(CS), CS =\= 17 -> V = c(V0, CS) ; V = V0 ).   % a C read at -std=c23 is not the C17 read: <stddef.h> declares nullptr_t and unreachable() at that level only, and the store serves a header's macros and items by this key
 ccl_std(S) :- ( catch(nb_getval('$ccl_std', S0), _, fail) -> S = S0 ; S = 17 ).   % a C++ read is not the C read; the time asked every time (0.4 ms): the gate touches a file mid-process and expects the miss
 ccl_kb_forget :- ccl_kb_ready, findall(P, '$ccl_ast'(P, _, _), Ps), ccl_kb_forget_each(Ps), retractall('$ccl_ast'(_, _, _)).
 ccl_kb_forget_each([]).
@@ -200,7 +201,7 @@ ccl_ensure_globals :-
       nb_setval('$ccl_expansions', []), nb_setval('$ccl_incpath', none), nb_setval('$ccl_kb_ready', no), nb_setval('$ccl_reading', []),
       nb_setval('$ccl_macro_files', []), nb_setval('$ccl_std_macros', none), nb_setval('$ccl_gensym', 0), nb_setval('$ccl_unit_paths', []),
       nb_setval('$ccl_lang', c), nb_setval('$ccl_lang_forced', none), ccl_fn_templates_put([]), nb_setval('$ccl_class', []), nb_setval('$ccl_inc_kind', local), nb_setval('$ccl_hash', line),
-      nb_setval('$ccl_targ', 0), nb_setval('$ccl_tmpl_depth', 0),
+      nb_setval('$ccl_targ', 0), nb_setval('$ccl_tmpl_depth', 0), nb_setval('$ccl_tt_pending', []), nb_setval('$ccl_tt_frames', []),
       ( catch(nb_getval('$ccl_std', _), _, fail) -> true ; nb_setval('$ccl_std', 17) ),
       ccl_templates_put([vector, map, set, unordered_map, unordered_set, list, deque, array, pair, tuple, optional, variant,
                                    unique_ptr, shared_ptr, weak_ptr, function, basic_string, initializer_list, allocator, less, greater, hash,
@@ -579,7 +580,7 @@ ccl_rest_info([tok(_, _, L)|_], stopped(L, near(F))) :- ccl_farthest(F).
 %% its includes pulled in, its macros expanded -- one token stream, read by
 %% the same grammar; Files are every file it pulled, the includer first
 ccl_pp_parse(Path, unit(Is), Info, Files) :-
-    ccl_pp_file(Path, Tokens, Files),
+    catch(ccl_pp_file(Path, Tokens, Files), pp_error(PL, PM), throw(error(pp_error(PM), here(Path, PL)))),   % a header's #embed of nothing
     ccl_with_file(Path, ( ccl_unit(Tokens, unit(Is), Rest), ccl_rest_info(Rest, Info) )).
 
 %% ---- a header's macros, for the user's file -----------------------------------
@@ -688,7 +689,15 @@ ccl_toolchain_dirs(Ds) :-
 ccl_cxx_dirs(Ds) :-
     ccl_llvm_roots(Rs), findall(D, ( member(R, Rs), atom_concat(R, '/include/c++/v1', D) ), D0), ccl_sdk_dirs(S), findall(D, ( member(Sd, S), atom_concat(Sd, '/c++/v1', D) ), D1), append(D0, D1, All),
     ( member(D, All), exists_directory(D) -> Ds = [D] ; Ds = [] ).
-ccl_llvm_roots(Rs) :- ( catch(os_env('LLVM', L), _, fail), L \== '' -> Rs = [L, '/usr/local/opt/llvm', '/opt/homebrew/opt/llvm'] ; Rs = ['/usr/local/opt/llvm', '/opt/homebrew/opt/llvm'] ).
+ccl_llvm_roots(Rs) :- ( catch(os_env('LLVM', L), _, fail), L \== '' -> Rs0 = [L, '/usr/local/opt/llvm', '/opt/homebrew/opt/llvm'] ; Rs0 = ['/usr/local/opt/llvm', '/opt/homebrew/opt/llvm'] ),
+    ccl_debian_llvm_roots(Ds), append(Rs0, Ds, Rs).
+%% Debian and Ubuntu keep each LLVM under /usr/lib/llvm-NN, libc++ at /usr/lib/llvm-NN/include/c++/v1 (the libc++-NN-dev
+%% package); the newest first, since two are often installed
+ccl_debian_llvm_roots(Ds) :-
+    (   exists_directory('/usr/lib'), once(catch(directory_files('/usr/lib', Fs), _, fail))
+    ->  findall(N-D, ( member(F, Fs), atom_concat('llvm-', NA, F), atom_number(NA, N), integer(N), atomic_list_concat(['/usr/lib/', F], D) ), Ps),
+        msort(Ps, Ss), reverse(Ss, Rs), findall(D, member(_-D, Rs), Ds)
+    ;   Ds = [] ).
 ccl_own_include_dirs(Ds) :- ccl_library_dirs(Ls), findall(D, ( member(L, Ls), atom_concat(L, '/include', D) ), Ds).
 ccl_sdk_dirs(Ds) :-
     ( catch(os_env('SDKROOT', S), _, fail), S \== '' -> atom_concat(S, '/usr/include', D0), Ds = [D0|Ds1] ; Ds = Ds1 ),

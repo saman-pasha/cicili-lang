@@ -57,8 +57,8 @@ dr_c(F, Options, _, Objs, Objs) :- memberchk(preprocess, Options), !,           
     (   catch(dr_preprocess(F, Options), E, (dr_report(F, E), fail)) -> true ; true ).
 dr_c(F, Options, Flags, Objs, Objs1) :-
     dr_say(['read ', F]), nb_setval('$dr_expansions', []),
-    (   catch(cicili_ast(F, AST), E1, (dr_report(F, E1), fail))
-    ->  dr_remember_expansions(AST),
+    (   catch(cicili_ast(F, AST), E1, (dr_pp_warnings, dr_report(F, E1), fail))
+    ->  dr_pp_warnings, dr_remember_expansions(AST),
         (   memberchk(ast, Options) -> writeq(AST), nl, Objs = Objs1
         ;   memberchk(syntax_only, Options), ccl_lang(cpp) -> Objs = Objs1      % M5 is the reader; C++'s check and lowering are M6
         ;   (   catch(dr_ir(F, AST, IR), E2, (dr_report(F, E2), fail))
@@ -160,6 +160,7 @@ dr_report(F, E) :- once(dr_error(F, 0, [E])).
 dr_diag(_, syntax_error(cicili_ast(File, line(L), near(N))), _) :- !, dr_error(File, L, ['syntax error: could not read this item (gave up near line ', N, ')']).
 dr_diag(_, syntax_error(cicili_ast(File, lexical, line(L))), _) :- !, dr_error(File, L, ['lexical error']).
 dr_diag(F, cannot_infer(N, E), here(_, L)) :- !, dr_error(F, L, ['cannot infer the type of ', N, ' from ', E]).
+dr_diag(F, pp_error(M), here(_, L)) :- !, dr_error(F, L, [M]).                      % the file's own #error, its text; an #embed of nothing
 dr_diag(F, static_assert_failed(T), here(_, L)) :- !, ( T == '' -> dr_error(F, L, ['static assertion failed']) ; dr_error(F, L, ['static assertion failed: ', T]) ).
 dr_diag(F, no_member(What, T), here(_, L)) :- !, dr_error(F, L, ['no member ', What, ' in ', T]).
 dr_diag(F, macro_error(M, here(_, L)), _) :- !, dr_error(F, L, ['macro: ', M]).
@@ -201,6 +202,11 @@ dr_kind(move_of_non_owner, 'move of a non-owner:') :- !.
 dr_kind(owner_overwritten, 'owner overwritten while live:') :- !.
 dr_kind(goto_with_owners, 'goto in a function with owners, at label') :- !.
 dr_kind(K, K).
+%% the user's file's `#warning' lines, printed after its read in clang's shape (they count as no error)
+dr_pp_warnings :-
+    (   catch(nb_getval('$pp_warnings', Ws), _, fail) -> nb_setval('$pp_warnings', []), reverse(Ws, Ws1), dr_pp_warnings_(Ws1) ; true ).
+dr_pp_warnings_([]).
+dr_pp_warnings_([warning(F, L, M)|Ws]) :- write(F), write(':'), write(L), write(': warning: '), write(M), nl, dr_pp_warnings_(Ws).
 dr_error(F, L, Parts) :-
     nb_getval('$dr_errors', N), N1 is N + 1, nb_setval('$dr_errors', N1),
     write(F), ( L > 0 -> write(':'), write(L) ; true ), write(': error: '), dr_write(Parts), nl,

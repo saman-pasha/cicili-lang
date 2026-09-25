@@ -51,7 +51,9 @@ c_checks :-
     section('C++20: concepts and requires, <=>, consteval and constinit, char8_t, coroutines read, using enum, for with an initializer, designated initializers, an abbreviated template, a template lambda, if constexpr'),
     c22, c23, c24, c25, c26, c27, c28, c29, c30, c31, c32, c33,
     section('the Itanium mangler (0.73, 0.75): nine symbols of clang++ and the shipped library, spelled from the desugaring own terms -- substitutions, nested names, template instances, K, C1/D1, an operator, a prefix as a type'),
-    c34.
+    c34,
+    c35,
+    c36.
 
 c1 :- check('namespace N { ... } is namespace(L, N, Items), nested, and anonymous',
     ( unit('names.cpp', unit(Is)), member(namespace(2, geo, Gs), Is), member(function(_, _, _, twice, _, _, _), Gs), member(namespace(_, inner, _), Gs), member(namespace(_, anon, _), Is) )).
@@ -200,6 +202,23 @@ ita_name(Chain, F, Qs, Ps, Want) :-
     cpp_ita_function([std, '__1'], Chain, F, Qs, Ps, false, Got),
     (   Got == Want -> true
     ;   write('     mangled '), write(F), write(' as '), write(Got), write(' where clang++ has '), write(Want), nl, fail ).
+c35 :- check('C++20 and C++23 (0.93): operator== and operator<=> read `= default\'; [[assume(n > 0)]]; is assume(L, E); `Small auto s\' keeps its concept as the qualifier constrained(Small, []); 1.5f16 is a float',
+    ( unit_at(20, 'run/cxx20cmp.cpp', unit(Is)), member(declare(_, base(_, [class(struct, 'P', _, Ms)])), Is),
+      member(method(_, _, _, operator('=='), [param(ref(_, _), _)], _, default), Ms), member(method(_, _, _, operator('<=>'), _, _, default), Ms),
+      unit_at(23, 'run/cxx23b.cpp', unit(Js)), member(function(_, _, _, main, _, _, block(B)), Js),
+      member(assume(_, bin('>', id(n), int(0))), B),
+      member(declaration(_, none, base(Q, [auto]), [var(s, _, int(7))]), B), memberchk(constrained('Small', []), Q),
+      member(declaration(_, none, _, [var(d, _, E)]), B), in(float(1.5), E) )).
+c36 :- check('C++26 (0.93): Ts...[0] is pack_index(Ts, 0) in a type and args...[1] in an expression; = delete("why") is a deleted body; a second `_\' is renamed; if (auto [code] = e) is a block of the temporary, the binding and the test; pre/post and the relocation words are dropped',
+    ( unit_at(26, 'run/cxx26.cpp', unit(Is)),
+      in(class(struct, 'First', _, FMs), Is), in(pack_index('Ts', int(0)), FMs),
+      member(template(_, _, function(_, _, _, second, _, _, block(SB))), Is), member(return(_, pack_index(id(args), int(1))), SB),
+      member(declare(_, base(_, [class(struct, 'NoCopy', _, NMs)])), Is), member(ctor(_, _, [param(ref(_, _), _)], _, delete), NMs),
+      in(class(struct, 'Friendly', _, _), Is),
+      member(function(_, _, _, inc, [param(_, x)], _, block(_)), Is),
+      member(function(_, _, _, main, _, _, block(B)), Is),
+      member(declaration(_, none, base([], [int]), [var('_', _, int(1))]), B), member(declaration(_, none, base([], [int]), [var(N2, _, int(2))]), B), N2 \== '_',
+      member(block([declaration(_, none, base([], [auto]), [var(Tmp, _, call(id(get), [int(5)]))]), bindings(_, yes, [code], id(Tmp)), if(_, id(Tmp), _, _)]), B) )).
 c34 :- check('the Itanium mangler spells clang++ and the shipped library nine symbols: a static method over two pointers and a const reference (S1_, NS_...E), a const method of a template instance (K, IcE), a nested class destructor (D1), two strings by value (S5_), a reference and a pointer to one class (S0_, S2_), a static member of an instance over two instances (S3_), the stream sentries constructors taking their own instance (RS3_, the prefix as a type), and operator>> (rs)',
     ( ita_facts,
       ita_name([plain(npb2)], ipad, [], [param(ptr([], base([], [char])), a), param(ptr([], base([], [char])), b), param(ref([], base([const], [typedef(ios_base)])), c)], '_ZNSt3__14npb24ipadEPcS1_RKNS_8ios_baseE'),

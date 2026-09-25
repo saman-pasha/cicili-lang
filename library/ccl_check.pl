@@ -248,6 +248,7 @@ ck_carries_(arr(_, E)) :- !, ck_carries_type(E).
 ck_carries_(base(_, [struct(N, _)])) :- ccl_lang(cpp), ck_library_class(N), !, fail.   % A LIBRARY CLASS'S VALUE IS OPAQUE: its pointers are libc++'s own discipline, as its functions' bodies are (0.45) -- a map's iterator, `auto it = m.find(3)', holds a node pointer the safe part cannot follow and need not, since nothing here frees it
 ck_carries_(T) :- ccl_members_of(T, Ms), member(member(MT, _, _), Ms), ck_carries_type(MT), !.
 ck_library_class(N) :- atom(N), catch(cpp_lib_class(N), _, fail).
+ck_library_root(P) :- ccl_lang(cpp), atom(P), ccl_type_of(id(P), T), T \== unknown, catch(ccl_resolve_type(T, base(_, [struct(N, _)])), _, fail), ck_library_class(N).   % a borrow rooted at a local of a library class's type
 
 %% the own fields of a variable: N->f under an own pointer to a struct, N.f in a
 %% struct held by value; a member held by value opens its own fields too
@@ -436,6 +437,9 @@ ck_lvalue_form(deref(_)).
 %% a value that lives as long as the program: a string literal, a global's
 %% address, a global array or function used as a pointer
 ck_static_value(str(_)) :- !.
+ck_static_value(wstr(_)) :- !.
+ck_static_value(u16str(_)) :- !.
+ck_static_value(u32str(_)) :- !.
 ck_static_value(cast(_, E)) :- !, ck_static_value(E).
 ck_static_value(addr(E)) :- !, ck_storage_base(E, N), ck_is_global(N).
 ck_static_value(id(N)) :- !, ck_is_global(N), ccl_declared(N, T), ccl_resolve_type(T, T1), ( T1 = arr(_, _) ; T1 = fn(_, _, _) ), !.
@@ -778,6 +782,7 @@ ck_stmt(switch(L, E, S), St0, St) :- !, ck_line(L),
     ccl_scope_push, ck_push(St1, St2), ck_loop_enter(St2, switch), ck_switch_items(Is, St2, St2, St3), ck_loop_leave(Brk),
     ck_merge_all([St3|Brk], St4), ( ck_has_default(Is) -> St5 = St4 ; ck_merge(St4, St2, St5) ),
     ck_scope_end(St5, St), ccl_scope_pop.
+ck_stmt(assume(L, E), St0, St) :- !, ck_line(L), ck_expr(E, St0, St).   % C++23's [[assume(e)]]: its expression is read, nothing else
 ck_stmt(case(_, _, S), St0, St) :- !, ck_stmt(S, St0, St).
 ck_stmt(default(_, S), St0, St) :- !, ck_stmt(S, St0, St).
 ck_stmt(S, _, _) :- functor(S, F, _), nb_getval('$ck_fn', Fn), nb_getval('$ck_line', L), throw(error(not_lowered(F), where(Fn, line(L)))).   % a form of C++'s later steps
@@ -1062,6 +1067,14 @@ ck_expr(int(_), St, St) :- !.
 ck_expr(uint(_), St, St) :- !.
 ck_expr(long(_), St, St) :- !.
 ck_expr(ulong(_), St, St) :- !.
+ck_expr(wstr(_), St, St) :- !.
+ck_expr(u16str(_), St, St) :- !.
+ck_expr(u32str(_), St, St) :- !.
+ck_expr(wchr(_), St, St) :- !.
+ck_expr(u16chr(_), St, St) :- !.
+ck_expr(u32chr(_), St, St) :- !.
+ck_expr(wb(_), St, St) :- !.
+ck_expr(uwb(_), St, St) :- !.
 ck_expr(float(_), St, St) :- !.
 ck_expr(chr(_), St, St) :- !.
 ck_expr(str(_), St, St) :- !.
@@ -1180,7 +1193,7 @@ ck_args_([A|As], Callee, I, St0, St) :-
         ;   A = move(_) -> ck_expr(A, St0, St1)
         ;   ck_path(A, K), ck_by_value(A), ck_own_under(St0, K, Fs), Fs \== [] -> ck_expr(A, St0, St1a), ck_move_out(St1a, Fs, Form, St1)
         ;   ck_borrows_from(A, St0, P), ck_state(St0, P, loose) -> ck_expr(A, St0, St1a), ck_consume_loose(St1a, P, St1)   % loose memory freed, or taken by an own parameter
-        ;   ck_kind(A, St0, borrow(P)) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)
+        ;   ck_kind(A, St0, borrow(P)), \+ ck_library_root(P) -> ( A = id(N) -> true ; N = P ), ck_fail(borrow_consumed, N, Form)   % ... unless the borrow is of a LIBRARY OBJECT (0.94): a plain pointer a library class's member answers is a borrow of it (0.91, so an array's `end()' is no loose pointer), and what the program then does with it is the library's discipline -- `delete u.release()' is how a unique_ptr hands its object out, and the check refused it as a borrow freed
         ;   ck_expr(A, St0, St1) )
     ;   ck_strip_move(A, A1), ck_path(A1, K), ck_by_value(A1), ck_own_under(St0, K, Fs), Fs \== [], ck_param_by_value(Callee, I)   % a struct with owners handed by value: its fields go to the callee's copy
     ->  ck_expr(A1, St0, St1a), ck_move_out(St1a, Fs, call(Callee, [A|As]), St1)

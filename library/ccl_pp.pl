@@ -39,7 +39,7 @@ ccl_pp_file(Path, Tokens, Files) :- ccl_pp_run(Path, no, Tokens, Files).
 %% directive item; a `#cocolog ... #end' block is the reader's, one token of
 %% its raw lines; a `.pl' include is the reader's macro file. A line that
 %% does not lex whole is the lexical error it always was.
-ccl_pp_top(Path, Tokens, Files) :- ccl_pp_prescan(Path), ccl_pp_run(Path, yes, Tokens, Files).
+ccl_pp_top(Path, Tokens, Files) :- nb_setval('$pp_warnings', []), ccl_pp_prescan(Path), ccl_pp_run(Path, yes, Tokens, Files).   % the warnings are the run's, read by the driver after the read (pp_reset leaves them: a nested header's run must not wipe the file's)
 ccl_pp_run(Path, Top, Tokens, Files) :-
     ccl_ensure_globals, pp_reset, nb_setval('$pp_top', Top),
     nb_setval('$ccl_hash', punct),                                                   % the run lexes in the preprocessor's mode: `#' a punctuator, a number as spelled
@@ -105,6 +105,7 @@ pp_predef_macro(N, obj, Cs) :-
     (   ccl_lang(cpp), ccl_std(S), pp_std_table(S, Tab), pp_predef(N, Tab, T) -> true   % the level's own value first (__cplusplus, __cpp_constexpr ...)
     ;   ccl_lang(c), ccl_c_std(CS), pp_c_std_table(CS, CTab), pp_predef(N, CTab, T) -> true   % C's own level (-std=c23): __STDC_VERSION__ and what the forms answer
     ;   pp_predef(N, any, T) -> true
+    ;   pp_os(O), pp_predef(N, O, T) -> true                                          % the host's own: __APPLE__ and __MACH__, or __linux__ and __ELF__
     ;   pp_arch(A), pp_predef(N, A, T) -> true
     ;   ccl_lang(cpp), pp_predef(N, cpp, T) ),
     atom_codes(T, Cs).
@@ -126,12 +127,21 @@ pp_header_macro_in(list, H, N, Ps, A) :- ccl_hml_list(H, N, Ps, A).
 pp_raw_macro(L, N, Ps, A) :-                                                       % the line as written, its `.' off; parsed into a FRESH term: term_to_atom given a bound one compares
     atom_length(L, Len), L1 is Len - 1, sub_atom(L, 0, L1, 1, A0), term_to_atom(T, A0), T = macro(N, Ps, text(A)).
 pp_builtin_name(N) :- memberchk(N, ['__has_include', '__has_include_next', '__has_feature', '__has_extension', '__has_attribute', '__has_cpp_attribute',
-    '__has_c_attribute', '__has_declspec_attribute', '__has_builtin', '__has_warning', '__is_identifier', '__building_module', '__FILE__', '__LINE__',
+    '__has_c_attribute', '__has_embed', '__has_declspec_attribute', '__has_builtin', '__has_warning', '__is_identifier', '__building_module', '__FILE__', '__LINE__',
     '__COUNTER__', '__DATE__', '__TIME__', '__is_target_arch', '__is_target_vendor', '__is_target_os', '__is_target_environment']).
 
 %% the predefined macros, pp_predef(Name, any | Arch | cpp, Text) at the end of
 %% the file, are answered by name on a miss (pp_predef_macro/3): 580 of them,
 %% defined at every run they cost 25 ms, and a file names ten
+%% THE OPERATING SYSTEM IS A TABLE OF ITS OWN (the Linux port, 0.93): the predefined table was taken from the
+%% reference compiler on macOS, so `__APPLE__' and `__MACH__' were `any' and Linux compiled as a Mac with glibc's
+%% headers under it -- glibc's and libc++'s __config each branch on the platform's macros. darwin or linux, from the
+%% module's compile-time answer (ccl_host_os/1), `uname -s' only without the module.
+pp_os(O) :-
+    (   catch(nb_getval('$pp_os', O0), _, fail) -> O = O0
+    ;   once(catch(ccl_host_os(O1), _, fail)) -> O = O1, nb_setval('$pp_os', O)
+    ;   ( once(catch(proc_run('uname -s', 5000, Out, _), _, fail)), atom_codes(A1, Out), sub_atom(A1, 0, _, _, 'Linux') -> O = linux ; O = darwin ),
+        nb_setval('$pp_os', O) ).
 pp_arch(A) :-                                                                    % the module's compile-time arch; uname only without the module
     (   catch(nb_getval('$pp_arch', A0), _, fail) -> A = A0
     ;   once(catch(ccl_host_arch(A1), _, fail)) -> A = A1, nb_setval('$pp_arch', A)
@@ -287,6 +297,12 @@ pp_join_commas([A|As], J) :- pp_join_commas(As, J1), append(A, [tok(p, ',', 0)|J
 pp_subst(Body, Ps, Args, Out) :- pp_subst_(Body, Ps, Args, S0), pp_paste(S0, Out).
 pp_subst_([], _, _, []).
 pp_subst_([tok(p, '#', L), tok(K, P, _)|Bs], Ps, Args, [tok(str, Cs, L)|Out]) :- ( K == id ; K == kw ), pp_param(P, Ps, Args, Arg), !, pp_stringize(Arg, Cs), pp_subst_(Bs, Ps, Args, Out).
+%% C23's and C++20's `__VA_OPT__(tokens)': the group substituted where the variadic argument has tokens, a
+%% placemarker where it has none ([cpp.subst]) -- `#define LOG(f, ...) printf(f __VA_OPT__(,) __VA_ARGS__)'
+pp_subst_([tok(id, '__VA_OPT__', _), tok(p, '(', _)|Bs], Ps, Args, Out) :- memberchk(va(VP), Ps), pp_va_group(Bs, 1, [], G, Rest), !,
+    (   pp_param(VP, Ps, Args, Arg), pp_strip(Arg, Raw), Raw \== [] -> pp_subst_(G, Ps, Args, GOut), ( GOut == [] -> Out = [placemarker|Out1] ; append(GOut, Out1, Out) )
+    ;   Out = [placemarker|Out1] ),
+    nb_setval('$pp_paste', no), pp_subst_(Rest, Ps, Args, Out1).
 pp_subst_([tok(K, P, L)|Bs], Ps, Args, Out) :- ( K == id ; K == kw ), pp_param(P, Ps, Args, Arg), !,
     (   ( Bs = [tok(p, '##', _)|_] ; pp_last_was_paste ) -> pp_strip(Arg, Raw), pp_reline_all(Raw, L, Ins),
         ( Ins == [], memberchk(va(P), Ps) -> Out = [vamarker|Out1] ; Ins == [] -> Out = [placemarker|Out1] ; append(Ins, Out1, Out) )
@@ -294,6 +310,10 @@ pp_subst_([tok(K, P, L)|Bs], Ps, Args, Out) :- ( K == id ; K == kw ), pp_param(P
     nb_setval('$pp_paste', no), pp_subst_(Bs, Ps, Args, Out1).
 pp_subst_([tok(p, '##', L)|Bs], Ps, Args, [tok(p, '##', L)|Out]) :- !, nb_setval('$pp_paste', yes), pp_subst_(Bs, Ps, Args, Out).
 pp_subst_([T|Bs], Ps, Args, [T|Out]) :- nb_setval('$pp_paste', no), pp_subst_(Bs, Ps, Args, Out).
+pp_va_group([tok(p, ')', _)|Ts], 1, Acc, G, Ts) :- !, reverse(Acc, G).
+pp_va_group([tok(p, ')', L)|Ts], D, Acc, G, Rest) :- !, D1 is D - 1, pp_va_group(Ts, D1, [tok(p, ')', L)|Acc], G, Rest).
+pp_va_group([tok(p, '(', L)|Ts], D, Acc, G, Rest) :- !, D1 is D + 1, pp_va_group(Ts, D1, [tok(p, '(', L)|Acc], G, Rest).
+pp_va_group([T|Ts], D, Acc, G, Rest) :- pp_va_group(Ts, D, [T|Acc], G, Rest).
 pp_last_was_paste :- nb_getval('$pp_paste', yes).
 pp_param(P, Ps, Args, Arg) :- Ps \== obj, pp_param_index(Ps, P, 0, I), nth0(I, Args, Arg).
 pp_param_index([va(P)|_], P, I, I) :- !.
@@ -326,6 +346,10 @@ pp_spell(tok(int, N, _), Cs) :- !, number_codes(N, Cs).
 pp_spell(tok(float, N, _), Cs) :- !, number_codes(N, Cs).
 pp_spell(tok(str, S, _), Cs) :- !, pp_escape(S, E), append([34|E], [34], Cs).
 pp_spell(tok(chr, C, _), [39, C, 39]) :- !.
+pp_spell(tok(K, S, _), Cs) :- pp_str_prefix(K, P), !, pp_escape(S, E), append(P, [34|E], Cs0), append(Cs0, [34], Cs).   % L"...", u"...", U"..." (0.93: the prefixed literals)
+pp_spell(tok(K, C, _), Cs) :- pp_chr_prefix(K, P), !, append(P, [39, C, 39], Cs).
+pp_str_prefix(wstr, [0'L]).    pp_str_prefix(u16str, [0'u]).    pp_str_prefix(u32str, [0'U]).
+pp_chr_prefix(wchr, [0'L]).    pp_chr_prefix(u16chr, [0'u]).    pp_chr_prefix(u32chr, [0'U]).
 pp_spell(tok(p, P, _), Cs) :- !, atom_codes(P, Cs).
 pp_spell(tok(_, V, _), Cs) :- ( atom(V) -> atom_codes(V, Cs) ; number(V) -> number_codes(V, Cs) ; Cs = [] ).
 pp_spell(_, []).
@@ -339,7 +363,7 @@ pp_finish(Out, Tokens) :- pp_finish_(Out, Tokens, []).
 pp_finish_([], T, T).
 pp_finish_([pp_out(K)|Xs], T0, T) :- !, nb_getval(K, Sub), nb_setval(K, none), pp_finish_(Sub, T0, T1), pp_finish_(Xs, T1, T).   % a file's output, spliced (its global freed of it)
 pp_finish_([X|Xs], [T|Ts], Tail) :- pp_unwrap(X, T0, _), pp_norm(T0, T), pp_finish_(Xs, Ts, Tail).
-pp_norm(tok(num, Cs, L), tok(int, V, L)) :- pp_plain_int(Cs), !, number_codes(V, Cs).   % a plain decimal, most of them: no lexer run
+pp_norm(tok(num, Cs, L), tok(int, V, L)) :- pp_plain_int(Cs), !, ccl_int_value(Cs, V).   % ... through the reader's one door, so a literal past 2^60 is big(Atom) here too (0.94)   % a plain decimal, most of them: no lexer run
 pp_norm(tok(num, Cs, L), T) :- !, nb_getval('$ccl_hash', M), nb_setval('$ccl_hash', line), atom_codes(A, Cs), ( ccl_lex_atom(A, 0, [tok(K, V, _)], []) -> T = tok(K, V, L) ; T = tok(int, 0, L) ), nb_setval('$ccl_hash', M).
 pp_norm(T, T).
 
@@ -378,6 +402,13 @@ pp_directive_(elifndef, _, _, _, Ls, Ls1, Out, Out) :- !, pp_skip_to_endif(Ls, L
 pp_directive_(else, _, _, _, Ls, Ls1, Out, Out) :- !, pp_skip_to_endif(Ls, Ls1).
 pp_directive_(endif, _, _, _, Ls, Ls, Out, Out) :- !.
 pp_directive_(pragma, Rest, _, _, Ls, Ls, Out, Out) :- !, pp_ws(Rest, R1), pp_word(R1, W, _), ( atom_codes(once, W) -> pp_current_file(F), nb_getval('$pp_once', O), nb_setval('$pp_once', [F|O]) ; true ).
+%% IN THE USER'S FILE `#error' IS A DIAGNOSTIC (before, it was listed in '$pp_errors' and nobody read the list, so a
+%% program's own #error compiled to `cicili: ok') and `#warning' is printed after the read, `file:line: warning: ...',
+%% by the driver (dr_pp_warnings); in a header both stay what they were, the file stopping at an #error (libc++'s
+%% other branch), a warning nothing.
+pp_directive_(error, Rest, _, L, _, [], Out, Out) :- nb_getval('$pp_top', yes), !, pp_ws(Rest, R1), atom_codes(M, R1), throw(pp_error(L, M)).
+pp_directive_(warning, Rest, _, L, Ls, Ls, Out, Out) :- nb_getval('$pp_top', yes), !, pp_current_file(F), pp_ws(Rest, R1), atom_codes(M, R1), nb_getval('$pp_warnings', Ws), nb_setval('$pp_warnings', [warning(F, L, M)|Ws]).
+pp_directive_(embed, Rest, Body, L, Ls, Ls, Out0, Out) :- !, pp_do_embed(Rest, Body, L, Out0, Out).
 pp_directive_(error, Rest, _, L, _, [], Out, Out) :- !, pp_current_file(F), atom_codes(M, Rest), nb_getval('$pp_errors', Es), nb_setval('$pp_errors', [error(F, L, M)|Es]).   % the file stops here
 pp_directive_(_, _, _, _, Ls, Ls, Out, Out).                                       % line, warning, ident, an empty #: nothing
 pp_ws([C|Cs], R) :- ( C =:= 32 ; C =:= 9 ), !, pp_ws(Cs, R).
@@ -419,6 +450,53 @@ pp_do_include(Rest, How, Body, L, Out0, Out) :-
     ;   nb_getval('$pp_top', yes) -> atom_codes(Text, [35|Body]), Out0 = [tok(pp, Text, L)|Out]      % nowhere: the reader says `missing'
     ;   Out0 = Out ).
 pp_do_include(_, _, _, _, Out, Out).
+%% C23's (and C++26's) `#embed "file" [limit(N)] [prefix(toks)] [suffix(toks)] [if_empty(toks)]': the resource's bytes
+%% as a comma-separated list of integers where the directive stood -- in the user's file and in a header alike, since
+%% the bytes ARE the meaning and the reader has no node for one. The name resolves as an #include's does (a quoted
+%% name beside the including file, an angled one on the inclusion path); a resource nowhere is a diagnostic. A file
+%% is read as codes, a code past 255 spelled back into its UTF-8 bytes, so a text resource embeds as its bytes.
+pp_do_embed(Rest, _, L, Out0, Out) :-
+    pp_ws(Rest, R1),
+    (   pp_inc_name(R1, Spec), pp_inc_rest(R1, R2) -> true
+    ;   pp_lex_body(R1, Ts), pp_expand_all(Ts, Es), pp_spell_all(Es, ECs), pp_inc_name(ECs, Spec), pp_inc_rest(ECs, R2) ),
+    !,
+    pp_current_file(From),
+    (   ccl_resolve_include(Spec, From, Path) -> true ; pp_spec_name(Spec, N), atom_concat('#embed: no such resource: ', N, M), throw(pp_error(L, M)) ),
+    pp_lex_body(R2, PTs), pp_embed_params(PTs, Params),
+    read_file_to_codes(Path, Codes), pp_bytes(Codes, Bytes0),
+    ( memberchk(limit(K), Params) -> pp_take(K, Bytes0, Bytes) ; Bytes = Bytes0 ),
+    (   Bytes == [] -> ( memberchk(if_empty(E), Params) -> Toks = E ; Toks = [] )
+    ;   pp_embed_ints(Bytes, L, Ints), ( memberchk(prefix(P), Params) -> true ; P = [] ), ( memberchk(suffix(S), Params) -> true ; S = [] ),
+        append(P, Ints, T0), append(T0, S, Toks) ),
+    pp_reline_all(Toks, L, Toks1), append(Toks1, Out, Out0).
+pp_do_embed(_, _, L, _, _) :- throw(pp_error(L, '#embed: expected "file" or <file>')).
+pp_spec_name(local(N), N).  pp_spec_name(system(N), N).
+pp_inc_rest([34|R], R2) :- pp_after(R, 34, R2).
+pp_inc_rest([0'<|R], R2) :- pp_after(R, 0'>, R2).
+pp_after([End|R], End, R) :- !.
+pp_after([_|Cs], End, R) :- pp_after(Cs, End, R).
+pp_after([], _, []).
+pp_bytes([], []).
+pp_bytes([C|Cs], Bs) :- ( C < 256 -> Bs = [C|Bs1] ; ccl_utf8(C, Bs, Bs1) ), pp_bytes(Cs, Bs1).
+pp_take(0, _, []) :- !.
+pp_take(_, [], []) :- !.
+pp_take(N, [B|Bs], [B|Rs]) :- N1 is N - 1, pp_take(N1, Bs, Rs).
+pp_embed_ints([B], L, [tok(int, B, L)]) :- !.
+pp_embed_ints([B|Bs], L, [tok(int, B, L), tok(p, ',', L)|Ts]) :- pp_embed_ints(Bs, L, Ts).
+pp_embed_params([], []).
+pp_embed_params([tok(id, W, _), tok(p, '(', _)|Ts], [P|Ps]) :- pp_embed_word(W, K), pp_builtin_args(Ts, Args, Rest), !, pp_embed_param(K, Args, P), pp_embed_params(Rest, Ps).
+pp_embed_params([_|Ts], Ps) :- pp_embed_params(Ts, Ps).
+pp_embed_word(W, K) :- memberchk(W-K, [limit-limit, '__limit__'-limit, prefix-prefix, '__prefix__'-prefix, suffix-suffix, '__suffix__'-suffix, if_empty-if_empty, '__if_empty__'-if_empty]).
+pp_embed_param(limit, Args, limit(N)) :- !, pp_expand_all(Args, Es), pp_normalize(Es, Ns), phrase(ccl_cond_expr(E), Ns, _), ccl_const_eval(E, N).
+pp_embed_param(K, Args, P) :- P =.. [K, Args].
+%% `__has_embed("file")' in an #if: found (1), empty (2), nowhere (0) -- the values __STDC_EMBED_* name
+pp_has_embed(Args, V) :-
+    (   Args = [tok(str, S, _)|_] -> atom_codes(N, S), Spec = local(N)
+    ;   pp_angle_name(Args, N) -> Spec = system(N)
+    ;   fail ),
+    pp_current_file(From),
+    (   ccl_resolve_include(Spec, From, Path) -> ( read_file_to_codes(Path, []) -> V = 2 ; V = 1 ) ; V = 0 ).
+pp_has_embed(_, 0).
 pp_inc_name([34|R], local(N)) :- pp_upto(R, 34, Cs), atom_codes(N, Cs).
 pp_inc_name([0'<|R], system(N)) :- pp_upto(R, 0'>, Cs), atom_codes(N, Cs).
 pp_upto([End|_], End, []) :- !.
@@ -463,12 +541,26 @@ pp_builtin_args_([tok(p, ')', L)|Ts], D, Acc, Args, Rest) :- !, D1 is D - 1, pp_
 pp_builtin_args_([T|Ts], D, Acc, Args, Rest) :- pp_builtin_args_(Ts, D, [T|Acc], Args, Rest).
 pp_builtin_answer('__has_include', Args, V) :- !, pp_has_include(Args, plain, V).
 pp_builtin_answer('__has_include_next', Args, V) :- !, pp_has_include(Args, next, V).
+pp_builtin_answer('__has_embed', Args, V) :- !, pp_has_embed(Args, V).
+%% C23's `__has_c_attribute(x)' answers the standard attributes' dates ([[deprecated]] 201904 ... [[unsequenced]]
+%% 202207), the `__x__' spellings alike, and 0 for anything else; `__has_cpp_attribute' keeps answering 0 (the
+%% plainest path through libc++, the rule above)
+pp_builtin_answer('__has_c_attribute', Args, V) :- ccl_lang(c), !, ( pp_attr_name(Args, N), pp_c_attribute(N, V0) -> V = V0 ; V = 0 ).
+
 pp_builtin_answer('__is_identifier', _, 1) :- !.
 pp_builtin_answer('__has_builtin', _, 1) :- !.                                    % LLVM's builtins are there (libc++'s other branch is an #error)
 pp_builtin_answer('__is_target_arch', [tok(_, A, _)], V) :- !, pp_arch(Arch), ( A == Arch -> V = 1 ; V = 0 ).
-pp_builtin_answer('__is_target_vendor', [tok(_, apple, _)], 1) :- !.
-pp_builtin_answer('__is_target_os', [tok(_, OS, _)], V) :- !, ( memberchk(OS, [macos, darwin, macosx]) -> V = 1 ; V = 0 ).
+pp_builtin_answer('__is_target_vendor', [tok(_, V0, _)], V) :- !, pp_os(O), ( O == darwin, V0 == apple -> V = 1 ; O == linux, V0 == pc -> V = 1 ; V = 0 ).
+pp_builtin_answer('__is_target_environment', [tok(_, E, _)], V) :- !, pp_os(O), ( O == linux, E == gnu -> V = 1 ; V = 0 ).
+pp_builtin_answer('__is_target_os', [tok(_, OS, _)], V) :- !, pp_os(O), ( O == darwin, memberchk(OS, [macos, darwin, macosx]) -> V = 1 ; O == linux, OS == linux -> V = 1 ; V = 0 ).
 pp_builtin_answer(_, _, 0).                                                       % features, attributes, warnings, modules: the plainest path
+pp_attr_name([tok(_, N0, _)], N) :- pp_attr_plain(N0, N).
+pp_attr_name([tok(_, S0, _), tok(p, ':', _), tok(p, ':', _), tok(_, N0, _)], scoped(S, N)) :- pp_attr_plain(S0, S), pp_attr_plain(N0, N).   % `::' is two colons to C's lexer
+pp_attr_name([tok(_, S0, _), tok(p, '::', _), tok(_, N0, _)], scoped(S, N)) :- pp_attr_plain(S0, S), pp_attr_plain(N0, N).
+pp_attr_plain(N0, N) :- ( atom_concat('__', X, N0), atom_concat(N1, '__', X) -> N = N1 ; N = N0 ).
+pp_c_attribute(deprecated, 201904).  pp_c_attribute(fallthrough, 201904).  pp_c_attribute(maybe_unused, 201904).
+pp_c_attribute(nodiscard, 202003).   pp_c_attribute(noreturn, 202202).     pp_c_attribute('_Noreturn', 202202).
+pp_c_attribute(unsequenced, 202207). pp_c_attribute(reproducible, 202207).
 pp_has_include(Args, How, V) :-
     (   Args = [tok(str, S, _)] -> atom_codes(N, S), Spec0 = local(N)
     ;   pp_angle_name(Args, N) -> Spec0 = system(N)
@@ -489,36 +581,36 @@ pp_normalize([tok(kw, true, L)|Ts], [tok(int, 1, L)|Os]) :- !, pp_normalize(Ts, 
 pp_normalize([tok(id, _, L)|Ts], [tok(int, 0, L)|Os]) :- !, pp_normalize(Ts, Os).
 pp_normalize([tok(kw, _, L)|Ts], [tok(int, 0, L)|Os]) :- !, pp_normalize(Ts, Os).
 pp_normalize([T|Ts], [T1|Os]) :- pp_norm(T, T1), pp_normalize(Ts, Os).
-pp_predef('TARGET_IPHONE_SIMULATOR', any, '0').
-pp_predef('TARGET_OS_DRIVERKIT', any, '0').
-pp_predef('TARGET_OS_EMBEDDED', any, '0').
-pp_predef('TARGET_OS_FIRMWARE', any, '0').
-pp_predef('TARGET_OS_IOS', any, '0').
-pp_predef('TARGET_OS_IPHONE', any, '0').
-pp_predef('TARGET_OS_LINUX', any, '0').
-pp_predef('TARGET_OS_MAC', any, '1').
-pp_predef('TARGET_OS_MACCATALYST', any, '0').
-pp_predef('TARGET_OS_NANO', any, '0').
-pp_predef('TARGET_OS_OSX', any, '1').
-pp_predef('TARGET_OS_SIMULATOR', any, '0').
-pp_predef('TARGET_OS_TV', any, '0').
-pp_predef('TARGET_OS_UEFI', any, '0').
-pp_predef('TARGET_OS_UIKITFORMAC', any, '0').
-pp_predef('TARGET_OS_UNIX', any, '0').
-pp_predef('TARGET_OS_VISION', any, '0').
-pp_predef('TARGET_OS_WATCH', any, '0').
-pp_predef('TARGET_OS_WIN32', any, '0').
-pp_predef('TARGET_OS_WINDOWS', any, '0').
+pp_predef('TARGET_IPHONE_SIMULATOR', darwin, '0').
+pp_predef('TARGET_OS_DRIVERKIT', darwin, '0').
+pp_predef('TARGET_OS_EMBEDDED', darwin, '0').
+pp_predef('TARGET_OS_FIRMWARE', darwin, '0').
+pp_predef('TARGET_OS_IOS', darwin, '0').
+pp_predef('TARGET_OS_IPHONE', darwin, '0').
+pp_predef('TARGET_OS_LINUX', darwin, '0').
+pp_predef('TARGET_OS_MAC', darwin, '1').
+pp_predef('TARGET_OS_MACCATALYST', darwin, '0').
+pp_predef('TARGET_OS_NANO', darwin, '0').
+pp_predef('TARGET_OS_OSX', darwin, '1').
+pp_predef('TARGET_OS_SIMULATOR', darwin, '0').
+pp_predef('TARGET_OS_TV', darwin, '0').
+pp_predef('TARGET_OS_UEFI', darwin, '0').
+pp_predef('TARGET_OS_UIKITFORMAC', darwin, '0').
+pp_predef('TARGET_OS_UNIX', darwin, '0').
+pp_predef('TARGET_OS_VISION', darwin, '0').
+pp_predef('TARGET_OS_WATCH', darwin, '0').
+pp_predef('TARGET_OS_WIN32', darwin, '0').
+pp_predef('TARGET_OS_WINDOWS', darwin, '0').
 pp_predef('_LP64', any, '1').
-pp_predef('__APPLE_CC__', any, '6000').
-pp_predef('__APPLE__', any, '1').
+pp_predef('__APPLE_CC__', darwin, '6000').
+pp_predef('__APPLE__', darwin, '1').
 pp_predef('__ATOMIC_ACQUIRE', any, '2').
 pp_predef('__ATOMIC_ACQ_REL', any, '4').
 pp_predef('__ATOMIC_CONSUME', any, '1').
 pp_predef('__ATOMIC_RELAXED', any, '0').
 pp_predef('__ATOMIC_RELEASE', any, '3').
 pp_predef('__ATOMIC_SEQ_CST', any, '5').
-pp_predef('__BLOCKS__', any, '1').
+pp_predef('__BLOCKS__', darwin, '1').
 pp_predef('__BOOL_WIDTH__', any, '1').
 pp_predef('__BYTE_ORDER__', any, '__ORDER_LITTLE_ENDIAN__').
 pp_predef('__CHAR16_TYPE__', any, 'unsigned short').
@@ -551,9 +643,9 @@ pp_predef('__DBL_MIN_EXP__', any, '(-1021)').
 pp_predef('__DBL_MIN__', any, '2.2250738585072014e-308').
 pp_predef('__DBL_NORM_MAX__', any, '1.7976931348623157e+308').
 pp_predef('__DECIMAL_DIG__', any, '__LDBL_DECIMAL_DIG__').
-pp_predef('__DYNAMIC__', any, '1').
-pp_predef('__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__', any, '260000').
-pp_predef('__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__', any, '260000').
+pp_predef('__DYNAMIC__', darwin, '1').
+pp_predef('__ENVIRONMENT_MAC_OS_X_VERSION_MIN_REQUIRED__', darwin, '260000').
+pp_predef('__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__', darwin, '260000').
 pp_predef('__FINITE_MATH_ONLY__', any, '0').
 pp_predef('__FLT16_DECIMAL_DIG__', any, '5').
 pp_predef('__FLT16_DENORM_MIN__', any, '5.9604644775390625e-8F16').
@@ -707,7 +799,10 @@ pp_predef('__LONG_LONG_MAX__', any, '9223372036854775807LL').
 pp_predef('__LONG_MAX__', any, '9223372036854775807L').
 pp_predef('__LONG_WIDTH__', any, '64').
 pp_predef('__LP64__', any, '1').
-pp_predef('__MACH__', any, '1').
+pp_predef('__MACH__', darwin, '1').
+pp_predef('__linux__', linux, '1').  pp_predef('__linux', linux, '1').  pp_predef(linux, linux, '1').  pp_predef('__gnu_linux__', linux, '1').
+pp_predef('__unix__', linux, '1').   pp_predef('__unix', linux, '1').   pp_predef(unix, linux, '1').   pp_predef('__ELF__', linux, '1').
+pp_predef('__PIE__', linux, '2').    pp_predef('__pie__', linux, '2').
 pp_predef('__MEMORY_SCOPE_CLUSTR', any, '5').
 pp_predef('__MEMORY_SCOPE_DEVICE', any, '1').
 pp_predef('__MEMORY_SCOPE_SINGLE', any, '4').
@@ -759,12 +854,12 @@ pp_predef('__SIZE_FMTx__', any, '"lx"').
 pp_predef('__SIZE_MAX__', any, '18446744073709551615UL').
 pp_predef('__SIZE_TYPE__', any, 'long unsigned int').
 pp_predef('__SIZE_WIDTH__', any, '64').
-pp_predef('__SSP__', any, '1').
+pp_predef('__SSP__', darwin, '1').
 pp_predef('__STDC_EMBED_EMPTY__', any, '2').
 pp_predef('__STDC_EMBED_FOUND__', any, '1').
 pp_predef('__STDC_EMBED_NOT_FOUND__', any, '0').
 pp_predef('__STDC_HOSTED__', any, '1').
-pp_predef('__STDC_NO_THREADS__', any, '1').
+pp_predef('__STDC_NO_THREADS__', darwin, '1').
 pp_predef('__STDC_UTF_16__', any, '1').
 pp_predef('__STDC_UTF_32__', any, '1').
 pp_predef('__STDC_VERSION__', any, '201710L').
@@ -884,7 +979,7 @@ pp_predef('__WINT_MAX__', any, '2147483647').
 pp_predef('__WINT_MIN__', any, '(-__WINT_MAX__ - 1)').
 pp_predef('__WINT_TYPE__', any, 'int').
 pp_predef('__WINT_WIDTH__', any, '32').
-pp_predef('__block', any, '__attribute__((__blocks__(byref)))').
+pp_predef('__block', darwin, '__attribute__((__blocks__(byref)))').
 %% the plainest path through the SDK's string and stdio headers: no fortified
 %% forms (strcpy stays the function, not __builtin___strcpy_chk), as with the
 %% features and attributes answered 0
@@ -898,9 +993,9 @@ pp_predef('__nonnull', any, '_Nonnull').
 pp_predef('__null_unspecified', any, '_Null_unspecified').
 pp_predef('__nullable', any, '_Nullable').
 pp_predef('__pic__', any, '2').
-pp_predef('__strong', any, '').
-pp_predef('__unsafe_unretained', any, '').
-pp_predef('__weak', any, '__attribute__((objc_gc(weak)))').
+pp_predef('__strong', darwin, '').
+pp_predef('__unsafe_unretained', darwin, '').
+pp_predef('__weak', darwin, '__attribute__((objc_gc(weak)))').
 pp_predef('__BIGGEST_ALIGNMENT__', x86_64, '16').
 pp_predef('__BITINT_MAXWIDTH__', x86_64, '8388608').
 pp_predef('__FXSR__', x86_64, '1').
@@ -1147,9 +1242,13 @@ ccl_pp_spell_([tok(K, V, L)|Ts], L0, Codes) :-
     ccl_pp_spell_tok(K, V, C1, C2), ccl_pp_spell_(Ts, L, C2).
 ccl_pp_spell_tok(str, Cs, [34|Out], Rest) :- !, ccl_pp_spell_str(Cs, Out, [34|Rest]).
 ccl_pp_spell_tok(chr, C, [39|Out], Rest) :- !, ccl_pp_spell_str([C], Out, [39|Rest]).
+ccl_pp_spell_tok(K, Cs, [P, 34|Out], Rest) :- pp_str_prefix(K, [P]), !, ccl_pp_spell_str(Cs, Out, [34|Rest]).   % THE PREFIXED LITERALS SPELL WITH THEIR PREFIX (0.93): `L"true"' came out as a code list in the flattened text, which no reader takes -- the census's road, not the gate's, which reads the tokens
+ccl_pp_spell_tok(K, C, [P, 39|Out], Rest) :- pp_chr_prefix(K, [P]), !, ccl_pp_spell_str([C], Out, [39|Rest]).
 ccl_pp_spell_tok(uint, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'u|Rest], Out).
 ccl_pp_spell_tok(long, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'l|Rest], Out).
 ccl_pp_spell_tok(ulong, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'u, 0'l|Rest], Out).
+ccl_pp_spell_tok(bitint, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'w, 0'b|Rest], Out).        % C23's `wb' and `uwb' (0.93): the suffix was lost in the flattened text
+ccl_pp_spell_tok(ubitint, N, Out, Rest) :- !, number_codes(N, Cs), append(Cs, [0'u, 0'w, 0'b|Rest], Out).
 ccl_pp_spell_tok(pp, A, [35|Out], Rest) :- !, atom_codes(A, Cs), append(Cs, Rest, Out).
 ccl_pp_spell_tok(cocolog, A, Out, Rest) :- !, atom_codes('#cocolog', H), atom_codes(A, Cs), atom_codes('#end', E), append(H, [10|Cs], O1), append(O1, [10|E], O2), append(O2, Rest, Out).
 ccl_pp_spell_tok(float, F, Out, Rest) :- F > 1.0e308, !, atom_codes('1e999', Cs), append(Cs, Rest, Out).       % past double (a long double literal): infinite again when read
