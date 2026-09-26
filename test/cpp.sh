@@ -35,6 +35,12 @@ echo "-- M6, in steps: C++ that is C with names, classes, virtual, templates, la
 # cocolog is the command's grandchild, so a signal to the command alone leaves it running -- and the fixture FAILs with
 # `TIMEOUT after N s', which names the environment's cost rather than hiding it.
 CPP_FIXTURE_SECS=${CPP_FIXTURE_SECS:-2400}
+ccl_needs_met() {   # ccl_needs_met COND [flags]: does the box's library meet a preprocessor condition? <version> is the library's smallest header, and the marker survives -E only where COND holds
+  cond=$1; shift; f=$(mktemp -t needs.XXXXXX.cpp)
+  printf '#include <version>\n#if %s\nccl_needs_met\n#endif\n' "$cond" > "$f"
+  "$ROOT/bin/cicili++" "$@" -E "$f" 2>/dev/null | grep -q ccl_needs_met; r=$?; rm -f "$f"; return $r
+}
+skipped=0
 ccl_kill_tree() { for c in $(pgrep -P "$1" 2>/dev/null); do ccl_kill_tree "$c"; done; kill -9 "$1" 2>/dev/null; }
 ccl_capped() {   # ccl_capped SECS CMD...: the command's output on stdout, its exit status returned; past SECS the tree is killed, the output ends `TIMEOUT after SECS s' and the status is 124
   secs=$1; shift; out=$(mktemp); st=$(mktemp)
@@ -46,6 +52,8 @@ for src in "$ROOT"/test/cpp/run/*.cpp; do
   n=$(basename "$src" .cpp)
   flags=$(cat "$ROOT/test/cpp/run/$n.flags" 2>/dev/null)
   inp="$ROOT/test/cpp/run/$n.stdin"; [ -f "$inp" ] || inp=/dev/null   # a fixture that READS gives its input as NAME.stdin (stdcin.cpp); the rest read nothing
+  if [ -f "$ROOT/test/cpp/run/$n.needs" ] && ! ccl_needs_met "$(cat "$ROOT/test/cpp/run/$n.needs")" $flags; then   # A FIXTURE BEYOND THE BOX'S LIBRARY IS SKIPPED BY NAME (0.95): NAME.needs holds a preprocessor condition over the library's own macros (`_LIBCPP_VERSION >= 210000': optional<T &> is C++26's and libc++ 18 refuses it), and a box whose library fails it prints the fixture as skipped -- neither ok nor a failure, never a RED for what the environment lacks
+    echo "skip $n.cpp: needs $(cat "$ROOT/test/cpp/run/$n.needs"), which this box's library does not meet"; skipped=$((skipped + 1)); continue; fi
   bout=$(ccl_capped "$CPP_FIXTURE_SECS" "$ROOT/bin/cicili++" $flags "$src" -o "$n"); bst=$?
   if [ "$bst" -eq 0 ]; then got=$(printf '%s' "$bout"; "./$n" < "$inp"; echo "exit $?"); else got=$bout; fi
   case "$got" in *"TIMEOUT after"*) echo "FAIL $n.cpp: $(printf '%s' "$got" | tail -1), the build never finished (the environment's cost, named rather than hidden)"; failures=$((failures + 1)); continue ;; esac
@@ -61,4 +69,5 @@ for pair in "control:try" "coro:coroutine" "concept_fail:constraint_not_satisfie
   got=$("$ROOT/bin/cicili++" -c "$ROOT/test/cpp/$n.cpp" -o "$n.o" 2>&1; echo "exit $?")
   case "$got" in *"not lowered yet: $what"*"exit 1"*) echo "ok   $n.cpp is refused: not lowered yet: $what" ;; *) echo "FAIL $n.cpp should be refused with 'not lowered yet: $what'"; echo "     got  $got" | head -3; failures=$((failures + 1)) ;; esac
 done
+[ "$skipped" -gt 0 ] && echo "-- $skipped fixture(s) skipped: beyond this box's library (NAME.needs)"
 if [ "$failures" -eq 0 ]; then echo "GREEN: cicili++"; else echo "RED: $failures failure(s)"; exit 1; fi

@@ -45,8 +45,8 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(41).   % 41: a literal past 2^60 spelled whole
-%% ccl_lowering_version(40).   % 40: a base clause naming a bound type parameter takes its class, a scope name is the class's own typedef first (libc++ 18), -lc++ on Linux; 39: C23 (_BitInt as iN, the overflow builtins, unreachable), a VLA at run time, thread_local, the wide literals, [[assume]]; 38: a conditional over two lvalues is an lvalue, and its address the phi of theirs;  % 37: wchar_t, char16_t and char32_t have LLVM types, and a function template's shipped instance its Itanium symbol;  % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
+ccl_lowering_version(42).   % 42: a conditional over two void arms has no phi
+%% ccl_lowering_version(41).   % 41: a literal past 2^60 spelled whole; 40.   % 40: a base clause naming a bound type parameter takes its class, a scope name is the class's own typedef first (libc++ 18), -lc++ on Linux; 39: C23 (_BitInt as iN, the overflow builtins, unreachable), a VLA at run time, thread_local, the wide literals, [[assume]]; 38: a conditional over two lvalues is an lvalue, and its address the phi of theirs;  % 37: wchar_t, char16_t and char32_t have LLVM types, and a function template's shipped instance its Itanium symbol;  % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
 
 ccl_ir_units(Units0, IR) :-
     ir_reset, ccl_scope_init, ir_note_units(Units0),                    % the symbol table, once
@@ -629,6 +629,14 @@ ir_expr(sizeof(E), N, T, i64) :- !, ccl_size_type(T), ccl_type_of(E, ET),
     ;   ir_fail(sizeof(E)) ).
 ir_expr(sizeof_type(ET), N, T, i64) :- !, ccl_size_type(T), ( ccl_size_of(ET, N) -> true ; ir_fail(sizeof_type(ET)) ).
 ir_expr(alignof_type(ET), N, T, i64) :- !, ccl_size_type(T), ( ccl_const_eval(alignof_type(ET), N) -> true ; ir_fail(alignof_type(ET)) ).
+%% A CONDITIONAL OVER TWO VOID ARMS IS VOID ([expr.cond]/2): both arms are evaluated for their effects and the form
+%% has no value, so there is nothing to phi -- `phi void' is what LLVM refused (0.95: libc++ 18's string algorithms,
+%% found once stdalgorithmstr built inside the cap)
+ir_expr(cond(C, A, B), none, base([], [void]), void) :- ccl_type_of(A, TA), ccl_resolve_type(TA, base(_, [void])), !,
+    ir_label(LT), ir_label(LF), ir_label(LE), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LT, ', label %', LF]),
+    ir_block(LT), ir_expr(A, _, _, _), ir_end(['br label %', LE]),
+    ir_block(LF), ir_expr(B, _, _, _), ir_end(['br label %', LE]),
+    ir_block(LE).
 ir_expr(cond(C, A, B), V, T, LL) :- !,
     ccl_type_of(A, TA), ccl_type_of(B, TB), ( ccl_is_arith(TA), ccl_is_arith(TB) -> ccl_usual(TA, TB, T) ; T = TA ), ir_type(T, LL),
     ir_label(LT), ir_label(LF), ir_label(LE), ir_cond(C, CC), ir_end(['br i1 ', CC, ', label %', LT, ', label %', LF]),

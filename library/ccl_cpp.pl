@@ -96,7 +96,7 @@ cpp_instance_note(Name, What) :- assertz('$cpp_inst'(Name, What)).
 
 %% ---- the classes of the units: '$cpp_classes' = [C-cls(Base, Data, Members, Statics, Defaults) ...] --------
 cpp_register_units(Units) :-
-    cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_mdef'/5), cpp_reset('$cpp_extern'/3), cpp_reset('$cpp_friends'/2), cpp_reset('$cpp_extra'/2), cpp_reset('$cpp_base_slot'/3), cpp_reset('$cpp_vbase'/1),
+    cpp_reset('$cpp_cls'/2), cpp_reset('$cpp_tmpl'/3), cpp_reset('$cpp_spec'/4), cpp_reset('$cpp_mt'/4), cpp_reset('$cpp_inst'/2), cpp_reset('$cpp_out'/1), cpp_reset('$cpp_ownfn'/1), cpp_reset('$cpp_mdef'/5), cpp_reset('$cpp_extern'/3), cpp_reset('$cpp_friends'/2), cpp_reset('$cpp_extra'/2), cpp_reset('$cpp_base_slot'/3), cpp_reset('$cpp_vbase'/1),
     nb_setval('$cpp_defaults', []), nb_setval('$cpp_free_ops', []), nb_setval('$cpp_dtor_defs', []), nb_setval('$cpp_lambdas', 0), nb_setval('$cpp_caller', none), nb_setval('$cpp_obj_cat', none), nb_setval('$cpp_closure_this', []), nb_setval('$cpp_temps', none), nb_setval('$cpp_making', []), nb_setval('$cpp_obj_const', none),
     nb_setval('$cpp_nontrivial', []),
     nb_setval('$cpp_concepts', []),
@@ -1593,7 +1593,14 @@ cpp_defined_out_of_class(C, Kind, K) :- '$cpp_mdef'(C, Kind, _, _, Item), cpp_me
 cpp_defined_out_of_class(C, Kind, K) :- cpp_last_segment(C, Last), Last \== C, '$cpp_mdef'(Last, Kind, _, _, Item), cpp_member_shape(Item, Kind, Ps1, B), B \== none, cpp_params_key(Ps1, K), !.   % a nested class's, keyed by its bare name (the reader's spelling of `X<T>::sentry::sentry')
 %% the parameters' types, keyed (cpp_type_key): overloads by type get names of their own; none is `0'
 cpp_params_key([], '0') :- !.
-cpp_params_key(Ps, K) :- findall(TK, ( member(P, Ps), ( P = param(T, _) ; P = param(T, _, _) ), cpp_type_key(T, TK) ), Ks), atomic_list_concat(Ks, '.', K).
+cpp_params_key(Ps, K) :- findall(TK, ( member(P, Ps), ( P = param(T0, _) ; P = param(T0, _, _) ), cpp_param_fn_type(T0, T), cpp_type_key(T, TK) ), Ks), atomic_list_concat(Ks, '.', K).
+%% ... a by-value parameter's TOP-LEVEL qualifiers are no part of the function's type ([dcl.fct]/5): `f(int)' declared
+%% and `f(const int x)' defined are one function, and their keys must agree (the keys carry qualifiers since 0.95)
+cpp_param_fn_type(base(Q, S), base(Q1, S)) :- !, cpp_no_cv(Q, Q1).
+cpp_param_fn_type(ptr(Q, T), ptr(Q1, T)) :- !, cpp_no_cv(Q, Q1).
+cpp_param_fn_type(T, T).
+cpp_no_cv(Q, Q1) :- findall(X, ( member(X, Q), X \== const, X \== volatile ), Q1).
+cpp_cv_key(Q, CV) :- findall(X, ( member(X, [const, volatile]), memberchk(X, Q) ), CV).
 cpp_free_operator(Op, Ps, Name) :- length(Ps, K), cpp_op_word(Op, W), atomic_list_concat(['op.', W, '.', K], Name).
 cpp_op_word('+', plus) :- !.        cpp_op_word('-', minus) :- !.       cpp_op_word('*', times) :- !.       cpp_op_word('/', divide) :- !.     cpp_op_word('%', modulo) :- !.
 cpp_op_word('==', eq) :- !.         cpp_op_word('!=', ne) :- !.         cpp_op_word('<', lt) :- !.          cpp_op_word('>', gt) :- !.         cpp_op_word('<=', le) :- !.        cpp_op_word('>=', ge) :- !.
@@ -1723,14 +1730,25 @@ cpp_item(function(_, _, _, N, Ps, _, _), []) :- atom(N), cpp_auto_params(Ps, 0, 
 cpp_item(function(L, Sto, Ret0, N, Ps, V, Body), [function(L, Sto, Ret, Name, Ps1, V, Body1)]) :- !,
     cpp_fn_body_mark(Body, D), cpp_fn_name(N, Ps, D, Name),                                        % an overloaded name's definition carries its parameters' keys
     cpp_plain_params(Ps, Ps1), ( Ret0 = base(_, [auto]) -> cpp_lambda_ret(Ps1, Body, Ret) ; cpp_type(Ret0, Ret) ),   % C++14: auto f(...): the first return's type
-    cpp_method_body(none, Ret, Ps1, Body, Body1).
+    cpp_method_body(none, Ret, Ps1, Body, Body1),
+    assertz('$cpp_ownfn'(function(L, Sto, Ret, Name, Ps1, V, Body1))).   % THE PROGRAM'S OWN FUNCTION, DESUGARED, where a constant fold can find it (0.95): `constexpr int N = twice(21);' at file scope
 cpp_item(declare(L, base(Q, [struct(N, Ms)])), Items) :- atom(N), '$cpp_promoted'(N), !, cpp_item(declare(L, base(Q, [class(struct, N, [], Ms)])), Items), cpp_trace(promoted_items(N, Items)).   % promoted at registration (cpp_struct_promotes)
 cpp_item(declare(L, base(Q, [struct(N, Ms)])), [declare(L, base(Q, [struct(N, Ms1)]))]) :- atom(N), Ms \== none, !,       % a plain struct: its member types resolved in place (`std::size_t n')
     cpp_plain_members(Ms, Ms1), ( Ms1 == Ms -> true ; ccl_note_tag(N, Ms1) ).
 cpp_plain_members([], []).
 cpp_plain_members([member(T, A, W)|Ms], [member(T1, A, W)|Ms1]) :- !, ( cpp_type(T, T1) -> true ; T1 = T ), cpp_plain_members(Ms, Ms1).
 cpp_plain_members([M|Ms], [M|Ms1]) :- cpp_plain_members(Ms, Ms1).
-cpp_item(declaration(L, Sto, B, Vs), [declaration(L, Sto, B, Vs1)]) :- !, cpp_vars(none, Vs, Vs1).
+cpp_item(declaration(L, Sto, B, Vs), [declaration(L, Sto, B, Vs2)]) :- !, cpp_vars(none, Vs, Vs1), cpp_fold_const_inits(B, Vs1, Vs2).
+%% A FILE-SCOPE `const' OBJECT INITIALIZED BY A CONSTEXPR CALL TAKES ITS VALUE ([expr.const]; 0.95): `constexpr int N =
+%% twice(21);' reached the lowering as a call in a global's initializer (0.88's cpp_global_const folds such a name
+%% where a CONSTANT is asked for, and the lowering never asks). Only where the fold answers: any other initializer
+%% stays what it was.
+cpp_fold_const_inits(base(Q, _), Vs, Ws) :- memberchk(const, Q), !, cpp_fold_const_inits_(Vs, Ws).
+cpp_fold_const_inits(_, Vs, Vs).
+cpp_fold_const_inits_([], []).
+cpp_fold_const_inits_([var(N, T, I)|Vs], [var(N, T, I1)|Ws]) :-
+    ( I = call(_, _), \+ ccl_resolve_type(T, arr(_, _)), catch(cpp_const_value(I, K), _, fail) -> ( K = bool(_) -> I1 = K ; integer(K) -> I1 = int(K) ; I1 = I ) ; I1 = I ),
+    cpp_fold_const_inits_(Vs, Ws).
 cpp_item(typedef(L, Vs), [typedef(L, Vs1)]) :- !, cpp_vars(none, Vs, Vs1), ccl_note_typedefs(Vs1).   % the table learns the instance's name at once
 cpp_item(template(_, _, _), []) :- !.
 cpp_item(concept(_, _, _), []) :- !.                                                               % C++20: a constraint, checked where a template is instantiated
@@ -3078,7 +3096,7 @@ cpp_const_value(E, V) :- cpp_const_fold(E, V), !.
 %% __find_idx(__i + 1, __matches), __matches[__i])' -- a conditional whose arms hold the recursive call, so
 %% ccl_const_eval failed on the whole expression and nothing here reached the call.
 cpp_const_value(E0, V) :- cpp_const_reduce(E0, E), E \== E0, !, cpp_const_value(E, V).
-cpp_const_fold(call(id(F), Args), V) :- atom(F), '$cpp_out'(function(_, _, _, F, Params, _, block([return(_, E0)]))), !,
+cpp_const_fold(call(id(F), Args), V) :- atom(F), ( '$cpp_out'(function(_, _, _, F, Params, _, block([return(_, E0)]))) ; '$cpp_ownfn'(function(_, _, _, F, Params, _, block([return(_, E0)]))) ), !,   % an emitted instance's, or the program's own (0.95)
     cpp_fold_depth(D), D < 32, D1 is D + 1, nb_setval('$cpp_fold_depth', D1),
     (   cpp_param_binds(Params, Args, B), cpp_replace_ids(E0, B, E), cpp_const_value(E, V)
     ->  nb_setval('$cpp_fold_depth', D)
@@ -3456,7 +3474,7 @@ cpp_nth_tail(0, L, L) :- !.
 cpp_nth_tail(K, [_|L], R) :- K > 0, K1 is K - 1, cpp_nth_tail(K1, L, R).
 cpp_default_args(0, _, []) :- !.
 cpp_default_args(K, [tparam(_, _, D)|Ts], [D|Ds]) :- D \== none, K1 is K - 1, cpp_default_args(K1, Ts, Ds).
-cpp_most_special([M|_], All, M) :- \+ ( member(Y, All), Y \== M, cpp_more_special(Y, M), \+ cpp_more_special(M, Y) ), !.
+cpp_most_special([M|_], All, M) :- \+ ( member(Y, All), Y \== M, once(cpp_more_special(Y, M)), \+ cpp_more_special(M, Y) ), !.   % `once': the comparison is a TEST (the shape 0.95 found exponential in the function ordering below)
 cpp_most_special([_|Ms], All, M) :- cpp_most_special(Ms, All, M).
 cpp_more_special(m(TPsX, PatX, _, _), m(TPsY, PatY, _, _)) :- cpp_pattern_as_args(PatX, TPsX, ArgsX), cpp_match_pattern(PatY, ArgsX, TPsY, [], _).
 cpp_pattern_as_args([], _, []).
@@ -3657,12 +3675,18 @@ cpp_conversions(Cv-Rf) :- nb_getval('$cpp_conversions', Cv), nb_getval('$cpp_ref
 %% and a declaration is a candidate only when nothing is defined (declval, whose type is all a decltype wants)
 cpp_defined_first(Hs, Best) :- findall(H, ( member(H, Hs), H = h(_, _, function(_, _, _, _, _, _, Body), _, _), Body \== none ), Ds),
     ( Ds == [] -> Best = Hs ; Best = Ds ).
-cpp_most_special_fn([H|_], All, H) :- \+ ( member(Y, All), Y \== H, cpp_fn_more_special(Y, H), \+ cpp_fn_more_special(H, Y) ), !.
+%% THE COMPARISON IS A TEST, ASKED ONCE (0.95): cpp_fn_more_special leaves choicepoints -- cpp_match's pointer and
+%% array clauses have no cut and its catch-all last clause succeeds after any of them -- and with `\+ ( ..., more(Y, H),
+%% \+ more(H, Y) )' every failure of the inner test RETRIED the outer one through every alternative deduction, one
+%% choice per parameter: 4^k + 1 comparisons for k parameters, MEASURED at 1025 for a two-candidate `search' and 1029
+%% for a four-candidate `__uninitialized_allocator_copy_impl' -- 125 of stdalgorithm2's first 135 s, and the whole of
+%% the two-range family's cost (0.92's finding, read there as breadth: it was this)
+cpp_most_special_fn([H|_], All, H) :- \+ ( member(Y, All), Y \== H, once(cpp_fn_more_special(Y, H)), \+ cpp_fn_more_special(H, Y) ), !.
 cpp_most_special_fn([_|Hs], All, H) :- cpp_most_special_fn(Hs, All, H).
 cpp_fn_more_special(h(_, TPsX, function(_, _, _, _, PsX, _, _), _, _), h(_, TPsY, function(_, _, _, _, PsY, _, _), _, _)) :-
     cpp_opaque_bindings(TPsX, BX), cpp_subst(PsX, BX, PsX1), cpp_param_types(PsX1, TsX0), cpp_opaque_types(TsX0, TsX), cpp_param_types(PsY, TsY),
     length(TsX, N), length(TsY, N),
-    catch(cpp_deduce_types(TsY, TsX, TPsY, [], B), error(not_lowered(_), _), fail), cpp_all_bound(TPsY, TsY, B).
+    once(catch(cpp_deduce_types(TsY, TsX, TPsY, [], B), error(not_lowered(_), _), fail)), cpp_all_bound(TPsY, TsY, B).
 %% ... and a TEMPLATE-ID OVER OPAQUE NAMES among X's parameter types is an INCOMPLETE INSTANCE (0.58's: a name and
 %% its arguments, recorded, no body), never instantiated: `ostreambuf_iterator<$opaque._CharT, $opaque._Traits>'
 %% resolved as a class refused, so that overload of __pad_and_output was no more special than the generic one over
@@ -3945,7 +3969,9 @@ cpp_match_targs([pack(base(_, [typedef(P)]))], As, TPs, B0, B) :- memberchk(tpar
 cpp_match_targs([pack(id(P))], As, TPs, B0, B) :- memberchk(tparam(vpack(_), P, _), TPs), !, ( memberchk(P-_, B0) -> B = B0 ; B = [P-pack(As)|B0] ).
 cpp_match_targs(_, [], _, B, B) :- !.
 cpp_match_targs([P|Ps], [A|As], TPs, B0, B) :-
-    (   cpp_is_type(P) -> cpp_match(P, A, TPs, B0, B1)
+    (   P = base(Q, [typedef(N)]), memberchk(tparam(type, N, _), TPs)        % A TEMPLATE ARGUMENT BINDS THE TYPE AS IT IS ([temp.deduct.type]/1; 0.95): the decay is [temp.deduct.call]'s, a by-value FUNCTION parameter's, and through cpp_match `pair<_T1, _T2> &' against a map's `pair<const string, int>' bound _T1 to `string' -- invisible while the keys carried no qualifiers, refused `argument_mismatch' once they did
+    ->  ( memberchk(N-_, B0) -> B1 = B0 ; cpp_pattern_quals(Q, A, A1) -> B1 = [N-A1|B0] ; B1 = B0 )
+    ;   cpp_is_type(P) -> cpp_match(P, A, TPs, B0, B1)
     ;   P = id(V), memberchk(tparam(K, V, _), TPs), \+ memberchk(K, [type, pack, template]), \+ memberchk(V-_, B0) -> B1 = [V-A|B0]
     ;   B1 = B0 ),
     cpp_match_targs(Ps, As, TPs, B1, B).
@@ -3969,8 +3995,12 @@ cpp_instance_base(N, N).
 cpp_type_key(pack([]), e) :- !.
 cpp_type_key(pack(L), K) :- !, findall(K1, ( member(A, L), cpp_type_key(A, K1) ), Ks), atomic_list_concat(Ks, '_', K).
 cpp_type_key(vpack(L), K) :- !, cpp_type_key(pack(L), K).
-cpp_type_key(base(_, S), K) :- !, findall(W, ( member(X, S), cpp_spec_key(X, W) ), Ws), atomic_list_concat(Ws, '_', K).
-cpp_type_key(ptr(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_p', K).
+%% A TYPE'S QUALIFIERS ARE PART OF ITS KEY (0.95; 0.93's item 55): `is_const<const int>' and `is_const<int>' were ONE
+%% instance here, the first made answering for both, and libc++ 18's `__tuple_like_ext<const _Tp> : __tuple_like_ext<_Tp>'
+%% resolved its base to itself. `const' and `volatile' key -- `const_int', `int_pc' for `int *const' -- and nothing
+%% else in a qualifier list does (own, tie, fresh, the markers).
+cpp_type_key(base(Q, S), K) :- !, findall(W, ( member(X, S), cpp_spec_key(X, W) ), Ws), cpp_cv_key(Q, CV), append(CV, Ws, Ws1), atomic_list_concat(Ws1, '_', K).
+cpp_type_key(ptr(Q, T), K) :- !, cpp_type_key(T, K0), findall(C, ( member(X-C, [const-c, volatile-v]), memberchk(X, Q) ), Cs), atomic_list_concat([K0, '_p'|Cs], K).
 cpp_type_key(ref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_r', K).
 cpp_type_key(rref(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_rr', K).
 cpp_type_key(arr(_, T), K) :- !, cpp_type_key(T, K0), atom_concat(K0, '_a', K).
