@@ -4893,6 +4893,56 @@ after every reader bump (0.67's note), which the warming outside the gates does 
 fixtures include and no run fixture does.
 
 
+**M6's sixty-third step (0.96): THE NOT-DONE LIST OF 0.95, closed -- the empty member's address, the constexpr
+function with statements, and the warming as a tool of the repository.** (1) AN EMPTY `[[no_unique_address]]' MEMBER
+LIES WHERE THE ITANIUM ABI PUTS IT (2.4 II.3, MEASURED against clang++ 18 on eleven shapes before a line was written):
+at offset ZERO whatever lies there, unless an empty subobject of ITS OWN TYPE is there already -- then at the current
+data size rounded to its alignment, and on by its alignment while such a subobject is in the way; it takes no bytes
+of the data and the class's size still covers its byte. `struct { int x; [[no_unique_address]] E a, b; }' is `a' at
+0, `b' at 4, eight bytes; `struct { [[no_unique_address]] E a; char c; }' one byte with `c' at 0; a PLAIN member of an
+empty class counts as an empty subobject in the way. The layout walk (`ccl_members_layout_') threads the empty
+subobjects placed and the byte past the last of them (`acc(Seen, EmptyEnd)'), the size is the larger of the data's
+and that end; and since the offset may lie BEFORE the running position, the lowering emits NO element for such a
+member and addresses it by its BYTE OFFSET from the object (`ir_member_slot': `getelementptr i8', the map's
+`m(N, empty(Off), T, empty)'), where a zero-sized `{}' element at the running position had given 0.89's address, one
+past the members before it. Lowering version 43. `test/cpp/run/nounique2.cpp' at C++20, clang++'s numbers on all
+eleven shapes; the older layout fixtures unchanged. (2) A CONSTEXPR FUNCTION WITH STATEMENTS ([dcl.constexpr] since
+C++14) FOLDS where a constant is wanted -- 0.72's fold took one `return' and nothing else. The body's statements are
+EVALUATED over an environment of Name-Value (`cpp_eval_stmts'): the parameters bound to the arguments' folded values,
+locals declared as they are met and a block's own dropped at its end, assignments and the four increments changing
+the environment (an increment inside an operand too, `n-- > 1'), `if', `while', `do', `for' with `break' and
+`continue', several `return's, every expression folded by `ccl_const_eval' with the names replaced by their values,
+under a step budget (200000 statements) so a loop that does not end is a failure and never a hang; what it cannot
+take -- an aggregate, a pointer, a call it cannot fold -- FAILS and the call stays a call, as before.
+`test/cpp/run/constexprfn3.cpp' (a factorial by a loop, a Fibonacci by `while' over a decremented parameter, a bit
+count, a `do'/`while' Collatz, a `for(;;)' with its return inside, `break' and `continue', as a template argument, an
+array's bound, a class's static, a global, a `static_assert', and the same functions called at run time), clang++'s
+numbers. (3) THE WARMING IS A TOOL OF THE REPOSITORY, `test/warm.sh': every header `test/cpp/*.cpp' and
+`test/cpp/run/*.cpp' include, and Cicili's own `test/cpp/*.cpp' that the reader's gate reads whole (`<sstream>',
+`<stdexcept>': the ones the scratchpad script never covered), at the level its `.flags' names and at C++17, `<version>' first, one header a process
+under a time cap and a memory cap over every cocolog process (2400 s and 7000 MB, the gates' own) -- so a reader
+version bump never leaves the C++ gate's reader part cold on `<sstream>' and its ten headers (0.95's not-done). A header
+whose warming is KILLED is named as not written. Its first run, at reader 82 with the summaries warm, took 37 headers in
+55 s and named none as cold -- and it did not list `<sstream>' at all, since the gate's whole reads are Cicili's files and
+not this tree's: the list was widened before the script was believed, which is the measurement a tool owes. AND THE
+WIDENING WAS SAVED TWO MINUTES AFTER THE GATE CHAIN HAD RUN THE SCRIPT, so the chain below warmed the 37 and not the
+40 -- the script's log says which list it ran (`warm: 40 headers' is its first line now, and a Cicili checkout it
+cannot find is named rather than skipped), and the widened list ran ALONE after the gates: 40 headers in 56 s, none
+killed, `<sstream>' served warm at 213 MB. Reader version 82 unchanged; lowering version 43.
+THE GATES, ON LINUX (Ubuntu 24.04, x86_64, four cores, 16 GB; clang 18, libc++ 18, cocolog 1.8.1, the module rebuilt
+as 0.96), one after another in one chain with nothing beside them, each under its own 7000 MB watchdog, the summaries
+warm at reader 82: the reader's 95 checks GREEN in 10 s at 107 MB; the compile gate's 78 in 7 s at 264 MB; the
+driver's 25 in 6 s at 109 MB; the objects' 29; the proof; THE C++ GATE GREEN -- 191 checks ok (0.95's 189 and this
+step's `nounique2' and `constexprfn3'), `stdoptionalref' skipped by name, NO failure -- in 6488 s at a 3771 MB peak
+(0.95: 6775 s, 3750 MB: the layout rule and the constexpr evaluator cost nothing the box's noise does not cover);
+THE LIBC++ GATE GREEN, its 18 reads whole under a fresh HOME in 5390 s at 3224 MB, every item count 0.95's
+(`<vector>' 806 ... `<optional>' 397 at C++26), as a step that moves no reader rule should leave them.
+NOT DONE: a constexpr function over an aggregate, a pointer or a call the evaluator cannot fold stays a call (by
+design: it fails and never lies); a `[[no_unique_address]]' member of a class with bytes lies where it always did
+(the ABI agrees); and 0.89's open question -- why a C++ check averages 34 s on this box where 0.87's averaged 14 on
+the Mac -- is still one fixture's outlier away from an answer, `stdtuple' at 235 s the first to measure.
+
+
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

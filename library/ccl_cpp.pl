@@ -3101,6 +3101,87 @@ cpp_const_fold(call(id(F), Args), V) :- atom(F), ( '$cpp_out'(function(_, _, _, 
     (   cpp_param_binds(Params, Args, B), cpp_replace_ids(E0, B, E), cpp_const_value(E, V)
     ->  nb_setval('$cpp_fold_depth', D)
     ;   nb_setval('$cpp_fold_depth', D), fail ).
+%% A CONSTEXPR FUNCTION WITH STATEMENTS ([dcl.constexpr] since C++14: locals, assignments, if, loops, several
+%% returns; 0.96 -- 0.72's fold took one `return' and nothing else) is EVALUATED where a constant is wanted: the
+%% body's statements run over an environment of Name-Value (the parameters bound to the arguments' values, the
+%% locals declared as they are met, a block's own dropped at its end), every expression folded by ccl_const_eval
+%% with the names replaced by their values, under a step budget (`'$cpp_eval_steps'`: 200000 statements) so a loop
+%% that does not end is a failure and not a hang. What it does not take -- an aggregate, a pointer, a call to a
+%% function it cannot fold, a form below -- FAILS, and the caller's answer is what it was: the call stays a call.
+cpp_const_fold(call(id(F), Args), V) :- atom(F), ( '$cpp_out'(function(_, _, _, F, Params, _, block(Ss))) ; '$cpp_ownfn'(function(_, _, _, F, Params, _, block(Ss))) ), !,
+    cpp_fold_depth(D), D < 32, D1 is D + 1, nb_setval('$cpp_fold_depth', D1),
+    (   cpp_param_binds(Params, Args, B0), cpp_eval_binds(B0, Env0), nb_setval('$cpp_eval_steps', 0), cpp_eval_stmts(Ss, Env0, _, R), R = ret(V)
+    ->  nb_setval('$cpp_fold_depth', D)
+    ;   nb_setval('$cpp_fold_depth', D), fail ).
+cpp_eval_binds([], []).
+cpp_eval_binds([N-A|B], [N-V|E]) :- cpp_const_value(A, V), cpp_eval_binds(B, E).
+cpp_eval_step :- nb_getval('$cpp_eval_steps', K), K < 200000, K1 is K + 1, nb_setval('$cpp_eval_steps', K1).
+%% the statements of a block: the outcome is `next' (fell through), `ret(V)', `break' or `continue'
+cpp_eval_stmts([], Env, Env, next).
+cpp_eval_stmts([S|Ss], Env0, Env, R) :- cpp_eval_step, cpp_eval_stmt(S, Env0, Env1, R1), ( R1 == next -> cpp_eval_stmts(Ss, Env1, Env, R) ; Env = Env1, R = R1 ).
+cpp_eval_block(block(Ss), Env0, Env, R) :- length(Env0, N0), cpp_eval_stmts(Ss, Env0, Env1, R), length(Env1, N1), K is N1 - N0, cpp_eval_drop(K, Env1, Env).   % the block's own locals are at the front: dropped, the outer ones keep their values
+cpp_eval_block(S, Env0, Env, R) :- S \= block(_), cpp_eval_stmts([S], Env0, Env, R).
+cpp_eval_drop(0, E, E) :- !.
+cpp_eval_drop(K, [_|E0], E) :- K1 is K - 1, cpp_eval_drop(K1, E0, E).
+cpp_eval_stmt(block(Ss), Env0, Env, R) :- !, cpp_eval_block(block(Ss), Env0, Env, R).
+cpp_eval_stmt('$splice'(Ss), Env0, Env, R) :- !, cpp_eval_stmts(Ss, Env0, Env, R).
+cpp_eval_stmt(empty, Env, Env, next) :- !.
+cpp_eval_stmt(static_assert(_, _, _), Env, Env, next) :- !.
+cpp_eval_stmt(assume(_, _), Env, Env, next) :- !.
+cpp_eval_stmt(declaration(_, _, _, Vars), Env0, Env, next) :- !, cpp_eval_decls(Vars, Env0, Env).
+cpp_eval_stmt(expr(_, E), Env0, Env, next) :- !, cpp_eval_effect(E, Env0, Env, _).
+cpp_eval_stmt(return(_, E), Env, Env, ret(V)) :- !, cpp_eval_expr(E, Env, V).
+cpp_eval_stmt(return(_), Env, Env, ret(0)) :- !.
+cpp_eval_stmt(break(_), Env, Env, break) :- !.
+cpp_eval_stmt(continue(_), Env, Env, continue) :- !.
+cpp_eval_stmt(if(_, C, T, E), Env0, Env, R) :- !, cpp_eval_effect(C, Env0, Env1, CV),
+    ( CV \== 0 -> cpp_eval_block(T, Env1, Env, R) ; ( E == none ; E == empty ) -> Env = Env1, R = next ; cpp_eval_block(E, Env1, Env, R) ).
+cpp_eval_stmt(if_constexpr(L, C, T, E), Env0, Env, R) :- !, cpp_eval_stmt(if(L, C, T, E), Env0, Env, R).
+cpp_eval_stmt(while(_, C, S), Env0, Env, R) :- !, cpp_eval_while(C, S, Env0, Env, R).
+cpp_eval_stmt(do(_, S, C), Env0, Env, R) :- !, cpp_eval_do(C, S, Env0, Env, R).
+cpp_eval_stmt(for(_, Init, C, Step, S), Env0, Env, R) :- !, length(Env0, N0),
+    ( Init == none -> Env1 = Env0 ; cpp_eval_stmt(Init, Env0, Env1, next) ),
+    cpp_eval_for(C, Step, S, Env1, Env2, R), length(Env2, N2), K is N2 - N0, cpp_eval_drop(K, Env2, Env).
+cpp_eval_while(C, S, Env0, Env, R) :- cpp_eval_step,
+    ( C == none -> CV = 1 ; cpp_eval_effect(C, Env0, Env1, CV) ), ( C == none -> Env1 = Env0 ; true ),
+    (   CV == 0 -> Env = Env1, R = next
+    ;   cpp_eval_block(S, Env1, Env2, R1),
+        ( R1 = ret(_) -> Env = Env2, R = R1 ; R1 == break -> Env = Env2, R = next ; cpp_eval_while(C, S, Env2, Env, R) ) ).
+cpp_eval_do(C, S, Env0, Env, R) :- cpp_eval_step, cpp_eval_block(S, Env0, Env1, R1),
+    (   R1 = ret(_) -> Env = Env1, R = R1 ; R1 == break -> Env = Env1, R = next
+    ;   cpp_eval_effect(C, Env1, Env2, CV), ( CV == 0 -> Env = Env2, R = next ; cpp_eval_do(C, S, Env2, Env, R) ) ).
+cpp_eval_for(C, Step, S, Env0, Env, R) :- cpp_eval_step,
+    ( C == none -> Env1 = Env0, CV = 1 ; cpp_eval_effect(C, Env0, Env1, CV) ),
+    (   CV == 0 -> Env = Env1, R = next
+    ;   cpp_eval_block(S, Env1, Env2, R1),
+        (   R1 = ret(_) -> Env = Env2, R = R1 ; R1 == break -> Env = Env2, R = next
+        ;   ( Step == none -> Env3 = Env2 ; cpp_eval_effect(Step, Env2, Env3, _) ), cpp_eval_for(C, Step, S, Env3, Env, R) ) ).
+cpp_eval_decls([], Env, Env).
+cpp_eval_decls([var(N, T, Init)|Vs], Env0, Env) :- atom(N), \+ ccl_resolve_type(T, arr(_, _)), \+ T = fn(_, _, _),
+    ( Init == none -> V = 0 ; Init = init([item([], E)]) -> cpp_eval_effect(E, Env0, Env1, V) ; Init = init([]) -> V = 0 ; Init \= init(_), cpp_eval_effect(Init, Env0, Env1, V) ),
+    ( var(Env1) -> Env1 = Env0 ; true ), cpp_eval_decls(Vs, [N-V|Env1], Env).
+%% an expression with its effects: the assignments and the increments change the environment, the rest folds
+cpp_eval_effect(assign('=', id(N), E), Env0, Env, V) :- !, cpp_eval_effect(E, Env0, Env1, V), cpp_eval_set(N, V, Env1, Env).
+cpp_eval_effect(assign(Op, id(N), E), Env0, Env, V) :- atom_concat(BinOp, '=', Op), !, cpp_eval_effect(E, Env0, Env1, RV), cpp_eval_expr(id(N), Env1, LV), ccl_const_op(BinOp, LV, RV, V), cpp_eval_set(N, V, Env1, Env).
+cpp_eval_effect(preinc(id(N)), Env0, Env, V) :- !, cpp_eval_expr(id(N), Env0, V0), ccl_const_op('+', V0, 1, V), cpp_eval_set(N, V, Env0, Env).
+cpp_eval_effect(predec(id(N)), Env0, Env, V) :- !, cpp_eval_expr(id(N), Env0, V0), ccl_const_op('-', V0, 1, V), cpp_eval_set(N, V, Env0, Env).
+cpp_eval_effect(postinc(id(N)), Env0, Env, V) :- !, cpp_eval_expr(id(N), Env0, V), ccl_const_op('+', V, 1, V1), cpp_eval_set(N, V1, Env0, Env).
+cpp_eval_effect(postdec(id(N)), Env0, Env, V) :- !, cpp_eval_expr(id(N), Env0, V), ccl_const_op('-', V, 1, V1), cpp_eval_set(N, V1, Env0, Env).
+cpp_eval_effect(comma(A, B), Env0, Env, V) :- !, cpp_eval_effect(A, Env0, Env1, _), cpp_eval_effect(B, Env1, Env, V).
+cpp_eval_effect(cond(C, A, B), Env0, Env, V) :- !, cpp_eval_effect(C, Env0, Env1, CV), ( CV \== 0 -> cpp_eval_effect(A, Env1, Env, V) ; cpp_eval_effect(B, Env1, Env, V) ).
+cpp_eval_effect(bin('&&', A, B), Env0, Env, V) :- !, cpp_eval_effect(A, Env0, Env1, AV), ( AV == 0 -> Env = Env1, V = 0 ; cpp_eval_effect(B, Env1, Env, BV), ( BV == 0 -> V = 0 ; V = 1 ) ).
+cpp_eval_effect(bin('||', A, B), Env0, Env, V) :- !, cpp_eval_effect(A, Env0, Env1, AV), ( AV \== 0 -> Env = Env1, V = 1 ; cpp_eval_effect(B, Env1, Env, BV), ( BV == 0 -> V = 0 ; V = 1 ) ).
+cpp_eval_effect(bin(Op, A, B), Env0, Env, V) :- cpp_eval_side_effects(A), !, cpp_eval_effect(A, Env0, Env1, AV), cpp_eval_effect(B, Env1, Env, BV), ccl_const_op(Op, AV, BV, V).   % an increment inside an operand, `n-- > 1': its effect is kept
+cpp_eval_effect(bin(Op, A, B), Env0, Env, V) :- cpp_eval_side_effects(B), !, cpp_eval_effect(A, Env0, Env1, AV), cpp_eval_effect(B, Env1, Env, BV), ccl_const_op(Op, AV, BV, V).
+cpp_eval_effect(cast(_, E), Env0, Env, V) :- cpp_eval_side_effects(E), !, cpp_eval_effect(E, Env0, Env, V).
+cpp_eval_effect(E, Env, Env, V) :- cpp_eval_expr(E, Env, V).
+cpp_eval_side_effects(E) :- compound(E), ( E = assign(_, _, _) ; E = preinc(_) ; E = predec(_) ; E = postinc(_) ; E = postdec(_) ), !.
+cpp_eval_side_effects(E) :- compound(E), E =.. [_|As], member(A, As), cpp_eval_side_effects(A), !.
+cpp_eval_expr(E, Env, V) :- cpp_eval_vals(Env, B), cpp_replace_ids(E, B, E1), cpp_const_value(E1, V).
+cpp_eval_vals([], []).
+cpp_eval_vals([N-V|Env], [N-T|B]) :- ( V = big(_) -> T = int(V) ; integer(V) -> T = int(V) ; T = V ), cpp_eval_vals(Env, B).
+cpp_eval_set(N, V, [N-_|Env], [N-V|Env]) :- !.
+cpp_eval_set(N, V, [X|Env0], [X|Env]) :- cpp_eval_set(N, V, Env0, Env).
 %% AN INDEX INTO A CONSTANT ARRAY ([expr.const]): a static member array with an in-class initializer of constants,
 %% subscripted by a constant -- `__matches[__i]', the array libc++'s get<T> searches
 cpp_const_fold(index(id(Name), I0), V) :- cpp_const_value(I0, K), nb_getval('$cpp_static_inits', Ls),

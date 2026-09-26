@@ -772,6 +772,14 @@ what runs today.
   and a conditional over two void arms (`voidcond.cpp`) beside them; a
   type's `const` and `volatile` are part of its instance key; a fixture
   beyond the box's library is skipped by name (`NAME.needs`).
+* **THE LAYOUT OF AN EMPTY `[[no_unique_address]]` MEMBER, a constexpr
+  function with statements, and the cache warmed by a script.** An empty
+  marked member lies where the Itanium ABI puts it -- at offset 0, or
+  past the data where its own type is there already, stepping by its
+  alignment (`nounique2.cpp`, clang++'s addresses and sizes); a constexpr
+  function with locals, assignments, `if` and loops folds where a
+  constant is wanted (`constexprfn3.cpp`); `test/warm.sh` warms every
+  header the fixtures include at every level, outside the gates.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro

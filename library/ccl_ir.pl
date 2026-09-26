@@ -45,7 +45,7 @@
 %% the lowering's version: part of the key of every IR the driver keeps in the
 %% store (library(ccl_driver)); BUMP it whenever the check or the lowering
 %% changes what they emit, as ccl_reader_version/1 is bumped for the grammar
-ccl_lowering_version(42).   % 42: a conditional over two void arms has no phi
+ccl_lowering_version(43).   % 43: an empty `[[no_unique_address]]' member has no element and its address is the ABI's byte offset; 42: a conditional over two void arms has no phi
 %% ccl_lowering_version(41).   % 41: a literal past 2^60 spelled whole; 40.   % 40: a base clause naming a bound type parameter takes its class, a scope name is the class's own typedef first (libc++ 18), -lc++ on Linux; 39: C23 (_BitInt as iN, the overflow builtins, unreachable), a VLA at run time, thread_local, the wide literals, [[assume]]; 38: a conditional over two lvalues is an lvalue, and its address the phi of theirs;  % 37: wchar_t, char16_t and char32_t have LLVM types, and a function template's shipped instance its Itanium symbol;  % 36: an rvalue prefers `T &&' where a TEMPLATE's candidate is judged (cpp_ref_rank), so std::get answers `int &&' and not `int &';  % 35: a CAST TO A REFERENCE converts from the operand's class to the cast's own target, so a reference or a pointer to a SECOND base is offset (ir_ref_to);  % 34: an empty class is one byte, an `alignas' one padded to its alignment, and a `[[no_unique_address]]' empty member a zero-sized element -- every struct's shape may move
 
 ccl_ir_units(Units0, IR) :-
@@ -220,11 +220,9 @@ ir_struct_shape(Ms, Elems, Map) :-
     ir_shape(Lays, 0, 0, Elems0, Map, Cur),
     ( Size > Cur -> Pad is Size - Cur, atomic_list_concat(['[', Pad, ' x i8]'], PadEl), append(Elems0, [PadEl], Elems) ; Elems = Elems0 ).
 ir_shape([], Cur, _, [], [], Cur).
-ir_shape([lay(N, T, Off, empty)|Ls], Cur, Idx, Elems, Map, End) :- !,   % a `[[no_unique_address]]' empty member: a zero-sized element, so the GEP gives its address and it takes no bytes
-    ir_pad_to(Off, Off, Cur, Idx, Elems, Elems1, Idx1),
-    Elems1 = ['{}'|Elems2], Idx2 is Idx1 + 1,
-    Map = [m(N, Idx1, T, empty)|Map1],
-    ir_shape(Ls, Cur, Idx2, Elems2, Map1, End).
+ir_shape([lay(N, T, Off, empty)|Ls], Cur, Idx, Elems, Map, End) :- !,   % a `[[no_unique_address]]' empty member: NO element (0.96) -- its offset is the ABI's (ccl_members_layout_: 0, or past the data where its own type is there already), which may lie BEFORE the running position, so its address is a byte offset from the object (ir_member_slot), not an element's
+    Map = [m(N, empty(Off), T, empty)|Map1],
+    ir_shape(Ls, Cur, Idx, Elems, Map1, End).
 ir_shape([lay(N, T, Off, none)|Ls], Cur, Idx, Elems, Map, End) :- !,
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ccl_round_up(Cur, A, Nat), ir_type(T, LL),
     ir_pad_to(Off, Nat, Cur, Idx, Elems, Elems1, Idx1),
@@ -281,8 +279,10 @@ ir_ref_hops(P0, ET, RefT, P) :- ( ET \== unknown, ccl_unref(ET, ET1), ccl_resolv
 ir_member_slot(Base, ST, N, Slot, T) :-
     (   ir_is_union(ST) -> ( ccl_member_type(ST, N, T) -> Slot = Base ; ir_fail(no_member(N, ST)) )
     ;   ir_type(ST, SLL), nb_getval('$ir_maps', Maps), memberchk(SLL-shape(_, Map), Maps), memberchk(m(N, Idx, T, BF), Map)
-    ->  ir_fresh(P), ir_ins([P, ' = getelementptr inbounds ', SLL, ', ptr ', Base, ', i32 0, i32 ', Idx]),
-        ( BF == none -> Slot = P ; BF == empty -> Slot = empty(P) ; BF = bf(RunLL, Off, W, Signed), Slot = bf(P, RunLL, Off, W, Signed) )
+    ->  ir_fresh(P),
+        (   BF == empty -> Idx = empty(Off), ir_ins([P, ' = getelementptr inbounds i8, ptr ', Base, ', i64 ', Off]), Slot = empty(P)   % the marked empty member's address, by its byte offset (0.96)
+        ;   ir_ins([P, ' = getelementptr inbounds ', SLL, ', ptr ', Base, ', i32 0, i32 ', Idx]),
+            ( BF == none -> Slot = P ; BF = bf(RunLL, Off, W, Signed), Slot = bf(P, RunLL, Off, W, Signed) ) )
     ;   ir_fail(no_member(N, ST)) ).
 ir_slot_addr(bf(_, _, _, _, _), _) :- !, ir_fail(address_of_bitfield).
 ir_slot_addr(empty(P), A) :- !, A = P.        % a `[[no_unique_address]]' member HAS an address (C++ gives it one, possibly shared); what it has not is bytes
@@ -1311,7 +1311,6 @@ ir_gelems([], _, _, _, []).
 ir_gelems([LL|Ls], Idx, Map, Vals, [P|Ps]) :-
     findall(M, ( member(M, Map), M = m(_, Idx, _, _) ), Here),
     (   Here == [] -> ir_zero(LL, Z), atomic_list_concat([LL, ' ', Z], P)
-    ;   Here = [m(_, _, _, empty)] -> ir_zero(LL, Z), atomic_list_concat([LL, ' ', Z], P)   % a member with no bytes: the `{}' element's own zero, never the bitfield packer below
     ;   Here = [m(N, _, MT, none)] -> ( memberchk(N-V, Vals) -> ir_gconst(V, MT, C) ; ir_zero(LL, C) ), atomic_list_concat([LL, ' ', C], P)
     ;   ir_gpack(Here, Vals, 0, Packed), ir_array_count(LL, K),
         ir_le_bytes(Packed, K, Bytes), ir_escape(Bytes, Esc), atomic_list_concat([LL, ' c"', Esc, '"'], P) ),
