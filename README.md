@@ -772,6 +772,14 @@ what runs today.
   and a conditional over two void arms (`voidcond.cpp`) beside them; a
   type's `const` and `volatile` are part of its instance key; a fixture
   beyond the box's library is skipped by name (`NAME.needs`).
+* **THE CONSTEXPR EVALUATOR OVER AGGREGATES, and the cost of `std::get`.**
+  A constexpr body's arrays and structs are values -- built from braced
+  initializers, read and written through `a[i]`, `p.x`, `g[1][2]`,
+  `ps[i].y`, a file-scope constant aggregate among them -- with `switch`,
+  a range-for over an array and a nested constexpr call
+  (`constexprfn4.cpp`, clang++'s numbers). And a function template's
+  candidate set is made once per name and its holding set remembered per
+  call shape: `stdtuple.cpp` builds in 134 s where 0.96 took 235.
 * **THE LAYOUT OF AN EMPTY `[[no_unique_address]]` MEMBER, a constexpr
   function with statements, and the cache warmed by a script.** An empty
   marked member lies where the Itanium ABI puts it -- at offset 0, or

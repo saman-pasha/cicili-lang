@@ -4943,6 +4943,73 @@ design: it fails and never lies); a `[[no_unique_address]]' member of a class wi
 the Mac -- is still one fixture's outlier away from an answer, `stdtuple' at 235 s the first to measure.
 
 
+**M6's sixty-fourth step (0.97): THE CONSTEXPR EVALUATOR OVER AGGREGATES, and the cost of `std::get' -- 0.96's
+not-done list, closed.** (1) AGGREGATES IN A CONSTEXPR BODY: a local ARRAY or STRUCT is a VALUE of the evaluator's
+environment -- `arr(Elems)' of values, `obj([Name-Value ...])' over the struct's data members in order (`cpp_eval_agg_kind',
+`cpp_eval_init') -- built from its braced initializer (an item by position, `.f = e' by name, a nested brace for a nested
+aggregate, what is left value-initialized to zero, [dcl.init.aggr]), read and written through a PLACE (`a[i]', `p.x',
+`g[1][2]', `ps[i].y': `cpp_eval_place', `cpp_eval_store', the effects and the increments over a place where a name was,
+every place inside an expression folded to its value before the one evaluator sees it, `cpp_eval_places'); a FILE-SCOPE
+`const' AGGREGATE with a constant initializer is such a value too (`'$cpp_gagg:N'', recorded where its declaration item is
+walked, `cpp_global_agg'), so `table[i]' folds inside a body and `table[2]' or `origin.x' wherever a constant is wanted
+(`cpp_const_fold' on an index and a member, `cpp_const_reduce' taking a member); a `switch' runs from the matching case
+label -- the labels flattened, `case 2: case 3:' two of them -- or from `default', through the fallthrough to a `break'
+(`cpp_eval_switch_flat', `cpp_eval_switch_run'); a range-for over an array binds each element in turn; and a NESTED
+constexpr call with statements shares ONE step budget with the fold that made it (the nested fold RESET the counter, so
+the bound was per level and not per answer) and must answer a SCALAR (`cpp_eval_scalar': an aggregate returned stays a
+call). A POINTER stays outside: the call stays a call, named. Gated by `test/cpp/run/constexprfn4.cpp' (a sum over a
+constant table, a local array written, a 2-D array, a struct written member by member and a constant struct's member,
+digits by a `while' nested in another constexpr call, a `switch' with a block case and a default, a fallthrough, an array of
+structs, each as a template argument, an array's bound and at run time), clang++'s numbers. FOUND ON THE WAY, older than
+this step and named: an instance keyed by an UNFOLDED value argument, `Box<sum_local(1)>' before the evaluator took it,
+was keyed by the call's spelling (`Box.callidsumlocalint1') and its static `v = N' emitted `extern' -- the link named
+it, where a refusal by name would have; the key stays as it is, since libc++'s roads key unfoldable expressions
+harmlessly (0.92's `enable_if<binbin...>') and are refused later for what they lack.
+(2) THE COST OF `std::get', which is where 0.89's open question went. THE INSTRUMENT: 0.95's CPU-time trace on a scratch
+copy of the library (`kb(Heap, Store, CPU)' on every line, `tdelta.py' summing the gap after each line by its functor),
+over `stdtuple.cpp' alone: 240 s of CPU, 91 s after 25,556 `candidate' events and 78 s after 1,581 `call_types' -- and by
+NAME, `get' alone: 188 calls, 96 candidates each, 18,048 checks, 116 s, with 16,083 refusals (7,432 `deduction_failed',
+6,816 `kind_mismatch': the by-type `get<T>' templates given an index, the pair's and the array's given a tuple). TWO
+CAUSES, each measured alone on the same cache: (a) THE MERGED CANDIDATE SET WAS REBUILT AT EVERY CALL, and
+`cpp_fn_merge_defaults' computed each candidate's parameter key against every other's -- 96 x 96 = 9,216 key resolutions
+a call, 0.36 s before the first candidate was even tried (the gap after `call_types'); the set is made ONCE per name
+and kept (`cpp_fn_candidates', `'$cpp_fncands:F'', remade only where the count of the name's templates has moved, a header
+loaded since), and its keys are computed once -- 235 -> 169 s; (b) THE SAME CALL SHAPE WAS CHECKED AGAIN: 188 calls of
+`get' in 33 shapes (the name, the explicit arguments, each argument's expression and TYPE -- its value category with it --
+the class context, the count of templates), and the holding set with its bindings and conversions is a function of the
+shape, so it is REMEMBERED (`cpp_holding_set', `cpp_call_shape', `'$cpp_hs:...''; an argument the inference cannot type is
+no key, since the desugaring would type it differently per place, and such a call is checked as before) -- 169 -> 134 s,
+clang++'s lines unchanged. TRACED AGAIN under the two: 129 s of CPU, 1,061 of the 1,565 template calls answered from a remembered shape,
+the candidate checks 37 s for the shapes met first, the instantiations (`spend') 32 s -- the rest is the work. A THIRD
+memo, the CHOICE among the holding set remembered with it, measured 134 -> 132 s, the box's noise, and was TAKEN OUT: a
+change is worth what it measures. AND THE MEMO'S FIRST KEY WAS WRONG, which the fixtures said within the hour: keyed by
+the explicit arguments' SPELLING, `std::get<__indx>(__uj)' -- libc++'s `__mu', the placeholder's index a `const' local
+whose VALUE is another in every instantiation -- answered the first instantiation's holding set to the second, and
+`std::bind(add3, _2, _1, 100)(3, 4)' printed 108 for 107 (`stdbind'); the key holds the explicit arguments' VALUES
+(`cpp_targ_value', and only where every one is settled), and `stdbind', `stdmap', `stdcout', `stdvectorstring',
+`stdoptional2', `refrank', `overloads', `freeoverloads', `classwords' and the constexpr fixtures pass, one at a time,
+before the gates.
+(3) THE ANSWER TO 0.89'S QUESTION, as far as this box can give it: a C++ check averaged 34 s here against 0.87's 14 on
+the Mac, and it is three things, none of them a regression -- the box (`stdmap' 39 s here against 28 s of user time on
+the Mac at 0.88, both warm), libc++ 18's larger overload sets and headers (96 definitions of `get'; `<vector>' 806 items
+against libc++ 21's 441), and the fixtures added since 0.87 (the `<algorithm>' family, `stdcontains' at 394 s) -- with
+the two costs above, which every fixture over a library template paid, taken out: the C++ gate's number below is the
+measurement. Reader version 82 unchanged; lowering version 43 unchanged; the module rebuilt as 0.97.
+THE GATES, ON LINUX (Ubuntu 24.04, x86_64, four cores, 16 GB; clang 18, libc++ 18, cocolog 1.8.1, the module rebuilt
+as 0.97), one after another in one chain with nothing beside them, each under its own 7000 MB watchdog, the summaries
+warm at reader 82 (`test/warm.sh' first: 40 headers, 56 s, none cold): the reader's 95 checks GREEN in 9 s at 108 MB;
+the compile gate's 78 in 7 s at 265 MB; the driver's 25 in 6 s at 109 MB; the objects' 29; the proof; THE C++ GATE
+GREEN -- 192 checks ok (0.96's 191 and `constexprfn4'), `stdoptionalref' skipped by name, NO failure -- in 6108 s at a
+3778 MB peak, against 0.96's 6488 s: the 380 s the two memos took out of the whole gate, one fixture more inside it, are
+a sixth of `stdtuple''s own gain spread over every fixture that resolves a library template, which is what the trace
+said to expect (the candidate set's cost was per call, `get''s set the largest); THE LIBC++ GATE GREEN, its 18 reads whole under a fresh HOME in 5533 s at 3231 MB, every item count 0.96's
+(`<vector>' 806 ... `<optional>' 397 at C++26), as a step that moves no reader rule should leave them.
+NOT DONE: a constexpr function over a POINTER, or one returning an aggregate, stays a call (by design: it fails and never
+lies); a constexpr MEMBER function over `this'; an instance keyed by an unfolded value argument is named above and not
+refused; the candidate checks themselves -- 37 s of `stdtuple''s 129 for the shapes met first, 3.5 ms a check -- and the
+instantiations are the work that is left, and a check averages 32 s in the C++ gate here where 0.87's averaged 14 on the
+Mac, which (3) accounts for.
+
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
