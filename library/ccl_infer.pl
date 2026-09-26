@@ -496,26 +496,42 @@ ccl_struct_layout(Ms, _, _, N, Al) :- ccl_members_layout(Ms, _, N, Al).
 %% alignment counts every member's, a bitfield's declared type included.
 %% a struct's layout is asked at every member access: kept per member list
 ccl_members_layout(Ms, Lays, Size, Align) :- ccl_cached('$ccl_laycache', Ms, lay(Lays, Size, Align), ccl_members_layout_nocache(Ms, Lays, Size, Align)).
-ccl_members_layout_nocache(Ms, Lays, Size, Align) :- ccl_members_layout_(Ms, 0, 1, Lays, Bits, Align), Bytes is (Bits + 7) // 8, ccl_round_up(Bytes, Align, Size).
-ccl_members_layout_([], Bits, Al, [], Bits, Al).
-ccl_members_layout_([member(T, N, W0)|Ms], Bit0, Al0, Lays, Bits, Al) :-
+ccl_members_layout_nocache(Ms, Lays, Size, Align) :- ccl_members_layout_(Ms, 0, 1, acc([], 0), Lays, Bits, Align, EE), Bytes0 is (Bits + 7) // 8, Bytes is max(Bytes0, EE), ccl_round_up(Bytes, Align, Size).
+%% THE EMPTY SUBOBJECTS PLACED SO FAR travel with the walk (acc(Seen, EmptyEnd): the empty subobjects' tags and offsets,
+%% and the byte past the last of them), since an EMPTY `[[no_unique_address]]' MEMBER IS PLACED BY THE ABI'S RULE
+%% (Itanium 2.4 II.3, measured against clang++, 0.96): at offset ZERO, whatever lies there, unless an empty subobject of
+%% ITS OWN TYPE is there already -- then at the current data size, rounded to its alignment, and on by its alignment
+%% while such a subobject is in the way. It takes no bytes of the data, and the class's size still covers its byte.
+%% `struct { int x; [[no_unique_address]] E a, b; }' is `a' at 0, `b' at 4, eight bytes; `struct { [[no_unique_address]]
+%% E a; char c; }' one byte, `c' at 0. Before, such a member lay one past the members before it (0.89's not-done).
+ccl_members_layout_([], Bits, Al, acc(_, EE), [], Bits, Al, EE).
+ccl_members_layout_([member(T, N, W0)|Ms], Bit0, Al0, acc(Seen, EE0), Lays, Bits, Al, EE) :-
     ccl_resolve_type(T, T1), ccl_size_align(T1, S, A), ABits is A * 8,
     (   W0 == no_unique_address, ccl_empty_layout(T1)
-    ->  ccl_round_up(Bit0, ABits, B1), Off is B1 // 8, Bit1 = Bit0, Al1 is max(Al0, A),   % `[[no_unique_address]]' ON AN EMPTY MEMBER: no bytes, its ALIGNMENT kept -- libc++ marks every container's allocator and comparator with it, and given the byte an empty class now has as a complete object, basic_string's data began one byte late
+    ->  ccl_empty_tag(T1, Tag), ccl_empty_offset(Tag, A, Bit0, Seen, Off), Bit1 = Bit0, Al1 is max(Al0, A),   % no bytes, its ALIGNMENT kept -- libc++ marks every container's allocator and comparator with it
+        EE1 is max(EE0, Off + S), Seen1 = [Tag-Off|Seen],
         Lays = [lay(N, T, Off, empty)|Lays1]
     ;   ccl_plain_width(W0)
-    ->  ccl_round_up(Bit0, ABits, B1), Off is B1 // 8, Bit1 is B1 + S * 8, Al1 is max(Al0, A),
+    ->  ccl_round_up(Bit0, ABits, B1), Off is B1 // 8, Bit1 is B1 + S * 8, Al1 is max(Al0, A), EE1 = EE0,
+        ( ccl_empty_layout(T1), ccl_empty_tag(T1, Tag) -> Seen1 = [Tag-Off|Seen] ; Seen1 = Seen ),   % a plain member of an empty class is an empty subobject too, and its byte is in the way of a marked one of its type
         Lays = [lay(N, T, Off, none)|Lays1]
-    ;   ccl_bit_width(W0, W),
+    ;   ccl_bit_width(W0, W), Seen1 = Seen, EE1 = EE0,
         (   W =:= 0 -> ccl_round_up(Bit0, ABits, Bit1), Al1 = Al0, Lays = Lays1
         ;   ( (Bit0 mod ABits) + W > ABits -> ccl_round_up(Bit0, ABits, Start) ; Start = Bit0 ),
             UnitStart is (Start // ABits) * ABits, Off is UnitStart // 8, BOff is Start - UnitStart,
             Bit1 is Start + W, Al1 is max(Al0, A),
             Lays = [lay(N, T, Off, bits(BOff, W, S))|Lays1] ) ),
-    ccl_members_layout_(Ms, Bit1, Al1, Lays1, Bits, Al).
+    ccl_members_layout_(Ms, Bit1, Al1, acc(Seen1, EE1), Lays1, Bits, Al, EE).
 %% A LAYOUT IS OVER DATA MEMBERS: a C++ class's tag carries its constructors, methods and typedefs beside them, and
 %% a nested one reaches the layout as the reader gave it -- libc++'s `union __rep' has three constructors.
-ccl_members_layout_([_|Ms], Bit0, Al0, Lays, Bits, Al) :- ccl_members_layout_(Ms, Bit0, Al0, Lays, Bits, Al).
+ccl_members_layout_([_|Ms], Bit0, Al0, Acc, Lays, Bits, Al, EE) :- ccl_members_layout_(Ms, Bit0, Al0, Acc, Lays, Bits, Al, EE).
+ccl_empty_tag(base(_, [struct(Tag, _)]), Tag) :- !.
+ccl_empty_tag(base(_, [union(Tag, _)]), Tag) :- !.
+ccl_empty_tag(T, T).
+ccl_empty_offset(Tag, A, Bit0, Seen, Off) :-
+    (   \+ memberchk(Tag-0, Seen) -> Off = 0
+    ;   Bytes is (Bit0 + 7) // 8, ccl_round_up(Bytes, A, C0), ccl_empty_step(Tag, A, Seen, C0, Off) ).
+ccl_empty_step(Tag, A, Seen, C, Off) :- ( memberchk(Tag-C, Seen) -> C1 is C + A, ccl_empty_step(Tag, A, Seen, C1, Off) ; Off = C ).
 ccl_plain_width(none).
 ccl_plain_width(no_unique_address).                                              % the mark is no bitfield width: a member carrying it over a type with bytes lies where it always did
 %% AN EMPTY CLASS IS ONE WITH NO DATA MEMBERS AT ALL ([class]/4) -- the same test `ccl_class_size' asks, and

@@ -74,7 +74,8 @@
 
 %% the reader's version, part of the knowledge base's cache key: bump it when
 %% the grammar changes, so what an older grammar left partial is read again
-ccl_reader_version(81).   % 81: a literal past 2^60 is big(Atom) in every summary's item
+ccl_reader_version(82).   % 82: a function's `constexpr' is no const on its result (every summary's get, and every constexpr function's type)
+%% ccl_reader_version(81).   % 81: a literal past 2^60 is big(Atom) in every summary's item
 %% ccl_reader_version(80).   % 80: a template template parameter's name un-noted at its item's end, a tag or a typedef no concept (<variant>'s `template <_Trait X, ...>' read as a constrained type parameter); 79: a braced default argument, C++20's brace-designated initializer (libc++ 18 at C++20); 78: an unnamed parameter of an unknown type name in a C++ parameter list, a destructor called with its template arguments (libc++ 18); 77: _Generic chosen at the read, an unbounded array sized by its initializer, _BitInt in the table, the OS's predefined macros, <limits.h> and the C23 headers; 59: a method's ref-qualifier kept; 60: the C++20 stretch (a constrained parameter, a requires-clause on a member template, trailing, on a lambda; `::template f' alone; a braced subscript; a member variable template; a constrained auto); 61: a concept indexed by name; 62: a function template's explicit template-id is no type (`T &r(std::forward<U>(v))'), a bare concept's name bound; 63: explicit(cond) kept; 64: a pointer to member, typeid, a member class template noted ahead; 65: no RTTI predefined, so every header is flattened again; 66: only a pointer to member takes the trailing cv- and ref-qualifiers (a method's const is the method rule's); 67: a free name outside a template; 68: a nullability word with an argument list (glibc); 69: a pointer to member function's noexcept, a braced list assigned, and the AST's index keys a deeper namespace's name apart; 70: alignas kept on a class; 71: [[no_unique_address]] kept on a member; 72: the AST's index holds a header's inline variable with NO initializer (std::ignore); 73: a pack expansion is a dependent type, and a call of a function template's name is not the reader's `auto' to deduce; 74: `if constexpr' with an init-statement; 75: a member FUNCTION template's name is a template and no type; 76: __OPTIMIZE_SIZE__ predefined, so libc++'s algorithms are the scalar ones
 
 %% ---- the lexer: a DCG over codes ------------------------------------------
@@ -929,7 +930,7 @@ ccl_sto_pick([S|_], S).
 ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, ccl_id(N), ccl_p('...'), ccl_p('['), !, ccl_expr(I), ccl_p(']'), ccl_specs(Env, Sc, St0, Q0, [pack_index(N, I)], St, Q, S).   % C++26's PACK INDEXING as a type, `Ts...[0]': the desugaring picks the element once the pack is bound
 ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, { G = genv }, ccl_qname(G, type, C0), { ccl_concept_name(C0, C, As) }, ccl_kw(auto), !, ccl_specs(Env, Sc, St0, [constrained(C, As)|Q0], [auto], St, Q, S).   % KEPT as a qualifier (0.93): the desugaring checks the deduced type against it   % C++20: a CONSTRAINED auto, `__integer_like auto f()', `std::integral auto x': the auto to deduce, its concept dropped (a template's name before `auto' is a concept)
 ccl_specs(Env, Sc, St0, Q0, [], St, Q, S) --> ccl_cpp, ccl_kw(auto), !, ccl_specs(Env, Sc, St0, Q0, [auto], St, Q, S).   % C++: auto is a type to deduce (C's storage class it is not)
-ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_cpp, ccl_kw(constexpr), !, ccl_specs(Env, Sc, St0, [const|Q0], S0, St, Q, S).   % IN C++ TOO (0.79; BEFORE the qualifier clause below, which would take the word): a constexpr OBJECT is a const one; read as a qualifier of its own, `inline constexpr piecewise_construct_t piecewise_construct' carried `constexpr' in its TYPE, and `is_same<__remove_const_ref_t<decltype(piecewise_construct)>, piecewise_construct_t>' was false -- libc++'s key extraction for a map's piecewise emplace fell to its fallback
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_cpp, ccl_kw(constexpr), !, ccl_specs(Env, Sc, St0, [const, constexpr|Q0], S0, St, Q, S).   % ... AND THE MARKER beside the const (0.95): a FUNCTION's constexpr is no const on its result, and the declarator's fold (ccl_constexpr_fold) takes the const back where the declarator makes a function   % IN C++ TOO (0.79; BEFORE the qualifier clause below, which would take the word): a constexpr OBJECT is a const one; read as a qualifier of its own, `inline constexpr piecewise_construct_t piecewise_construct' carried `constexpr' in its TYPE, and `is_same<__remove_const_ref_t<decltype(piecewise_construct)>, piecewise_construct_t>' was false -- libc++'s key extraction for a map's piecewise emplace fell to its fallback
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw('_Thread_local'), !, ccl_specs(Env, Sc, St0, [thread_local|Q0], S0, St, Q, S).          % C11's spelling
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_cpp, ccl_kw(thread_local), !, ccl_specs(Env, Sc, St0, [thread_local|Q0], S0, St, Q, S).   % C++11's
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_kw(K), { ccl_storage(K) }, !, ccl_specs(Env, Sc, [K|St0], Q0, S0, St, Q, S).
@@ -939,7 +940,7 @@ ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_id(own), !, ccl_specs(Env, Sc,
 %% the language's, not the level's (they are the native lexer's too, and k84 compares the two), so the level
 %% is read here instead: at -std=c23 these identifiers are the keywords C23 made them.
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(bool), !, ccl_specs(Env, Sc, St0, Q0, [bool|S0], St, Q, S).
-ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(constexpr), !, ccl_specs(Env, Sc, St0, [const|Q0], S0, St, Q, S).   % a constexpr OBJECT is a const one whose value folds (ccl_note_constants)
+ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(constexpr), !, ccl_specs(Env, Sc, St0, [const, constexpr|Q0], S0, St, Q, S).   % a constexpr OBJECT is a const one whose value folds (ccl_note_constants)
 ccl_specs(Env, Sc, St0, Q0, S0, St, Q, S) --> ccl_c23, ccl_id(thread_local), !, ccl_specs(Env, Sc, St0, [thread_local|Q0], S0, St, Q, S).   % A QUALIFIER, not the storage word (0.93): `static _Thread_local' has both, and the storage slot holds one; the lowering reads it (ir_tls)
 %% C23's BIT-PRECISE INTEGER, `_BitInt(N)', which clang offers in C++ too and libc++ writes in its bit algorithms
 %% (`template <int _Np> _BitInt(_Np) abs(_BitInt(_Np) __x)'). READ as the specifier it is; nothing lowers one yet,
@@ -1473,12 +1474,32 @@ ccl_param_rest(Env, Base, P) --> ccl_abstract_or_declarator(Env, Base, N, T0), c
 ccl_param_default(T, N, param(T, N, E)) --> ccl_cpp, ccl_p('='), !, ccl_initializer(E).        % C++'s default argument -- an expression, or a BRACED LIST (`_Pred __pred = {}', every ranges algorithm of libc++ at C++20; the four C++20 headers stopped there, 0.93)
 ccl_param_default(T, N, param(T, N)) --> [].
 
-ccl_mk_type(decl(Ptrs, Direct, Sfx), Base, Name, Type) :-
+ccl_mk_type(D, Base, Name, Type) :- ccl_mk_type_(D, Base, Name, Type0), ccl_constexpr_fold(Type0, Type).
+ccl_mk_type_(decl(Ptrs, Direct, Sfx), Base, Name, Type) :-
     ccl_apply_pointers(Ptrs, Base, T1),
     ccl_apply_suffixes(Sfx, T1, T2),
     ( Direct = name(Name) -> Type = T2
-    ; Direct = paren(D) -> ccl_mk_type(D, T2, Name, Type)
+    ; Direct = paren(D) -> ccl_mk_type_(D, T2, Name, Type)
     ; Name = anon, Type = T2 ).
+%% `constexpr' ON A FUNCTION IS NO CONST ON ITS RESULT ([dcl.constexpr]: a function specifier; 0.95). The specifier
+%% rule reads `constexpr' as `const' plus the marker, which is right for an OBJECT (0.79's rule: a constexpr object
+%% is a const one, and the passes fold it as such) and wrong for a function: libc++ writes every `get' as
+%% `constexpr typename tuple_element<...>::type &get(tuple<_Tp...> &)', and its result came out `const int &' --
+%% so `forward_as_tuple(std::get<0>(t))' deduced `const int &', which the unqualified type keys hid (`tuple<const int &>'
+%% and `tuple<int &>' were one name) and the qualified ones exposed at `tuple_cat'. The fold is the one door every
+%% declarator goes through: a function's result loses the marker and the const that came with it, an object only the marker.
+ccl_constexpr_fold(T, T) :- \+ ccl_has_constexpr(T), !.
+ccl_constexpr_fold(fn(R, Ps, V), fn(R1, Ps, V)) :- !, ccl_drop_constexpr(R, const, R1).
+ccl_constexpr_fold(T, T1) :- ccl_drop_constexpr(T, none, T1).
+ccl_has_constexpr(base(Q, _)) :- !, memberchk(constexpr, Q).
+ccl_has_constexpr(fn(R, _, _)) :- !, ccl_has_constexpr(R).
+ccl_has_constexpr(memptr(_, _, T)) :- !, ccl_has_constexpr(T).
+ccl_has_constexpr(T) :- compound(T), T =.. [_, _, U], ccl_has_constexpr(U).       % ptr(Q, T), ref(Q, T), rref(Q, T), arr(N, T), block(Q, T)
+ccl_drop_constexpr(base(Q, S), Mode, base(Q1, S)) :- !, ccl_delete_one(Q, constexpr, Q0), ( Mode == const -> ccl_delete_one(Q0, const, Q1) ; Q1 = Q0 ).
+ccl_drop_constexpr(fn(R, Ps, V), Mode, fn(R1, Ps, V)) :- !, ccl_drop_constexpr(R, Mode, R1).
+ccl_drop_constexpr(memptr(C, Q, T), Mode, memptr(C, Q, T1)) :- !, ccl_drop_constexpr(T, Mode, T1).
+ccl_drop_constexpr(T, Mode, T1) :- compound(T), T =.. [F, A, U], !, ccl_drop_constexpr(U, Mode, U1), T1 =.. [F, A, U1].
+ccl_drop_constexpr(T, _, T).
 ccl_apply_pointers([], T, T).
 ccl_apply_pointers([ptr(Q)|Ps], T0, T) :- ccl_apply_pointers(Ps, ptr(Q, T0), T).
 ccl_apply_pointers([memptr(C, Q)|Ps], T0, T) :- ccl_apply_pointers(Ps, memptr(C, Q, T0), T).   % a pointer to member: the class it belongs to, kept

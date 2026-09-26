@@ -4812,6 +4812,137 @@ and killed both, 1430 s into the libc++ one. A gate beside other runs takes the 
 `probe.sh' watches its own process group and is the runner for anything beside a gate.
 
 
+**M6's sixty-second step (0.95): THE TWO-RANGE ALGORITHM FAMILY'S COST, which was never breadth -- an
+exponential in the most-specialized ordering -- and the not-done list of 0.94, closed.** 0.92 measured
+`std::equal' at 250 s against a 28 s baseline on macOS and read its trace as BREADTH (1422 candidates, 637
+refusals, no instance asked twice); 0.93 and 0.94 carried five `<algorithm>' fixtures past the gate's 2400 s cap
+on Linux under that reading. THE INSTRUMENT that settled it in one run: cocolog's `statistics(cputime, T)'
+printed on every trace line beside the memory (`cpp_mem' in a scratch copy of the library), and a script that
+sums the gap after each line by the line's functor and ranks the largest gaps -- `t_defined(F) => t_special(F)'
+held 121 of stdalgorithm2's first 135 s, which is `cpp_most_special_fn' and nothing else. A stamp at the head of
+each pairwise comparison then COUNTED them: 1025 for a two-candidate `search', 1029 for a four-candidate
+`__uninitialized_allocator_copy_impl', 257, 65 and 17 elsewhere -- 4^k + 1 for k parameters. THE CAUSE:
+`cpp_fn_more_special' leaves choicepoints (`cpp_match''s pointer and array clauses have no cut, and its catch-all
+last clause succeeds after any of them), and the ordering was written `\+ ( member(Y, All), Y \== H, more(Y, H),
+\+ more(H, Y) )', so every failure of the inner test RETRIED the outer comparison through every alternative
+deduction, one choice per parameter. A comparison is a TEST, asked `once' -- at both orderings, the class
+specializations' too, and the bare `catch' inside the function one brought under the repository's rule; the
+answer is the one it was, since the inner test never depended on which deduction the outer one found. MEASURED
+ALONE on this box, each build with the same summaries: stdalgorithm2 59 s (past 2400 before), stdalgorithm6 226 s
+(past 2400), stdalgorithm7 78 s (47 minutes, uncapped, at 0.93), stdalgorithm9 57 s (2214 s at 0.94),
+stdalgorithmstr 144 s (past 2400), stdalgorithm3 66 s, and `std::equal' alone had been 158 s against a 106 s
+baseline on this box before the fix -- the two-range family was never the cost here, the ordering was, and it hit
+whichever fixture had four-parameter candidates. 0.92's two failed fixes chased the `enable_if' instance keyed by
+a spelled conjunction, which was a real thing in the trace and not the cost: a bad thing in a trace is not a
+demonstration that it is THE cost, and a CPU-time stamp per line is the demonstration.
+WHAT THE CAP HAD HIDDEN: stdalgorithmstr, inside the cap at last, refused `phi void' -- A CONDITIONAL OVER TWO
+VOID ARMS IS VOID ([expr.cond]/2: both arms evaluated for their effects, no value and nothing to phi;
+`ir_expr(cond)''s first clause, lowering version 42), which libc++ 18's string algorithms write;
+`test/cpp/run/voidcond.cpp'. And `stdalgorithm8.cpp' (includes, set_union, set_intersection, set_difference,
+set_symmetric_difference, inplace_merge), written and never seen to pass since 0.92, builds in 84 s and prints
+clang++'s lines; it is committed.
+THE TYPE KEYS CARRY THE QUALIFIERS (0.93's item 55): `const' and `volatile' are part of an instance's key
+(`cpp_type_key': `const_int', `int_pc' for `int *const'; nothing else in a qualifier list keys), so
+`is_const<const int>' and `is_const<int>' are two instances where the first made had answered for both; a by-value
+parameter's TOP-LEVEL qualifiers stay out of a function's key ([dcl.fct]/5, `cpp_param_fn_type' in
+`cpp_params_key'), since `f(int)' declared and `f(const int x)' defined are one function. Eleven of twelve probes
+passed under the keys at once and `tuple_cat' refused -- WHICH WAS THE DEFECT 0.93 NAMED, seen whole: the reader
+gave every libc++ `get' a `const' on its result, because `constexpr typename tuple_element<...>::type &get(tuple<_Tp...>
+&)' went through 0.79's rule (a constexpr OBJECT is a const one) with no declarator in sight, so
+`forward_as_tuple(std::get<0>(t))' deduced `const int &' -- and the unqualified keys had made `tuple<const int &>'
+and `tuple<int &>' one name, which is why it worked. `constexpr' ON A FUNCTION IS NO CONST ON ITS RESULT
+([dcl.constexpr]): the specifier rule reads the word as `const' plus a marker, and the declarator's fold
+(`ccl_constexpr_fold' at `ccl_mk_type', the one door every declarator goes through) drops the marker, and the
+const with it where the declarator makes a FUNCTION -- an object keeps its const and folds as before. Reader
+version 82, since every summary's `get' changes shape. `test/cpp/run/constexprfn2.cpp' (a constexpr function's
+reference written through, a template deducing `int &' from it and `const int &' from the const overload, a
+constexpr object sizing an array), clang++'s numbers. TWO MORE THE KEYS UNCOVERED, each a rule of its own: A
+TEMPLATE ARGUMENT BINDS THE TYPE AS IT IS ([temp.deduct.type]/1; `cpp_match_targs'): the decay of the argument's
+top-level qualifiers is [temp.deduct.call]'s, a by-value FUNCTION parameter's, and through `cpp_match' the pattern
+`pair<_T1, _T2> &' against a map's `pair<const string, int>' bound `_T1' to `string' -- invisible while the keys carried
+no qualifiers, and `argument_mismatch' on every `get' of a structured binding over a map once they did (stdmapstring);
+and A FILE-SCOPE `const' OBJECT INITIALIZED BY A CONSTEXPR CALL TAKES ITS VALUE (`cpp_fold_const_inits' at the
+declaration item, the program's own desugared functions kept as `'$cpp_ownfn'' where `cpp_const_fold' can find them):
+`constexpr int N = twice(21);' had reached the lowering as a call in a global's initializer. AND A MEASUREMENT THAT
+WAS NOT ONE, three times in an evening: stdfunction read 3506 MB and stdcontains 5535 MB under this tree where 0.94
+had 1489 and 3652 -- and every one of those runs was COLD, the reader's version having moved to 82, with the flatten
+of the headers in the same process (the trace showed 2.8 GB of heap BEFORE the first desugaring event, the read's
+own); warm and alone, stdfunction is 201 s at 1480 MB and stdcontains 394 s at 3760, 0.94's numbers. A killed run
+writes no summary (the finding), so a run killed on its flatten leaves the NEXT run cold too, and a `regression'
+that arrives with a reader version bump is a cold cache until a warm run says otherwise (0.89's rule, re-learned).
+AND THE OLDER LIST: `stdoptionalref' is beyond libc++ 18 (its `<optional>' declares a reference type ill-formed)
+and A FIXTURE BEYOND THE BOX'S LIBRARY IS SKIPPED BY NAME -- `NAME.needs' holds a preprocessor condition over the
+library's own macros (`_LIBCPP_VERSION >= 210000'), `ccl_needs_met' in `test/cpp.sh' runs a four-line file
+including `<version>' through `cicili++ -E' and looks for the marker, and the gate prints the fixture as skipped,
+neither ok nor a failure (measured: libc++ 18's marker survives and 21's does not). `stdaggregate''s one crash in
+0.94's first gate WAS NO CRASH: the log holds the watchdog's kill line right above the verdict, at a 7040 MB sum
+with my probes beside the gate -- a misread of 0.94's own finding, recorded here so it is not chased again; its
+binary ran 600 times clean.
+Reader version 82, lowering version 42; the module rebuilt as 0.95.
+THE GATES, ON LINUX (Ubuntu 24.04, x86_64, four cores, 16 GB; clang 18, libc++ 18, cocolog 1.8.1), one after
+another under their own 7000 MB watchdog with nothing beside them, the user's summaries warmed OUTSIDE the gates
+first at all four levels (one header a process, 32 summaries, since the reader's version moved): the reader's 95
+checks GREEN in 9 s at 108 MB; the compile gate's 78 in 7 s at 266 MB; the driver's 25 in 5 s; the objects' 29; the
+proof; THE C++ GATE GREEN -- 189 checks ok, `stdoptionalref' skipped by name, NO failure -- in 6775 s at a 3750 MB
+peak, against 0.94's 180 ok and 7 failures in 22047 s: every `<algorithm>' fixture inside the cap, `stdalgorithm8',
+`voidcond' and `constexprfn2' among the new ones, `stdcontains' 0.94's timeout no more; THE LIBC++ GATE GREEN, its 18 reads whole under a fresh HOME in 5156 s at 3208 MB, every item count 0.94's (`<vector>' 806 ... `<optional>' 397 at C++26): the reader's constexpr fold moved no header's item count, which is what it should have moved -- a type inside an item, not the items.
+NOT DONE: `is_const<const int>' and its kin are two instances now, but two `[[no_unique_address]]' members of ONE
+empty type still share an address (0.89's); a `constexpr' function is folded only where its body is one `return'
+(0.72's rule, unchanged); the C++ gate's reader part still pays a cold flatten of `<sstream>' and its ten headers
+after every reader bump (0.67's note), which the warming outside the gates does not cover -- a header the reader's
+fixtures include and no run fixture does.
+
+
+**M6's sixty-third step (0.96): THE NOT-DONE LIST OF 0.95, closed -- the empty member's address, the constexpr
+function with statements, and the warming as a tool of the repository.** (1) AN EMPTY `[[no_unique_address]]' MEMBER
+LIES WHERE THE ITANIUM ABI PUTS IT (2.4 II.3, MEASURED against clang++ 18 on eleven shapes before a line was written):
+at offset ZERO whatever lies there, unless an empty subobject of ITS OWN TYPE is there already -- then at the current
+data size rounded to its alignment, and on by its alignment while such a subobject is in the way; it takes no bytes
+of the data and the class's size still covers its byte. `struct { int x; [[no_unique_address]] E a, b; }' is `a' at
+0, `b' at 4, eight bytes; `struct { [[no_unique_address]] E a; char c; }' one byte with `c' at 0; a PLAIN member of an
+empty class counts as an empty subobject in the way. The layout walk (`ccl_members_layout_') threads the empty
+subobjects placed and the byte past the last of them (`acc(Seen, EmptyEnd)'), the size is the larger of the data's
+and that end; and since the offset may lie BEFORE the running position, the lowering emits NO element for such a
+member and addresses it by its BYTE OFFSET from the object (`ir_member_slot': `getelementptr i8', the map's
+`m(N, empty(Off), T, empty)'), where a zero-sized `{}' element at the running position had given 0.89's address, one
+past the members before it. Lowering version 43. `test/cpp/run/nounique2.cpp' at C++20, clang++'s numbers on all
+eleven shapes; the older layout fixtures unchanged. (2) A CONSTEXPR FUNCTION WITH STATEMENTS ([dcl.constexpr] since
+C++14) FOLDS where a constant is wanted -- 0.72's fold took one `return' and nothing else. The body's statements are
+EVALUATED over an environment of Name-Value (`cpp_eval_stmts'): the parameters bound to the arguments' folded values,
+locals declared as they are met and a block's own dropped at its end, assignments and the four increments changing
+the environment (an increment inside an operand too, `n-- > 1'), `if', `while', `do', `for' with `break' and
+`continue', several `return's, every expression folded by `ccl_const_eval' with the names replaced by their values,
+under a step budget (200000 statements) so a loop that does not end is a failure and never a hang; what it cannot
+take -- an aggregate, a pointer, a call it cannot fold -- FAILS and the call stays a call, as before.
+`test/cpp/run/constexprfn3.cpp' (a factorial by a loop, a Fibonacci by `while' over a decremented parameter, a bit
+count, a `do'/`while' Collatz, a `for(;;)' with its return inside, `break' and `continue', as a template argument, an
+array's bound, a class's static, a global, a `static_assert', and the same functions called at run time), clang++'s
+numbers. (3) THE WARMING IS A TOOL OF THE REPOSITORY, `test/warm.sh': every header `test/cpp/*.cpp' and
+`test/cpp/run/*.cpp' include, and Cicili's own `test/cpp/*.cpp' that the reader's gate reads whole (`<sstream>',
+`<stdexcept>': the ones the scratchpad script never covered), at the level its `.flags' names and at C++17, `<version>' first, one header a process
+under a time cap and a memory cap over every cocolog process (2400 s and 7000 MB, the gates' own) -- so a reader
+version bump never leaves the C++ gate's reader part cold on `<sstream>' and its ten headers (0.95's not-done). A header
+whose warming is KILLED is named as not written. Its first run, at reader 82 with the summaries warm, took 37 headers in
+55 s and named none as cold -- and it did not list `<sstream>' at all, since the gate's whole reads are Cicili's files and
+not this tree's: the list was widened before the script was believed, which is the measurement a tool owes. AND THE
+WIDENING WAS SAVED TWO MINUTES AFTER THE GATE CHAIN HAD RUN THE SCRIPT, so the chain below warmed the 37 and not the
+40 -- the script's log says which list it ran (`warm: 40 headers' is its first line now, and a Cicili checkout it
+cannot find is named rather than skipped), and the widened list ran ALONE after the gates: 40 headers in 56 s, none
+killed, `<sstream>' served warm at 213 MB. Reader version 82 unchanged; lowering version 43.
+THE GATES, ON LINUX (Ubuntu 24.04, x86_64, four cores, 16 GB; clang 18, libc++ 18, cocolog 1.8.1, the module rebuilt
+as 0.96), one after another in one chain with nothing beside them, each under its own 7000 MB watchdog, the summaries
+warm at reader 82: the reader's 95 checks GREEN in 10 s at 107 MB; the compile gate's 78 in 7 s at 264 MB; the
+driver's 25 in 6 s at 109 MB; the objects' 29; the proof; THE C++ GATE GREEN -- 191 checks ok (0.95's 189 and this
+step's `nounique2' and `constexprfn3'), `stdoptionalref' skipped by name, NO failure -- in 6488 s at a 3771 MB peak
+(0.95: 6775 s, 3750 MB: the layout rule and the constexpr evaluator cost nothing the box's noise does not cover);
+THE LIBC++ GATE GREEN, its 18 reads whole under a fresh HOME in 5390 s at 3224 MB, every item count 0.95's
+(`<vector>' 806 ... `<optional>' 397 at C++26), as a step that moves no reader rule should leave them.
+NOT DONE: a constexpr function over an aggregate, a pointer or a call the evaluator cannot fold stays a call (by
+design: it fails and never lies); a `[[no_unique_address]]' member of a class with bytes lies where it always did
+(the ABI agrees); and 0.89's open question -- why a C++ check averages 34 s on this box where 0.87's averaged 14 on
+the Mac -- is still one fixture's outlier away from an answer, `stdtuple' at 235 s the first to measure.
+
+
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`

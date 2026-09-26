@@ -762,6 +762,24 @@ what runs today.
   (`basecastcall.cpp`, `emptyassign.cpp`); the stream and container
   fixtures print clang++'s lines on Ubuntu, the gates' numbers in
   CLAUDE.md's entry for 0.94.
+* **THE `<algorithm>` FAMILY'S COST, and the not-done list of 0.94.**
+  The two-range algorithm fixtures ran past the gate's 2400 s cap, read
+  since 0.92 as breadth; it was an exponential in the most-specialized
+  ordering of function templates -- a pairwise comparison retried
+  through every alternative deduction, 4^k + 1 times for k parameters --
+  and a `once` makes stdalgorithm2 59 s, stdalgorithm7 78 s, the whole
+  family inside the cap, with the set operations (`stdalgorithm8.cpp`)
+  and a conditional over two void arms (`voidcond.cpp`) beside them; a
+  type's `const` and `volatile` are part of its instance key; a fixture
+  beyond the box's library is skipped by name (`NAME.needs`).
+* **THE LAYOUT OF AN EMPTY `[[no_unique_address]]` MEMBER, a constexpr
+  function with statements, and the cache warmed by a script.** An empty
+  marked member lies where the Itanium ABI puts it -- at offset 0, or
+  past the data where its own type is there already, stepping by its
+  alignment (`nounique2.cpp`, clang++'s addresses and sizes); a constexpr
+  function with locals, assignments, `if` and loops folds where a
+  constant is wanted (`constexprfn3.cpp`); `test/warm.sh` warms every
+  header the fixtures include at every level, outside the gates.
 * **M5 -- the preprocessor, in cocolog.** No clang, no LLVM binary
   anywhere (owner's rule): a header the raw reader cannot take goes
   through `library(ccl_pp)` -- directives, conditional groups, macro
