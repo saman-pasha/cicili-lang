@@ -772,6 +772,13 @@ what runs today.
   and a conditional over two void arms (`voidcond.cpp`) beside them; a
   type's `const` and `volatile` are part of its instance key; a fixture
   beyond the box's library is skipped by name (`NAME.needs`).
+* **THE CONSTEXPR EVALUATOR OVER POINTERS AND `this`.** A constexpr
+  function may take and return an aggregate, walk a string literal or an
+  array through a pointer (`s[n]`, `*s++`, `p - s`), and be a `const`
+  member function over a constant object (`corner.scaled(3)`); a
+  file-scope `constexpr P origin = make(7);` folds into its initializer
+  (`constexprfn5.cpp`, clang++'s numbers). A template's value argument
+  that folds to no constant is refused by name.
 * **THE CONSTEXPR EVALUATOR OVER AGGREGATES, and the cost of `std::get`.**
   A constexpr body's arrays and structs are values -- built from braced
   initializers, read and written through `a[i]`, `p.x`, `g[1][2]`,

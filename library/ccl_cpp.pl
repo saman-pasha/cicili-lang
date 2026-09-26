@@ -1670,6 +1670,7 @@ cpp_item(declare(L, base(Q, [class(_, C0, _, _)])), Items) :- !, ( cpp_class_ite
     ( \+ cpp_implicit_ctor_needed(C) -> Fns2 = [] ; cpp_implicit_ctor(L, C, Base, Defaults, Fns2) -> cpp_mangle(C, C, [], ICName), cpp_instance_note(ICName, C) ; cpp_trace(item_implicit_ctor(C)), fail ),   % ... and the implicit one is NOTED where the class emits it, so a later naming does not emit it again (cpp_use_member takes a written `C()' of a lazy class by the same name: two identical definitions, which LLVM refuses)
     ( \+ cpp_implicit_dtor_needed(C) -> Fns3 = [] ; cpp_implicit_dtor(L, C, Fns3) -> true ; cpp_trace(item_implicit_dtor(C)), fail ),
     append(Fns0, Fns1, Fns01), append(Fns01, Fns2, Fns012), append(Fns012, Fns3, Fns),
+    forall(( member(Fn, Fns), Fn = function(_, _, _, _, _, _, _) ), assertz('$cpp_ownfn'(Fn))),   % a class's methods, where the constexpr evaluator finds them: `q.sum()' over a constant q (0.98)
     cpp_align_tag(C, Ms, Data1, Data2),
     ( '$cpp_union'(C) -> Spec = union(C, [union_tag|Data2]) ; Spec = struct(C, Data2) ),   % a union-class shares its members' storage, and its tag says so wherever it is noted from (ccl_is_union_tag)
     (   Slots == [] -> Items = [declare(L, base(Q, [Spec]))|Fns]
@@ -1747,8 +1748,9 @@ cpp_fold_const_inits(base(Q, _), Vs, Ws) :- memberchk(const, Q), !, cpp_fold_con
 cpp_fold_const_inits(_, Vs, Vs).
 cpp_fold_const_inits_([], []).
 cpp_fold_const_inits_([var(N, T, I)|Vs], [var(N, T, I1)|Ws]) :-
-    ( I = call(_, _), \+ ccl_resolve_type(T, arr(_, _)), catch(cpp_const_value(I, K), _, fail) -> ( K = bool(_) -> I1 = K ; integer(K) -> I1 = int(K) ; I1 = I ) ; I1 = I ),
-    ( atom(N), I \== none, catch(cpp_eval_agg_kind(T, _), _, fail) -> atom_concat('$cpp_gagg:', N, GK), nb_setval(GK, agg(T, I)) ; true ),   % a constant aggregate: a value for the constexpr evaluator (0.97)
+    (   I = call(_, _), catch(cpp_eval_agg_kind(T, _), _, fail), catch(cpp_eval_init(T, I, [], _, AV), _, fail), cpp_eval_init_term(AV, I2) -> I1 = I2   % `constexpr P origin = make(7);': the aggregate the call answers, as its initializer (0.98)
+    ;   I = call(_, _), \+ ccl_resolve_type(T, arr(_, _)), catch(cpp_const_value(I, K), _, fail) -> ( K = bool(_) -> I1 = K ; integer(K) -> I1 = int(K) ; I1 = I ) ; I1 = I ),
+    ( atom(N), I1 \== none, catch(cpp_eval_agg_kind(T, _), _, fail) -> atom_concat('$cpp_gagg:', N, GK), nb_setval(GK, agg(T, I1)) ; true ),   % a constant aggregate: a value for the constexpr evaluator (0.97)
     cpp_fold_const_inits_(Vs, Ws).
 cpp_item(typedef(L, Vs), [typedef(L, Vs1)]) :- !, cpp_vars(none, Vs, Vs1), ccl_note_typedefs(Vs1).   % the table learns the instance's name at once
 cpp_item(template(_, _, _), []) :- !.
@@ -3097,11 +3099,15 @@ cpp_const_value(E, V) :- cpp_const_fold(E, V), !.
 %% __find_idx(__i + 1, __matches), __matches[__i])' -- a conditional whose arms hold the recursive call, so
 %% ccl_const_eval failed on the whole expression and nothing here reached the call.
 cpp_const_value(E0, V) :- cpp_const_reduce(E0, E), E \== E0, !, cpp_const_value(E, V).
-cpp_const_fold(call(id(F), Args), V) :- atom(F), ( '$cpp_out'(function(_, _, _, F, Params, _, block([return(_, E0)]))) ; '$cpp_ownfn'(function(_, _, _, F, Params, _, block([return(_, E0)]))) ), !,   % an emitted instance's, or the program's own (0.95)
+cpp_const_fold(call(id(F), Args), V) :- atom(F), cpp_eval_fn(F, Params, Ss),   % the evaluator (0.96, 0.98): statements, aggregates, pointers; a SCALAR answer here
+    cpp_eval_reduce_list(Args, [], Args1), cpp_eval_call(F, Params, Ss, Args1, V0), cpp_eval_scalar(V0), !, V = V0.
+cpp_const_fold(call(id(F), Args), V) :- atom(F), ( '$cpp_out'(function(_, _, _, F, Params, _, block([return(_, E0)]))) ; '$cpp_ownfn'(function(_, _, _, F, Params, _, block([return(_, E0)]))) ), !,   % an emitted instance's, or the program's own (0.95): 0.72's road, the arguments bound as WRITTEN
     cpp_fold_depth(D), D < 32, D1 is D + 1, nb_setval('$cpp_fold_depth', D1),
     (   cpp_param_binds(Params, Args, B), cpp_replace_ids(E0, B, E), cpp_const_value(E, V)
     ->  nb_setval('$cpp_fold_depth', D)
     ;   nb_setval('$cpp_fold_depth', D), fail ).
+cpp_const_fold(member(E, F), V) :- compound(E), E \= id(_), cpp_eval_reduce(member(E, F), [], R), cpp_eval_value(R, V), cpp_eval_scalar(V), !.   % `make(5).y': a member of a call's aggregate answer (0.98)
+cpp_const_fold(index(E, I), V) :- compound(E), E \= id(_), cpp_eval_reduce(index(E, I), [], R), cpp_eval_value(R, V), cpp_eval_scalar(V), !.
 %% A CONSTEXPR FUNCTION WITH STATEMENTS ([dcl.constexpr] since C++14: locals, assignments, if, loops, several
 %% returns; 0.96 -- 0.72's fold took one `return' and nothing else) is EVALUATED where a constant is wanted: the
 %% body's statements run over an environment of Name-Value (the parameters bound to the arguments' values, the
@@ -3109,15 +3115,16 @@ cpp_const_fold(call(id(F), Args), V) :- atom(F), ( '$cpp_out'(function(_, _, _, 
 %% with the names replaced by their values, under a step budget (`'$cpp_eval_steps'`: 200000 statements) so a loop
 %% that does not end is a failure and not a hang. What it does not take -- an aggregate, a pointer, a call to a
 %% function it cannot fold, a form below -- FAILS, and the caller's answer is what it was: the call stays a call.
-cpp_const_fold(call(id(F), Args), V) :- atom(F), ( '$cpp_out'(function(_, _, _, F, Params, _, block(Ss))) ; '$cpp_ownfn'(function(_, _, _, F, Params, _, block(Ss))) ), !,
+cpp_eval_fn(F, Params, Ss) :- ( '$cpp_out'(function(_, _, _, F, Params, _, block(Ss))) ; '$cpp_ownfn'(function(_, _, _, F, Params, _, block(Ss))) ), !.
+cpp_eval_call(_, Params, Ss, Args, V) :-
     cpp_fold_depth(D), D < 32, D1 is D + 1, nb_setval('$cpp_fold_depth', D1),
-    (   cpp_param_binds(Params, Args, B0), cpp_eval_binds(B0, Env0), ( D == 0 -> nb_setval('$cpp_eval_steps', 0) ; true ),   % one budget for the whole fold, a nested constexpr call included
-        cpp_eval_stmts(Ss, Env0, _, R), R = ret(V), cpp_eval_scalar(V)
-    ->  nb_setval('$cpp_fold_depth', D)
+    (   cpp_param_binds(Params, Args, B0), cpp_eval_bind_values(B0, Env0), ( D == 0 -> nb_setval('$cpp_eval_steps', 0) ; true ),   % one budget for the whole fold, a nested constexpr call included
+        cpp_eval_stmts(Ss, Env0, _, R), R = ret(V0)
+    ->  nb_setval('$cpp_fold_depth', D), V = V0
     ;   nb_setval('$cpp_fold_depth', D), fail ).
-cpp_eval_binds([], []).
-cpp_eval_binds([N-A|B], [N-V|E]) :- cpp_const_value(A, V), cpp_eval_binds(B, E).
-cpp_eval_step :- nb_getval('$cpp_eval_steps', K), K < 200000, K1 is K + 1, nb_setval('$cpp_eval_steps', K1).
+cpp_eval_bind_values([], []).
+cpp_eval_bind_values([N-A|B], [N-V|E]) :- cpp_eval_value(A, V), cpp_eval_bind_values(B, E).
+cpp_eval_step :- ( catch(nb_getval('$cpp_eval_steps', K), _, fail) -> true ; K = 0 ), K < 200000, K1 is K + 1, nb_setval('$cpp_eval_steps', K1).   % unset where the evaluator is entered below 0.72's road (a fold's depth above 0): the count starts here
 %% the statements of a block: the outcome is `next' (fell through), `ret(V)', `break' or `continue'
 cpp_eval_stmts([], Env, Env, next).
 cpp_eval_stmts([S|Ss], Env0, Env, R) :- cpp_eval_step, cpp_eval_stmt(S, Env0, Env1, R1), ( R1 == next -> cpp_eval_stmts(Ss, Env1, Env, R) ; Env = Env1, R = R1 ).
@@ -3165,11 +3172,11 @@ cpp_eval_decls([var(N, T, Init)|Vs], Env0, Env) :- atom(N), \+ ccl_resolve_type(
     ( var(Env1) -> Env1 = Env0 ; true ), cpp_eval_decls(Vs, [N-V|Env1], Env).
 %% an expression with its effects: the assignments and the increments change the environment, the rest folds
 cpp_eval_effect(assign('=', P, E), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_effect(E, Env0, Env1, V), cpp_eval_store(P, V, Env1, Env).
-cpp_eval_effect(assign(Op, P, E), Env0, Env, V) :- cpp_eval_placeish(P), atom_concat(BinOp, '=', Op), !, cpp_eval_effect(E, Env0, Env1, RV), cpp_eval_place(P, Env1, LV), ccl_const_op(BinOp, LV, RV, V), cpp_eval_store(P, V, Env1, Env).
-cpp_eval_effect(preinc(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V0), ccl_const_op('+', V0, 1, V), cpp_eval_store(P, V, Env0, Env).
-cpp_eval_effect(predec(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V0), ccl_const_op('-', V0, 1, V), cpp_eval_store(P, V, Env0, Env).
-cpp_eval_effect(postinc(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V), ccl_const_op('+', V, 1, V1), cpp_eval_store(P, V1, Env0, Env).
-cpp_eval_effect(postdec(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V), ccl_const_op('-', V, 1, V1), cpp_eval_store(P, V1, Env0, Env).
+cpp_eval_effect(assign(Op, P, E), Env0, Env, V) :- cpp_eval_placeish(P), atom_concat(BinOp, '=', Op), !, cpp_eval_effect(E, Env0, Env1, RV), cpp_eval_place(P, Env1, LV), cpp_eval_binop(BinOp, LV, RV, V), cpp_eval_store(P, V, Env1, Env).
+cpp_eval_effect(preinc(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V0), cpp_eval_add(V0, 1, V), cpp_eval_store(P, V, Env0, Env).
+cpp_eval_effect(predec(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V0), cpp_eval_add(V0, -1, V), cpp_eval_store(P, V, Env0, Env).
+cpp_eval_effect(postinc(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V), cpp_eval_add(V, 1, V1), cpp_eval_store(P, V1, Env0, Env).
+cpp_eval_effect(postdec(P), Env0, Env, V) :- cpp_eval_placeish(P), !, cpp_eval_place(P, Env0, V), cpp_eval_add(V, -1, V1), cpp_eval_store(P, V1, Env0, Env).
 cpp_eval_effect(comma(A, B), Env0, Env, V) :- !, cpp_eval_effect(A, Env0, Env1, _), cpp_eval_effect(B, Env1, Env, V).
 cpp_eval_effect(cond(C, A, B), Env0, Env, V) :- !, cpp_eval_effect(C, Env0, Env1, CV), ( CV \== 0 -> cpp_eval_effect(A, Env1, Env, V) ; cpp_eval_effect(B, Env1, Env, V) ).
 cpp_eval_effect(bin('&&', A, B), Env0, Env, V) :- !, cpp_eval_effect(A, Env0, Env1, AV), ( AV == 0 -> Env = Env1, V = 0 ; cpp_eval_effect(B, Env1, Env, BV), ( BV == 0 -> V = 0 ; V = 1 ) ).
@@ -3180,11 +3187,58 @@ cpp_eval_effect(cast(_, E), Env0, Env, V) :- cpp_eval_side_effects(E), !, cpp_ev
 cpp_eval_effect(E, Env, Env, V) :- cpp_eval_expr(E, Env, V).
 cpp_eval_side_effects(E) :- compound(E), ( E = assign(_, _, _) ; E = preinc(_) ; E = predec(_) ; E = postinc(_) ; E = postdec(_) ), !.
 cpp_eval_side_effects(E) :- compound(E), E =.. [_|As], member(A, As), cpp_eval_side_effects(A), !.
-cpp_eval_expr(E, Env, V) :- cpp_eval_placeish(E), cpp_eval_place(E, Env, V0), !, V = V0.
-cpp_eval_expr(E, Env, V) :- cpp_eval_places(E, Env, E0), cpp_eval_vals(Env, B), cpp_replace_ids(E0, B, E1), cpp_const_value(E1, V).
-cpp_eval_vals([], []).
-cpp_eval_vals([_-V|Env], B) :- ( V = arr(_) ; V = obj(_) ), !, cpp_eval_vals(Env, B).   % an aggregate is read through its places, never spliced in
-cpp_eval_vals([N-V|Env], [N-T|B]) :- ( V = big(_) -> T = int(V) ; integer(V) -> T = int(V) ; T = V ), cpp_eval_vals(Env, B).
+%% THE VALUES (0.98): an integer, `big(A)', `arr(L)', `obj(Ps)', and a POINTER `ptr(Base, Off)' -- its base an `arr(L)' (a string
+%% literal's codes with their zero, an array named, a pointer's own) or an `obj(Ps)' (`&q', `this') -- a COPY read through
+%% and never written: `s[n]', `*s', `s++', `p - s', `p->x', a pointer compared with another, where a store through one
+%% FAILS and the call stays a call. An expression is REDUCED bottom up over the environment (`cpp_eval_reduce': a name
+%% to its value, a place to what it holds, a string literal to a pointer, a call of a constexpr function to its answer,
+%% pointer arithmetic to a pointer, everything else rebuilt) into a term whose leaves are `int(V)' and `'$val'(Agg)', and
+%% what is left -- the scalar arithmetic -- is the one evaluator's (`cpp_eval_value' through cpp_const_value).
+cpp_eval_expr(E, Env, V) :- cpp_eval_reduce(E, Env, R), cpp_eval_value(R, V).
+cpp_eval_value('$val'(V), V) :- !.
+cpp_eval_value(int(V), V) :- !.
+cpp_eval_value(R, V) :- cpp_const_value(R, V).
+cpp_eval_lit(V, int(V)) :- cpp_eval_scalar(V), !.
+cpp_eval_lit(V, '$val'(V)).
+cpp_eval_reduce(E, _, E) :- \+ compound(E), !.
+cpp_eval_reduce(int(N), _, int(N)) :- !.
+cpp_eval_reduce('$val'(V), _, '$val'(V)) :- !.
+cpp_eval_reduce(id(N), Env, R) :- !, ( memberchk(N-V, Env) -> cpp_eval_lit(V, R) ; cpp_global_agg(N, V) -> cpp_eval_lit(V, R) ; R = id(N) ).
+cpp_eval_reduce(str(Cs), _, '$val'(ptr(arr(L), 0))) :- !, append(Cs, [0], L).
+cpp_eval_reduce(index(P, I), Env, R) :- cpp_eval_reduce(P, Env, '$val'(PV)), cpp_eval_reduce(I, Env, IR), cpp_eval_value(IR, K), integer(K), cpp_eval_elem(PV, K, V), !, cpp_eval_lit(V, R).
+cpp_eval_reduce(member(P, F), Env, R) :- cpp_eval_reduce(P, Env, '$val'(obj(Ps))), memberchk(F-V, Ps), !, cpp_eval_lit(V, R).
+cpp_eval_reduce(arrow(P, F), Env, R) :- cpp_eval_reduce(P, Env, '$val'(ptr(obj(Ps), _))), memberchk(F-V, Ps), !, cpp_eval_lit(V, R).
+cpp_eval_reduce(deref(P), Env, R) :- cpp_eval_reduce(P, Env, '$val'(PV)), cpp_eval_deref(PV, V), !, cpp_eval_lit(V, R).
+cpp_eval_reduce(addr(P), Env, '$val'(ptr(A, 0))) :- cpp_eval_reduce(P, Env, '$val'(A)), ( A = obj(_) ; A = arr(_) ), !.
+cpp_eval_reduce(compound_lit(T, I), Env, R) :- cpp_eval_init(T, I, Env, _, V), !, cpp_eval_lit(V, R).
+cpp_eval_reduce(stmt_expr(block(Ss)), Env, R) :- append(Ss0, [expr(_, Last)], Ss), cpp_eval_stmts(Ss0, Env, Env1, next), cpp_eval_expr(Last, Env1, V), !, cpp_eval_lit(V, R).
+cpp_eval_reduce(call(id(F), Args), Env, R) :- atom(F), cpp_eval_fn(F, Params, Ss), cpp_eval_reduce_list(Args, Env, Args1), cpp_eval_call(F, Params, Ss, Args1, V), !, cpp_eval_lit(V, R).
+cpp_eval_reduce(bin(Op, A, B), Env, R) :- !, cpp_eval_reduce(A, Env, A1), cpp_eval_reduce(B, Env, B1),
+    ( ( A1 = '$val'(_) ; B1 = '$val'(_) ), cpp_eval_ptr_bin(Op, A1, B1, V) -> cpp_eval_lit(V, R) ; R = bin(Op, A1, B1) ).
+cpp_eval_reduce(E, Env, R) :- E =.. [F|Xs], cpp_eval_reduce_list(Xs, Env, Ys), R =.. [F|Ys].
+cpp_eval_reduce_list([], _, []).
+cpp_eval_reduce_list([X|Xs], Env, [Y|Ys]) :- cpp_eval_reduce(X, Env, Y), cpp_eval_reduce_list(Xs, Env, Ys).
+cpp_eval_elem(arr(L), K, V) :- K >= 0, nth0(K, L, V).
+cpp_eval_elem(ptr(arr(L), Off), K, V) :- K1 is Off + K, K1 >= 0, nth0(K1, L, V).
+cpp_eval_deref(ptr(arr(L), Off), V) :- Off >= 0, nth0(Off, L, V).
+cpp_eval_deref(ptr(obj(Ps), _), obj(Ps)).
+cpp_eval_deref(arr(L), V) :- nth0(0, L, V).
+cpp_eval_ptr_bin(Op, A, B, V) :- cpp_eval_ptrish(A, P), cpp_eval_ptrish(B, Q), !, cpp_eval_poff(P, O1), cpp_eval_poff(Q, O2),
+    ( Op == '-' -> V is O1 - O2 ; memberchk(Op, ['==', '!=', '<', '>', '<=', '>=']), ccl_const_op(Op, O1, O2, V) ).
+cpp_eval_ptr_bin('+', A, B, V) :- cpp_eval_ptrish(A, P), cpp_eval_value(B, K), integer(K), !, cpp_eval_padd(P, K, V).
+cpp_eval_ptr_bin('+', A, B, V) :- cpp_eval_ptrish(B, P), cpp_eval_value(A, K), integer(K), !, cpp_eval_padd(P, K, V).
+cpp_eval_ptr_bin('-', A, B, V) :- cpp_eval_ptrish(A, P), cpp_eval_value(B, K), integer(K), !, K1 is -K, cpp_eval_padd(P, K1, V).
+cpp_eval_ptr_bin(Op, A, B, V) :- memberchk(Op, ['==', '!=']), ( cpp_eval_ptrish(A, _), cpp_eval_value(B, 0) ; cpp_eval_ptrish(B, _), cpp_eval_value(A, 0) ), !,   % a pointer against null: never null here
+    ( Op == '==' -> V = 0 ; V = 1 ).
+cpp_eval_ptrish('$val'(ptr(B, O)), ptr(B, O)).
+cpp_eval_ptrish('$val'(arr(L)), ptr(arr(L), 0)).
+cpp_eval_poff(ptr(_, Off), Off).
+cpp_eval_padd(ptr(B, Off), K, ptr(B, Off1)) :- Off1 is Off + K.
+cpp_eval_padd(arr(L), K, ptr(arr(L), K)).
+cpp_eval_add(P, K, V) :- ( P = ptr(_, _) ; P = arr(_) ), !, cpp_eval_padd(P, K, V).
+cpp_eval_add(A, K, V) :- ccl_const_op('+', A, K, V).
+cpp_eval_binop(Op, L, RV, V) :- ( L = ptr(_, _) ; L = arr(_) ), !, ( Op == '+' -> cpp_eval_padd(L, RV, V) ; Op == '-' -> K is -RV, cpp_eval_padd(L, K, V) ).
+cpp_eval_binop(Op, L, RV, V) :- ccl_const_op(Op, L, RV, V).
 cpp_eval_set(N, V, [N-_|Env], [N-V|Env]) :- !.
 cpp_eval_set(N, V, [X|Env0], [X|Env]) :- cpp_eval_set(N, V, Env0, Env).
 cpp_eval_scalar(V) :- ( integer(V) ; V = big(_) ), !.
@@ -3196,6 +3250,9 @@ cpp_eval_scalar(V) :- ( integer(V) ; V = big(_) ), !.
 %% declaration item is walked), so `table[i]' folds inside a body and `table[2]' as a template argument or a bound.
 %% A `switch' runs from the matching case label -- or default -- through the fallthrough to a `break'; a range-for
 %% over an array binds each element in turn. A POINTER stays outside: the call stays a call (named, not done).
+cpp_eval_init_term(V, int(V)) :- cpp_eval_scalar(V), !.
+cpp_eval_init_term(arr(L), init(Items)) :- !, findall(item([], T), ( member(X, L), cpp_eval_init_term(X, T) ), Items).
+cpp_eval_init_term(obj(Ps), init(Items)) :- !, findall(item([], T), ( member(_-X, Ps), cpp_eval_init_term(X, T) ), Items).
 cpp_eval_agg_kind(T, arr(B, ET)) :- ccl_resolve_type(T, arr(B, ET)), !.
 cpp_eval_agg_kind(T, obj(Ms)) :- ccl_resolve_type(T, T1), ( T1 = base(_, [struct(_, Ms0)]), Ms0 \== none ; T1 = base(_, [class(_, _, _, _)]) ), !, ccl_members_of(T1, Ms).
 cpp_eval_init(T, Init, Env0, Env, V) :- cpp_eval_agg_kind(T, K), !, cpp_eval_agg_init(K, Init, Env0, Env, V).
@@ -3226,10 +3283,14 @@ cpp_eval_all([Z|L], Z) :- cpp_eval_all(L, Z).
 cpp_eval_placeish(id(_)).
 cpp_eval_placeish(index(P, _)) :- cpp_eval_placeish(P).
 cpp_eval_placeish(member(P, _)) :- cpp_eval_placeish(P).
+cpp_eval_placeish(arrow(P, _)) :- cpp_eval_placeish(P).
+cpp_eval_placeish(deref(P)) :- cpp_eval_placeish(P).
 cpp_eval_place(id(N), Env, V) :- memberchk(N-V0, Env), !, V = V0.
 cpp_eval_place(id(N), _, V) :- cpp_global_agg(N, V).
-cpp_eval_place(index(P, I), Env, V) :- cpp_eval_place(P, Env, arr(L)), cpp_eval_expr(I, Env, K), integer(K), K >= 0, nth0(K, L, V).
+cpp_eval_place(index(P, I), Env, V) :- cpp_eval_place(P, Env, PV), cpp_eval_expr(I, Env, K), integer(K), cpp_eval_elem(PV, K, V).
 cpp_eval_place(member(P, F), Env, V) :- cpp_eval_place(P, Env, obj(Ps)), memberchk(F-V, Ps).
+cpp_eval_place(arrow(P, F), Env, V) :- cpp_eval_place(P, Env, ptr(obj(Ps), _)), memberchk(F-V, Ps).   % read through a pointer; a store through one has no clause
+cpp_eval_place(deref(P), Env, V) :- cpp_eval_place(P, Env, PV), cpp_eval_deref(PV, V).
 cpp_eval_store(id(N), V, Env0, Env) :- !, cpp_eval_set(N, V, Env0, Env).
 cpp_eval_store(index(P, I), V, Env0, Env) :- !, cpp_eval_place(P, Env0, arr(L)), cpp_eval_expr(I, Env0, K), integer(K), K >= 0, cpp_eval_put(K, L, V, L1), cpp_eval_store(P, arr(L1), Env0, Env).
 cpp_eval_store(member(P, F), V, Env0, Env) :- cpp_eval_place(P, Env0, obj(Ps)), cpp_eval_put_field(F, V, Ps, Ps1), cpp_eval_store(P, obj(Ps1), Env0, Env).
@@ -3237,11 +3298,6 @@ cpp_eval_put(0, [_|L], V, [V|L]) :- !.
 cpp_eval_put(K, [X|L0], V, [X|L]) :- K > 0, K1 is K - 1, cpp_eval_put(K1, L0, V, L).
 cpp_eval_put_field(F, V, [F-_|Ps], [F-V|Ps]) :- !.
 cpp_eval_put_field(F, V, [X|Ps0], [X|Ps]) :- cpp_eval_put_field(F, V, Ps0, Ps).
-cpp_eval_places(E, Env, E1) :- compound(E), ( E = index(_, _) ; E = member(_, _) ), cpp_eval_place(E, Env, V), cpp_eval_scalar(V), !, E1 = int(V).
-cpp_eval_places(E, Env, E1) :- compound(E), !, E =.. [F|Xs], cpp_eval_places_list(Xs, Env, Ys), E1 =.. [F|Ys].
-cpp_eval_places(E, _, E).
-cpp_eval_places_list([], _, []).
-cpp_eval_places_list([X|Xs], Env, [Y|Ys]) :- cpp_eval_places(X, Env, Y), cpp_eval_places_list(Xs, Env, Ys).
 %% a file-scope `const' aggregate with a constant initializer, as a value (recorded by cpp_fold_const_inits_)
 cpp_global_agg(N, V) :- atom(N), \+ cpp_local(N), atom_concat('$cpp_gagg:', N, K), catch(nb_getval(K, agg(T, Init)), _, fail), cpp_eval_init(T, Init, [], _, V).
 cpp_eval_stmt(switch(_, E, S), Env0, Env, R) :- !, cpp_eval_effect(E, Env0, Env1, V),
@@ -4023,8 +4079,9 @@ cpp_bind_targs_([tparam(template, P, D)|TPs], Args, Acc, B) :- !,               
 %% AN EXPLICIT TEMPLATE ARGUMENT IS EVALUATED WHERE IT IS BOUND, whatever road brought it: the class path ran it
 %% through cpp_targ_value first and the MEMBER TEMPLATE path handed it over raw, so `__align_it<__boundary>(n)' --
 %% libc++'s alignment step, over a `const' local -- keyed its instance by the NAME and left it in the body.
-cpp_bind_targs_([tparam(_, P, D)|TPs], Args, Acc, B) :-
+cpp_bind_targs_([tparam(K, P, D)|TPs], Args, Acc, B) :-
     ( Args = [A0|Rest] -> ( cpp_targ_value(A0, A) -> true ; A = A0 ) ; D \== none -> cpp_subst(D, Acc, D1), cpp_type_or_value(D1, A), Rest = [] ; cpp_refuse(0, template_argument_missing(P)) ),
+    ( K \== type, A = id(N), atom(N), cpp_local(N) -> cpp_refuse(0, template_argument_not_constant(P, A)) ; true ),   % A VALUE ARGUMENT THAT IS A PLAIN LOCAL'S NAME can never fold: refused by name (0.98), where `Box<x>' keyed the instance by its spelling; an unfolded CALL or a class's static stays keyed as it is, since libc++'s `get' by type keys `tuple_element' by `__find_exactly_one_t<...>::value' and folds it later, inside the instance
     cpp_bind_targs_(TPs, Rest, [P-A|Acc], B).
 cpp_pack_kind(pack).
 cpp_pack_kind(vpack(_)).

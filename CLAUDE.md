@@ -5010,6 +5010,62 @@ refused; the candidate checks themselves -- 37 s of `stdtuple''s 129 for the sha
 instantiations are the work that is left, and a check averages 32 s in the C++ gate here where 0.87's averaged 14 on the
 Mac, which (3) accounts for.
 
+**M6's sixty-fifth step (0.98): THE CONSTEXPR EVALUATOR OVER POINTERS, AGGREGATES RETURNED AND `this' -- 0.97's not-done
+list, closed.** (1) THE VALUES GREW BY ONE, THE POINTER: `ptr(Base, Off)', its base an `arr(L)' -- a string literal's codes
+with their zero (`str(Cs)'), an array named, a pointer's own -- or an `obj(Ps)' (`&q', `this'), a COPY read through and never
+written: `s[n]', `*s', `s++', `p - s', `p->x', `++p', two pointers compared, a pointer against null (never null here); a store
+THROUGH one has no clause, so the fold fails and the call stays a call. AND THE EXPRESSION IS REDUCED, not substituted:
+0.96 replaced every name by its value and handed the term to the one evaluator, which no aggregate could pass through;
+`cpp_eval_reduce' walks the expression bottom up over the environment -- a name to its value, a place to what it holds, a
+literal string to a pointer, a CALL of a constexpr function to its answer (`cpp_eval_call', which may be an aggregate
+now: `return {a, a * 2}', a compound literal, `flip(P p)' taking one), pointer arithmetic to a pointer, a statement
+expression to its last value, everything else rebuilt -- into a term whose leaves are `int(V)' and `'$val'(Agg)', and the
+scalar arithmetic left is the one evaluator's (`cpp_eval_value' through `cpp_const_value'). A CONST MEMBER FUNCTION over
+a constant object is a call over `&q' whose `this' is a pointer to the object's value, and its body's `this->x' reads
+through it; the class's methods join the own-function table where the fold finds them (`'$cpp_ownfn'', at the class
+item's emission). A FILE-SCOPE CONSTANT AGGREGATE INITIALIZED BY A CONSTEXPR CALL, `constexpr P origin = make(7);', which
+reached the lowering as `global_init(call(...))', is folded into its initializer (`cpp_eval_init_term': the value spelled
+back as braced items) and is a value to the evaluator as any constant aggregate is. `make(5).y' folds anywhere a constant
+is wanted (`cpp_const_fold' on a member or an index of a call's aggregate answer). The evaluator's road is tried first at
+the fold and 0.72's one-return road stands as its fallback, the arguments bound as written. Gated by
+`test/cpp/run/constexprfn5.cpp' (an aggregate returned as a braced list and as a compound literal, taken by value and by
+const reference, a global from a call and its members, a string's length and a count through `s[n]' and `*s++', a sum over
+a constant array and over a local one with `a + 1', a word's length by pointer difference, `corner.scaled(3)' -- each as a
+template argument too), clang++'s numbers; the older constexpr fixtures unchanged. NOT DONE, named: a store through a
+pointer or through `this' (a non-const member function), a pointer to a scalar (`&x'), a constexpr constructor (a global of
+a class with one is not folded), `sizeof' over a local array's name.
+(2) A VALUE ARGUMENT THAT IS A PLAIN LOCAL'S NAME IS REFUSED BY NAME (`template_argument_not_constant(P, A)' at
+`cpp_bind_targs_'): `Box<x>' over a function's parameter keyed the instance by its spelling and the static it fed was an
+`extern' the link named. THE FIRST WRITING REFUSED EVERY UNSETTLED VALUE, and `stdtuple' said no within the minute:
+libc++'s `get' by type keys `tuple_element' by `__find_exactly_one_t<_T1, _Args...>::value', a static this compiler does
+not fold at the binding (`cpp_targ_value' answers the scoped name as written) and folds LATER, inside the instance, where
+the road works today -- so an unfolded call or static stays keyed as it is, and only what can never fold, a local's name,
+is refused. A type, an int, a bool, a char and a negative literal, an enumerator, `sizeof' and a constexpr call fold as
+before (`test/cpp/run/targkeys.cpp'). AND THE FIXTURE THAT SAID NO SAID SOMETHING ELSE TOO: with the refusal narrowed
+`stdtuple' still refused, `type_pack_index(...::value)', and a bisect on two scratch copies of the library -- one without
+the kind pre-filter below, one without the evaluator's fold -- named the fold in one run each. The evaluator's step counter
+was set only at a fold's depth 0, and the evaluator is entered at depth 1 below 0.72's one-return road, which never set
+it: `existence_error(variable, '$cpp_eval_steps')', an ERROR and not a failure, which the static's fold caught and read as
+a fold that failed, silently. The instrument that named it was a `catch' around the new clause on the scratch copy,
+tracing the error it swallowed -- a failure that arrives as an exception leaves no refusal in the trace, and the fold's own
+catch made it look like every other unfoldable static. The counter starts at 0 wherever it is first asked.
+(3) THE CANDIDATE CHECKS' OWN COST, measured and left: a KIND PRE-FILTER before the full check -- a type parameter given a
+plain literal, a value parameter given a plain type, skipped without the refusal machinery (6,816 of `get''s 18,048
+refusals were `kind_mismatch' in 0.97's trace) -- built `stdtuple' in 131 s where 132 was the number without it, the box's
+noise, and was TAKEN OUT: with the holding set remembered per shape (0.97) the checks that remain are the first of each
+shape, and what a check costs is the deduction, not the kind. A check averages 32 s in the C++ gate here, and what is left
+in it is the instantiations and the first deductions, the work.
+THE GATES, ON LINUX (Ubuntu 24.04, x86_64, four cores, 16 GB; clang 18, libc++ 18, cocolog 1.8.1, the module rebuilt
+as 0.98), one after another in one chain with nothing beside them, each under its own 7000 MB watchdog, the summaries
+warm at reader 82 (`test/warm.sh' first: 40 headers, 56 s, none cold): the reader's 95 checks GREEN in 3 s at 90 MB; the
+compile gate's 78 in 3 s at 220 MB; the driver's 25 in 5 s at 83 MB; the objects' 29; the proof; THE C++ GATE GREEN -- 194
+checks ok (0.97's 192, `constexprfn5' and `targkeys'), `stdoptionalref' skipped by name, NO failure -- in 6179 s at a
+3766 MB peak (0.97: 6108 s, 3778 MB: two fixtures more, the same clock within the box's noise); THE LIBC++ GATE GREEN, its 18 reads whole under a fresh HOME in 5518 s at 3265 MB, every item count 0.97's
+(`<vector>' 806 ... `<optional>' 397 at C++26), as a step that moves no reader rule should leave them.
+NOT DONE: a store through a pointer or through `this' in a constexpr body, a pointer to a scalar, a constexpr constructor,
+`sizeof' over a local array's name; an unfolded CALL or a class's static as a value argument stays keyed by its spelling
+(the reason above); the candidate checks' first deductions and the instantiations are the work a build is made of now.
+
 
 **`format`, `print`, `println` are global macros** (owner's rule):
 `library/ccl_format.pl` is a macro file registered by `ccl_standard_macros/0`
